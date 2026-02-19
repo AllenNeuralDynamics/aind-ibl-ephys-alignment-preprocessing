@@ -16,6 +16,18 @@ readme = "README.md"
 version = "0.1.0"
 
 dependencies = [
+  "numpy>=1.21.0",
+  "pandas>=1.3.0",
+  "pydantic>=2",
+  "antspyx>=0.3.0",
+  "iblatlas>=0.4.0",
+  "SimpleITK",
+  "aind-anatomical-utils>=0.4,<0.5",
+  "aind-ephys-ibl-gui-conversion @ git+https://github.com/AllenNeuralDynamics/aind-ephys-ibl-gui-conversion@main",
+  "aind-registration-utils>=0.4,<0.5",
+  "aind-s3-cache>=0.1",
+  "aind-zarr-utils>=0.11.2",
+  "filelock",
 ]
 
 [project.urls]
@@ -24,8 +36,7 @@ Issues = "https://github.com/AllenNeuralDynamics/aind-ibl-ephys-alignment-prepro
 Changelog = "https://github.com/AllenNeuralDynamics/aind-ibl-ephys-alignment-preprocessing/blob/main/CHANGELOG.md"
 
 [project.scripts]
-# Add your CLI scripts here, e.g.:
-# my_command = "aind_ibl_ephys_alignment_preprocessing.scripts.my_command:main"
+aind-ibl-preprocess = "aind_ibl_ephys_alignment_preprocessing.scripts.run:main"
 
 [dependency-groups]
 types = ["mypy"]
@@ -39,6 +50,9 @@ docs = [
   "myst-parser",
   "furo",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aind_ibl_ephys_alignment_preprocessing"]
@@ -92,4 +106,20 @@ show_error_codes = true
 module = "tests.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
+
+[[tool.mypy.overrides]]
+module = [
+  "ants",
+  "ants.*",
+  "SimpleITK",
+  "SimpleITK.*",
+  "aind_anatomical_utils.*",
+  "aind_ephys_ibl_gui_conversion.*",
+  "aind_registration_utils.*",
+  "aind_s3_cache.*",
+  "aind_zarr_utils.*",
+  "iblatlas.*",
+  "filelock",
+]
+ignore_missing_imports = true
 
