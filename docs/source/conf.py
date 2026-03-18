@@ -13,7 +13,7 @@ from pathlib import Path
 project_root = abspath(dirname(dirname(dirname(__file__))))
 sys.path.insert(0, str(Path(project_root) / "src"))
 
-from aind_ibl_ephys_alignment_preprocessing import __version__ as package_version # noqa:E402
+from aind_ibl_ephys_alignment_preprocessing import __version__ as package_version  # noqa:E402
 
 INSTITUTE_NAME = "Allen Institute for Neural Dynamics"
 
@@ -41,7 +41,6 @@ extensions = [
     "myst_parser",
     "sphinx_autodoc_typehints",
     "sphinx_copybutton",
-    
 ]
 
 templates_path = ["_templates"]
