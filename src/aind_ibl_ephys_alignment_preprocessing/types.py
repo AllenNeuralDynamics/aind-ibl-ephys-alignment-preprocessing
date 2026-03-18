@@ -74,6 +74,9 @@ class PipelineConfig(BaseModel, frozen=True):
         "allen_mouse_ccf_annotations_lateralized_compact/ccf_2017_annotation_25_lateralized_unique_vals.npz"
     )
 
+    # External reference data
+    template_to_ccf_dir: Path = Path("spim_template_to_ccf/")
+
     # Processing options
     skip_ephys: bool = False
     desired_voxel_size_um: float = 25.0
@@ -89,6 +92,7 @@ class PipelineConfig(BaseModel, frozen=True):
             "ccf_labels_lateralized_25",
             "ibl_atlas_histology_path",
             "ccf_labels_lateralized_25_unq_vals",
+            "template_to_ccf_dir",
         )
         for name in path_fields:
             val = getattr(self, name)
@@ -158,18 +162,18 @@ class ReferencePaths:
 class ReferenceVolumes:
     """Loaded reference ANTs images."""
 
-    ccf_25: ants.ANTsImage  # type: ignore[type-arg]
+    ccf_25: ants.ANTsImage
 
     @classmethod
     def from_paths(cls, paths: ReferencePaths) -> ReferenceVolumes:
         """Load volumes synchronously."""
-        ccf = ants.image_read(str(paths.ccf_25), pixeltype=None)  # type: ignore[no-untyped-call]
+        ccf = ants.image_read(str(paths.ccf_25), pixeltype=None)
         return cls(ccf_25=ccf)
 
     @classmethod
     async def from_paths_async(cls, paths: ReferencePaths) -> ReferenceVolumes:
         """Load volumes in a background thread."""
-        ccf = await asyncio.to_thread(ants.image_read, str(paths.ccf_25), pixeltype=None)  # type: ignore[no-untyped-call]
+        ccf = await asyncio.to_thread(ants.image_read, str(paths.ccf_25), pixeltype=None)
         return cls(ccf_25=ccf)
 
 
@@ -283,7 +287,7 @@ class ManifestRow:
         return outputs.tracks_root.parent / self.recording_id / self.probe_name
 
     @classmethod
-    def from_series(cls, s: pd.Series) -> ManifestRow:  # type: ignore[type-arg]
+    def from_series(cls, s: pd.Series[Any]) -> ManifestRow:
         """Construct from a pandas Series (one manifest row)."""
 
         def opt_int(x: Any) -> int | None:
@@ -304,5 +308,5 @@ class ManifestRow:
             annotation_format=str(s.get("annotation_format", "json")).lower(),
             probe_shank=opt_int(s.get("probe_shank")),
             surface_finding=opt_path(s.get("surface_finding")),
-            row_index=int(s.name) if hasattr(s, "name") else None,  # type: ignore[arg-type]
+            row_index=int(s.name) if hasattr(s, "name") else None,  # type: ignore[call-overload]
         )

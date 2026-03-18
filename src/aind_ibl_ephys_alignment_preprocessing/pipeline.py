@@ -26,6 +26,7 @@ from aind_ibl_ephys_alignment_preprocessing.histology import (
     transform_ccf_to_image_space,
     write_registration_channel_images,
 )
+from aind_ibl_ephys_alignment_preprocessing.manifest import build_datapackage, write_datapackage
 from aind_ibl_ephys_alignment_preprocessing.probes import process_manifest_row
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
@@ -70,8 +71,8 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     raw_img_path, pipeline_img_path = write_registration_channel_images(
         asset_info, out, level=level, opened_zarr=(node, zarr_metadata)
     )
-    pipeline_img_ants = ants.image_read(str(pipeline_img_path), pixeltype=None)  # type: ignore[no-untyped-call]
-    raw_img_ants = ants.image_read(str(raw_img_path), pixeltype=None)  # type: ignore[no-untyped-call]
+    pipeline_img_ants = ants.image_read(str(pipeline_img_path), pixeltype=None)
+    raw_img_ants = ants.image_read(str(raw_img_path), pixeltype=None)
 
     scratch_root = Path(config.scratch_root) if config.scratch_root is not None else Path(tempfile.mkdtemp())
     scratch_root.mkdir(parents=True, exist_ok=True)
@@ -112,5 +113,10 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
             continue
         if not config.skip_ephys:
             run_ephys_for_recording(mr, out, config.data_root, processed_recordings)
+
+    manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
+    dp = build_datapackage(mouse_id, manifest_rows, processed_results, asset_info, out, config)
+    dp_path = write_datapackage(dp, config.results_root / mouse_id)
+    logger.info("Wrote datapackage manifest to %s", dp_path)
 
     return processed_results

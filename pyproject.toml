@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "aind-ibl-ephys-alignment-preprocessing"
 description = "Library to prepare histology and ephys for the IBL ephys alignment GUI"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
   { name = "Allen Institute for Neural Dynamics" },
   { name = "Galen Lynch", email = "galen@galenlynch.com" },
@@ -39,7 +39,7 @@ Changelog = "https://github.com/AllenNeuralDynamics/aind-ibl-ephys-alignment-pre
 aind-ibl-preprocess = "aind_ibl_ephys_alignment_preprocessing.scripts.run:main"
 
 [dependency-groups]
-types = ["mypy"]
+types = ["mypy", "pandas-stubs"]
 dev = [{ include-group = "types" }, "codespell", "pytest", "pytest-cov", "ruff", "interrogate"]
 jupyter = [{ include-group = "dev" }, "ipykernel", "pip"]
 docs = [
@@ -59,7 +59,7 @@ packages = ["src/aind_ibl_ephys_alignment_preprocessing"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 extend-select = ["Q", "RUF100", "C90", "I", "F", "E", "W", "D", "UP", "ANN", "PYI"]
@@ -71,7 +71,6 @@ pydocstyle = { convention = "numpy" }
 
 [tool.codespell]
 skip = ".git,*.pdf,*.svg,./docs/_build,uv.lock"
-ignore-words-list = ""
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --tb=short --cov=src --cov-report=term-missing --cov-fail-under=0"
@@ -99,6 +98,7 @@ major_version_zero = true
 
 [tool.mypy]
 files = ["src/aind_ibl_ephys_alignment_preprocessing"]
+python_version = "3.11"
 strict = true
 show_error_codes = true
 
@@ -122,4 +122,11 @@ module = [
   "filelock",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "aind_ibl_ephys_alignment_preprocessing.histology",
+  "aind_ibl_ephys_alignment_preprocessing._async.histology",
+]
+disallow_untyped_calls = false
 
