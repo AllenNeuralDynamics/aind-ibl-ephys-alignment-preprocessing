@@ -159,7 +159,7 @@ def process_additional_channels_pipeline(
         convert_img_direction_and_write(img_raw, channel_dst)
         del img_raw
 
-        ants_hist_img = ants.image_read(str(channel_dst), pixeltype=None)  # type: ignore[no-untyped-call]
+        ants_hist_img = ants.image_read(str(channel_dst), pixeltype=None)
         ants.copy_image_info(pipeline_histology_space_img, ants_hist_img)
 
         ch_in_ccf = ants.apply_transforms(
@@ -310,7 +310,7 @@ def transform_ccf_labels_to_image_space(
     """
     ccf_labels_lateralized_25 = ants.image_read(
         str(ref_paths.ccf_labels_lateralized_25),
-        pixeltype=None,  # type: ignore[no-untyped-call]
+        pixeltype=None,
     )
     unq_vals = np.load(str(ref_paths.ccf_labels_lateralized_25_unq_vals))["unique_labels"]
     ccf_labels_in_hist_img = apply_ccf_inverse_tx_then_fix_domain(

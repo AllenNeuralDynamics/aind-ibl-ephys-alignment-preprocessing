@@ -71,8 +71,8 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     raw_img_path, pipeline_img_path = write_registration_channel_images(
         asset_info, out, level=level, opened_zarr=(node, zarr_metadata)
     )
-    pipeline_img_ants = ants.image_read(str(pipeline_img_path), pixeltype=None)  # type: ignore[no-untyped-call]
-    raw_img_ants = ants.image_read(str(raw_img_path), pixeltype=None)  # type: ignore[no-untyped-call]
+    pipeline_img_ants = ants.image_read(str(pipeline_img_path), pixeltype=None)
+    raw_img_ants = ants.image_read(str(raw_img_path), pixeltype=None)
 
     scratch_root = Path(config.scratch_root) if config.scratch_root is not None else Path(tempfile.mkdtemp())
     scratch_root.mkdir(parents=True, exist_ok=True)

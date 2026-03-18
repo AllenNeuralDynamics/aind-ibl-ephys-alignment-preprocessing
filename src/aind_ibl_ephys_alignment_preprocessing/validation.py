@@ -19,7 +19,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
 
 
-def _norm_shank_series(s: pd.Series) -> pd.Series:  # type: ignore[type-arg]
+def _norm_shank_series(s: pd.Series[Any]) -> pd.Series[Any]:
     """Treat NaN/None as a sentinel so duplicates behave predictably."""
     return s.fillna(-1).astype(int)
 

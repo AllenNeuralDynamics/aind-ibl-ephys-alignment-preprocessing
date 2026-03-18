@@ -39,7 +39,7 @@ Changelog = "https://github.com/AllenNeuralDynamics/aind-ibl-ephys-alignment-pre
 aind-ibl-preprocess = "aind_ibl_ephys_alignment_preprocessing.scripts.run:main"
 
 [dependency-groups]
-types = ["mypy"]
+types = ["mypy", "pandas-stubs"]
 dev = [{ include-group = "types" }, "codespell", "pytest", "pytest-cov", "ruff", "interrogate"]
 jupyter = [{ include-group = "dev" }, "ipykernel", "pip"]
 docs = [
@@ -71,7 +71,6 @@ pydocstyle = { convention = "numpy" }
 
 [tool.codespell]
 skip = ".git,*.pdf,*.svg,./docs/_build,uv.lock"
-ignore-words-list = ""
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --tb=short --cov=src --cov-report=term-missing --cov-fail-under=0"
@@ -122,4 +121,11 @@ module = [
   "filelock",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "aind_ibl_ephys_alignment_preprocessing.histology",
+  "aind_ibl_ephys_alignment_preprocessing._async.histology",
+]
+disallow_untyped_calls = false
 
