@@ -209,7 +209,7 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
         )
     logger.info("[Orchestrator] All parallel tasks completed")
     manifest_pool.shutdown(wait=True)
-    processed_results = manifest_task.result()
+    processed_results: list[ProcessResult] = manifest_task.result()
     num_succeeded = sum(1 for r in processed_results if r.wrote_files)
     num_failed = len(processed_results) - num_succeeded
     logger.info("[Orchestrator] Pipeline complete: %d succeeded, %d failed", num_succeeded, num_failed)

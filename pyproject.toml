@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "aind-ibl-ephys-alignment-preprocessing"
 description = "Library to prepare histology and ephys for the IBL ephys alignment GUI"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
   { name = "Allen Institute for Neural Dynamics" },
   { name = "Galen Lynch", email = "galen@galenlynch.com" },
@@ -59,7 +59,7 @@ packages = ["src/aind_ibl_ephys_alignment_preprocessing"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 extend-select = ["Q", "RUF100", "C90", "I", "F", "E", "W", "D", "UP", "ANN", "PYI"]
@@ -98,6 +98,7 @@ major_version_zero = true
 
 [tool.mypy]
 files = ["src/aind_ibl_ephys_alignment_preprocessing"]
+python_version = "3.11"
 strict = true
 show_error_codes = true
 
