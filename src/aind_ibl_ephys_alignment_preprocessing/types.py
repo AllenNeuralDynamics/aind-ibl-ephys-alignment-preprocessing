@@ -74,6 +74,9 @@ class PipelineConfig(BaseModel, frozen=True):
         "allen_mouse_ccf_annotations_lateralized_compact/ccf_2017_annotation_25_lateralized_unique_vals.npz"
     )
 
+    # External reference data
+    template_to_ccf_dir: Path = Path("spim_template_to_ccf/")
+
     # Processing options
     skip_ephys: bool = False
     desired_voxel_size_um: float = 25.0
@@ -89,6 +92,7 @@ class PipelineConfig(BaseModel, frozen=True):
             "ccf_labels_lateralized_25",
             "ibl_atlas_histology_path",
             "ccf_labels_lateralized_25_unq_vals",
+            "template_to_ccf_dir",
         )
         for name in path_fields:
             val = getattr(self, name)

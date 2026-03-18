@@ -31,7 +31,9 @@ from aind_ibl_ephys_alignment_preprocessing.discovery import (
     find_asset_info,
     prepare_result_dirs,
 )
+from aind_ibl_ephys_alignment_preprocessing.manifest import build_datapackage, write_datapackage
 from aind_ibl_ephys_alignment_preprocessing.types import (
+    ManifestRow,
     PipelineConfig,
     ProcessResult,
     ReferencePaths,
@@ -211,4 +213,10 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
     num_succeeded = sum(1 for r in processed_results if r.wrote_files)
     num_failed = len(processed_results) - num_succeeded
     logger.info("[Orchestrator] Pipeline complete: %d succeeded, %d failed", num_succeeded, num_failed)
+
+    manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
+    dp = build_datapackage(mouse_id, manifest_rows, processed_results, asset_info, out, config)
+    dp_path = write_datapackage(dp, config.results_root / mouse_id)
+    logger.info("[Orchestrator] Wrote datapackage manifest to %s", dp_path)
+
     return processed_results

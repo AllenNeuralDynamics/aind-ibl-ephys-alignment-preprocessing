@@ -26,6 +26,7 @@ from aind_ibl_ephys_alignment_preprocessing.histology import (
     transform_ccf_to_image_space,
     write_registration_channel_images,
 )
+from aind_ibl_ephys_alignment_preprocessing.manifest import build_datapackage, write_datapackage
 from aind_ibl_ephys_alignment_preprocessing.probes import process_manifest_row
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
@@ -112,5 +113,10 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
             continue
         if not config.skip_ephys:
             run_ephys_for_recording(mr, out, config.data_root, processed_recordings)
+
+    manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
+    dp = build_datapackage(mouse_id, manifest_rows, processed_results, asset_info, out, config)
+    dp_path = write_datapackage(dp, config.results_root / mouse_id)
+    logger.info("Wrote datapackage manifest to %s", dp_path)
 
     return processed_results
