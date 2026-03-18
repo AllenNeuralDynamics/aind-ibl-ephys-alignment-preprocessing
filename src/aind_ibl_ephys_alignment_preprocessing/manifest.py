@@ -157,15 +157,11 @@ def _build_histology(outputs: OutputDirs, manifest_root: Path) -> HistologyPaths
     ccf_dir = outputs.histology_ccf
 
     # Image-space additional channels (Ex_\d+_Em_\d+.nrrd)
-    img_additional = sorted(
-        _rel(p, manifest_root) for p in img_dir.glob("Ex_*_Em_*.nrrd")
-    )
+    img_additional = sorted(_rel(p, manifest_root) for p in img_dir.glob("Ex_*_Em_*.nrrd"))
 
     # CCF-space additional channels (histology_*.nrrd excluding registration)
     ccf_additional = sorted(
-        _rel(p, manifest_root)
-        for p in ccf_dir.glob("histology_*.nrrd")
-        if p.name != "histology_registration.nrrd"
+        _rel(p, manifest_root) for p in ccf_dir.glob("histology_*.nrrd") if p.name != "histology_registration.nrrd"
     )
 
     return HistologyPaths(
