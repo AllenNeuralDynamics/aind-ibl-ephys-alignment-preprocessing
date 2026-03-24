@@ -112,7 +112,9 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
             logger.warning("Did not write files for %s: %s", mr.sorted_recording, result.skipped_reason)
             continue
         if not config.skip_ephys:
-            run_ephys_for_recording(mr, out, config.data_root, processed_recordings)
+            run_ephys_for_recording(
+                mr, out, config.data_root, processed_recordings, num_parallel_jobs=config.num_parallel_jobs
+            )
 
     manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
     dp = build_datapackage(mouse_id, manifest_rows, processed_results, asset_info, out, config)

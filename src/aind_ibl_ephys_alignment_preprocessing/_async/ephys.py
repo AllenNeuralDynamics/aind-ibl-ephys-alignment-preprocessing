@@ -108,6 +108,7 @@ async def process_manifest_async(
                         mr=mr,
                         out=out,
                         data_root=config.data_root,
+                        num_parallel_jobs=config.num_parallel_jobs,
                     ),
                     name=f"ephys-ensure-{mr.sorted_recording}",
                 )

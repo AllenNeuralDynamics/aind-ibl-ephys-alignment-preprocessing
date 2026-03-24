@@ -17,6 +17,7 @@ def run_ephys_for_recording(
     outputs: OutputDirs,
     data_root: Path,
     processed: set[str],
+    num_parallel_jobs: int = 4,
 ) -> None:
     """Run ephys extraction once per unique ``sorted_recording``.
 
@@ -33,6 +34,8 @@ def run_ephys_for_recording(
         Root directory containing input data.
     processed : set[str]
         Set of already-processed ``sorted_recording`` strings for idempotency.
+    num_parallel_jobs : int
+        Number of parallel workers for ``compute_rms`` in ``extract_continuous``.
     """
     sorted_rec = str(row.sorted_recording)
     if sorted_rec in processed:
@@ -51,8 +54,9 @@ def run_ephys_for_recording(
             recording_folder,
             results_folder,
             probe_surface_finding=data_root / str(row.surface_finding),
+            num_parallel_jobs=num_parallel_jobs,
         )
     else:
-        extract_continuous(recording_folder, results_folder)
+        extract_continuous(recording_folder, results_folder, num_parallel_jobs=num_parallel_jobs)
 
     extract_spikes(recording_folder, results_folder)

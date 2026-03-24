@@ -80,6 +80,7 @@ class PipelineConfig(BaseModel, frozen=True):
     # Processing options
     skip_ephys: bool = False
     desired_voxel_size_um: float = 25.0
+    num_parallel_jobs: int = 4
 
     @model_validator(mode="after")
     def _resolve_relative_paths(self) -> PipelineConfig:
