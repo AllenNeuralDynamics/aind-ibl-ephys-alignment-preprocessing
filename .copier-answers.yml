@@ -16,7 +16,7 @@ project_description: Library to prepare histology and ephys for the IBL ephys al
     GUI
 project_name: AIND IBL Ephys Alignment Preprocessing
 project_slug: aind-ibl-ephys-alignment-preprocessing
-publish_to_pypi: false
+publish_to_pypi: true
 python_package_import_name: aind_ibl_ephys_alignment_preprocessing
 python_version: '3.11'
 target_python_version: '3.13'
