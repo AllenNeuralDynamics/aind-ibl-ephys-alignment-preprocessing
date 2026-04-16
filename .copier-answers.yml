@@ -1,12 +1,15 @@
 # Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
-_commit: 0.1.4
+_commit: 0.1.15
 _src_path: /home/galen.lynch/Documents/Code/aind-python-copier-template
 author_email: galen@galenlynch.com
 author_fullname: Galen Lynch
+auto_setup_repo: false
 current_year: '2026'
 github_org: AllenNeuralDynamics
 github_url: https://github.com/AllenNeuralDynamics/aind-ibl-ephys-alignment-preprocessing
+include_claude_md: true
 include_cli: true
+include_commitizen: true
 include_docs: true
 include_notebooks: false
 include_type_hints: true

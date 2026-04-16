@@ -1,34 +1,63 @@
-# CLAUDE.md - aind-ibl-ephys-alignment-preprocessing
+# CLAUDE.md
 
-## Overview
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```bash
+# Install dependencies
+uv sync
+
+# Run all checks (formatting, linting, type checking, tests)
+./scripts/run_linters_and_checks.sh -c
+
+# Run tests
+uv run pytest
+
+# Run a single test file
+uv run pytest tests/test_example.py
+
+# Run a single test by name
+uv run pytest -k "test_name"
+
+# Formatting
+uv run ruff format
+
+# Linting
+uv run ruff check
+uv run ruff check --fix
+
+# Type checking
+uv run mypy
+
+# Spell checking
+uv run codespell --check-filenames
+
+# Build docs
+uv run sphinx-build -b html docs/source/ docs/build/html
+
+```
+
+Always use `uv run` to execute commands, `uv add` to add dependencies, and `uv sync` to set up the environment. Never use bare `pip` or `python`.
+
+## Architecture
+
+This is a Python package using a `src/` layout. Source code lives in `src/aind_ibl_ephys_alignment_preprocessing/`, tests in `tests/`.
+
+- Build system: hatchling
+- Formatting/linting: ruff (line length 120, numpy docstring convention)
+- Testing: pytest with coverage reporting
+- Type checking: mypy (strict mode)
+- Versioning: commitizen (semantic versioning via conventional commits)
+- Documentation: Sphinx with furo theme (`docs/source/`)
+- CLI entry points: defined in `[project.scripts]` in pyproject.toml, implemented in `src/aind_ibl_ephys_alignment_preprocessing/scripts/`
+
+### Overview
 
 Preprocessing pipeline that prepares SmartSPIM histology and Neuropixels ephys
 data for the IBL ephys alignment GUI. Registers histology volumes to the Allen
 CCF, converts Neuroglancer probe-track annotations into atlas coordinates, and
 optionally extracts spike-sorted ephys into IBL ALF format.
-
-## Build & test
-
-```bash
-uv sync                              # Set up dev environment
-./scripts/run_linters_and_checks.sh -c   # Full suite: format + lint + types + docs + spell + tests
-uv run pytest                        # Tests only
-uv run pytest -v -- -k test_name     # Single test
-```
-
-Individual checks:
-```bash
-ruff format src/ tests/              # Format
-ruff check src/ tests/               # Lint
-mypy                                 # Type check (strict mode)
-interrogate -v                       # Docstring coverage (30% threshold)
-codespell --check-filenames          # Spell check
-```
-
-CI runs on Python 3.11 and 3.13 (Ubuntu). Docs build with Sphinx + furo theme,
-`fail-on-warnings: true`.
-
-## Architecture
 
 ### Module layout
 
@@ -100,7 +129,7 @@ aind-ibl-preprocess \
   `_async/histology.py`) have `disallow_untyped_calls = false` due to
   SimpleITK/ANTs lacking stubs.
 - **Ruff rules**: `Q, RUF100, C90, I, F, E, W, D, UP, ANN, PYI`.
-  Tests skip `ANN`.
+  Tests skip `ANN` and `D`.
 - **McCabe complexity**: max 14
 
 ## Testing

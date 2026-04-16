@@ -336,31 +336,28 @@ origin at bregma, in meters.
 
 ## Development
 
-Set up the development environment:
-
+To develop the code, run:
 ```bash
 uv sync
 ```
 
-Run the full linting and testing suite:
+Please test your changes using the full linting and testing suite:
 
 ```bash
 ./scripts/run_linters_and_checks.sh -c
 ```
 
-Or run individual checks:
-
+Or run individual commands:
 ```bash
 uv run --frozen ruff format          # Code formatting
 uv run --frozen ruff check           # Linting
 uv run --frozen mypy                 # Type checking
-uv run --frozen interrogate -v       # Documentation coverage
+uv run --frozen interrogate -v src   # Documentation coverage
 uv run --frozen codespell --check-filenames  # Spell checking
 uv run --frozen pytest --cov aind_ibl_ephys_alignment_preprocessing  # Tests with coverage
 ```
 
 ### Documentation
-
 ```bash
 sphinx-build -b html docs/source/ docs/build/html
 ```

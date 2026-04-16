@@ -49,8 +49,8 @@ main() {
     run ruff check
     echo "+ mypy"
     run mypy
-    echo "+ interrogate -v"
-    run interrogate -v
+    echo "+ interrogate -v src"
+    run interrogate -v src
     echo "+ codespell --check-filenames"
     run codespell --check-filenames
     echo "+ pytest --cov aind_ibl_ephys_alignment_preprocessing$([ -n "$PYTEST_ARGS" ] && printf ' -- %s' "$PYTEST_ARGS")"
