@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from aind_ibl_ephys_alignment_preprocessing.types import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -27,10 +28,13 @@ SCHEMA_VERSION = "1.0.0"
 
 
 class TransformPaths(BaseModel, frozen=True):
-    """Absolute paths to the ANTs transform chain files."""
+    """Paths to the ANTs transform chain files, relative to the manifest root.
 
-    smartspim_asset: str
-    reference_asset: str
+    Paths are POSIX-style and may traverse up (``..``) to reach sibling assets
+    (e.g. the SmartSPIM asset directory). Consumers resolve them against the
+    directory containing ``datapackage.json``.
+    """
+
     image_to_template_affine: str
     image_to_template_warp: str
     template_to_ccf_affine: str
@@ -122,7 +126,7 @@ def build_datapackage(
     # The manifest lives alongside the mouse output root.
     manifest_root = outputs.histology_img.parent
 
-    transforms = _build_transforms(asset_info, config)
+    transforms = _build_transforms(asset_info, config, manifest_root)
     histology = _build_histology(outputs, manifest_root)
     probes = _build_probes(manifest_rows, results, outputs, manifest_root, config)
 
@@ -135,21 +139,29 @@ def build_datapackage(
     )
 
 
-def _build_transforms(asset_info: AssetInfo, config: PipelineConfig) -> TransformPaths:
+def _build_transforms(asset_info: AssetInfo, config: PipelineConfig, manifest_root: Path) -> TransformPaths:
     reg_dir = asset_info.registration_dir_path
+    tmpl_dir = config.template_to_ccf_dir
     return TransformPaths(
-        smartspim_asset=asset_info.asset_path.name,
-        reference_asset=config.template_to_ccf_dir.name,
-        image_to_template_affine=str(reg_dir / "ls_to_template_SyN_0GenericAffine.mat"),
-        image_to_template_warp=str(reg_dir / "ls_to_template_SyN_1InverseWarp.nii.gz"),
-        template_to_ccf_affine=str(config.template_to_ccf_dir / "syn_0GenericAffine.mat"),
-        template_to_ccf_warp=str(config.template_to_ccf_dir / "syn_1InverseWarp.nii.gz"),
+        image_to_template_affine=_rel_up(reg_dir / "ls_to_template_SyN_0GenericAffine.mat", manifest_root),
+        image_to_template_warp=_rel_up(reg_dir / "ls_to_template_SyN_1InverseWarp.nii.gz", manifest_root),
+        template_to_ccf_affine=_rel_up(tmpl_dir / "syn_0GenericAffine.mat", manifest_root),
+        template_to_ccf_warp=_rel_up(tmpl_dir / "syn_1InverseWarp.nii.gz", manifest_root),
     )
 
 
 def _rel(path: Path, root: Path) -> str:
-    """Return *path* relative to *root* as a POSIX string."""
+    """Return *path* relative to *root* as a POSIX string (no ``..``)."""
     return path.relative_to(root).as_posix()
+
+
+def _rel_up(path: Path, root: Path) -> str:
+    """Return *path* relative to *root*, allowing ``..`` traversal.
+
+    Used for sibling-asset references (e.g. the SmartSPIM asset that lives
+    next to the mouse output root rather than inside it).
+    """
+    return Path(os.path.relpath(path, root)).as_posix()
 
 
 def _build_histology(outputs: OutputDirs, manifest_root: Path) -> HistologyPaths:
