@@ -476,6 +476,44 @@ class PipelineValidator:
                         False, category, f"{mr.probe_id}_ephys", f"Ephys folder not found: {recording_folder}"
                     )
 
+                # The runtime strips ``_sorted...`` from the sorted-asset path to locate the raw
+                # session, then expects ``ecephys_clipped/*/*/structure.oebin`` underneath. Probe
+                # for it here so a misnamed/empty asset fails pre-flight rather than 10 ephys
+                # subprocesses deep with a buried OpenEphys ValueError.
+                session_folder = self.config.data_root / mr.sorted_recording.split("_sorted")[0]
+                clipped = next(
+                    (
+                        p
+                        for p in (session_folder / "ecephys_clipped", session_folder / "ecephys" / "ecephys_clipped")
+                        if p.is_dir()
+                    ),
+                    None,
+                )
+                if clipped is None:
+                    self._add_result(
+                        False,
+                        category,
+                        f"{mr.probe_id}_ephys_clipped",
+                        f"No ecephys_clipped/ under {session_folder} (looked at "
+                        "ecephys_clipped/ and ecephys/ecephys_clipped/)",
+                    )
+                elif not any(clipped.glob("*/*/*/structure.oebin")):
+                    self._add_result(
+                        False,
+                        category,
+                        f"{mr.probe_id}_ephys_clipped",
+                        f"No structure.oebin under {clipped} -- "
+                        "asset name in manifest may not match the mounted raw recording",
+                    )
+                else:
+                    self._add_result(
+                        True,
+                        category,
+                        f"{mr.probe_id}_ephys_clipped",
+                        f"Open Ephys structure.oebin reachable under {clipped}",
+                        severity="info",
+                    )
+
             if mr.surface_finding is not None:
                 surface_path = self.config.data_root / mr.surface_finding
                 if surface_path.exists():
