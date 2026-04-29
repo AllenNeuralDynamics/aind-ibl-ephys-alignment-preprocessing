@@ -71,6 +71,7 @@ pydocstyle = { convention = "numpy" }
 
 [tool.codespell]
 skip = ".git,*.pdf,*.svg,./docs/build,uv.lock,scratch"
+ignore-words-list = "probem"
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --tb=short --cov=src --cov-report=term-missing --cov-fail-under=0"

@@ -19,7 +19,15 @@ from aind_ibl_ephys_alignment_preprocessing.types import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "2.0.0"
+# Why 2.0.0: probes were previously a flat ``dict[probe_name, ProbeEntry]``
+# which silently merged rows from different recordings sharing a probe_name
+# (e.g. the same physical probe re-inserted for a follow-up recording) into
+# one entry, since ``probe_name`` alone is not a unique key. The unique key
+# is the triplet ``(recording_id, probe_name, probe_shank)``. The fix nests
+# probes by recording_id, then by probe_name, with shanks collapsed into the
+# entry's ``xyz_picks`` list. The shape is incompatible with 1.x, so it's a
+# major bump.
 
 
 # ---------------------------------------------------------------------------
@@ -74,10 +82,15 @@ class XyzPicks(BaseModel, frozen=True):
 
 
 class ProbeEntry(BaseModel, frozen=True):
-    """Manifest entry for a single probe."""
+    """Manifest entry for a single probe within a recording session.
+
+    Uniquely identified by the ``(recording_id, probe_name)`` pair from the
+    parent dict path; ``recording_id`` and ``probe_name`` are therefore not
+    repeated as fields here. Multi-shank probes collapse into a single entry
+    with one ``XyzPicks`` per shank.
+    """
 
     probe_id: str
-    recording_id: str
     num_shanks: int
     ephys: str | None = None
     xyz_picks: list[XyzPicks]
@@ -90,7 +103,9 @@ class DataPackage(BaseModel, frozen=True):
     mouse_id: str
     transforms: TransformPaths
     histology: HistologyPaths
-    probes: dict[str, ProbeEntry]
+    # Nested ``recording_id -> probe_name -> ProbeEntry``. Per-shank rows
+    # collapse into ``ProbeEntry.xyz_picks``.
+    probes: dict[str, dict[str, ProbeEntry]]
 
 
 # ---------------------------------------------------------------------------
@@ -197,18 +212,21 @@ def _build_probes(
     outputs: OutputDirs,
     manifest_root: Path,
     config: PipelineConfig,
-) -> dict[str, ProbeEntry]:
+) -> dict[str, dict[str, ProbeEntry]]:
     # Build lookup of successful probe_ids
     successful = {r.probe_id for r in results if r.wrote_files}
 
-    # Group rows by probe_name (multi-shank probes share probe_name)
-    groups: dict[str, list[ManifestRow]] = defaultdict(list)
+    # Group rows by (recording_id, probe_name) — the unique probe key.
+    # Rows that differ only in probe_shank collapse into one entry's
+    # xyz_picks list (multi-shank probe). The same probe_name appearing
+    # under two recording_ids stays distinct.
+    groups: dict[tuple[str, str], list[ManifestRow]] = defaultdict(list)
     for row in manifest_rows:
         if str(row.probe_id) in successful:
-            groups[row.probe_name].append(row)
+            groups[(row.recording_id, row.probe_name)].append(row)
 
-    probes: dict[str, ProbeEntry] = {}
-    for probe_name, rows in groups.items():
+    probes: dict[str, dict[str, ProbeEntry]] = {}
+    for (recording_id, probe_name), rows in groups.items():
         has_shanks = any(r.probe_shank is not None for r in rows)
         num_shanks = len(rows) if has_shanks else 1
 
@@ -239,9 +257,8 @@ def _build_probes(
         ephys_dir = first_row.gui_folder(outputs) / "spikes"
         ephys_path = _rel(ephys_dir, manifest_root) if not config.skip_ephys else None
 
-        probes[probe_name] = ProbeEntry(
+        probes.setdefault(recording_id, {})[probe_name] = ProbeEntry(
             probe_id=first_row.probe_id,
-            recording_id=first_row.recording_id,
             num_shanks=num_shanks,
             ephys=ephys_path,
             xyz_picks=xyz_picks_list,
