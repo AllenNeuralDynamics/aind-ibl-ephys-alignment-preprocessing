@@ -23,9 +23,9 @@ def _fake_config(template_to_ccf_dir: Path) -> SimpleNamespace:
     return SimpleNamespace(template_to_ccf_dir=template_to_ccf_dir)
 
 
-def test_schema_version_is_1_1_0():
-    """The datapackage schema has been bumped to 1.1.0 (relative transforms)."""
-    assert SCHEMA_VERSION == "1.1.0"
+def test_schema_version_is_2_0_0():
+    """Schema is 2.0.0 — probes are nested by ``recording_id`` then ``probe_name``."""
+    assert SCHEMA_VERSION == "2.0.0"
 
 
 def test_transforms_are_relative_to_manifest_root(tmp_path):
@@ -128,3 +128,103 @@ def test_datapackage_round_trip(tmp_path):
     path = write_datapackage(dp, tmp_path)
     loaded = load_datapackage(path)
     assert loaded == dp
+
+
+def _fake_outputs(tmp_path: Path) -> SimpleNamespace:
+    # _build_probes only reads tracks_root.parent (via row.gui_folder(outputs))
+    # to build per-recording GUI folders. Make tracks_root a child of the
+    # mouse root so gui_folder returns ``<mouse_root>/<recording_id>/<probe_name>``.
+    return SimpleNamespace(tracks_root=tmp_path / "_unused_tracks")
+
+
+def _fake_pipeline_config(skip_ephys: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(skip_ephys=skip_ephys)
+
+
+def _fake_row(*, probe_id: str, probe_name: str, recording_id: str, probe_shank=None):
+    """Build a stand-in for ManifestRow exposing only what _build_probes reads."""
+    sorted_recording = f"{recording_id}_sorted_2025-01-01"
+    return SimpleNamespace(
+        probe_id=probe_id,
+        probe_name=probe_name,
+        recording_id=recording_id,
+        sorted_recording=sorted_recording,
+        probe_shank=probe_shank,
+        gui_folder=lambda outputs, _rec=recording_id, _name=probe_name: (
+            outputs.tracks_root.parent / _rec / _name
+        ),
+    )
+
+
+def test_probes_nested_by_recording_then_name(tmp_path):
+    """Probes are grouped under recording_id, then probe_name."""
+    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    rows = [
+        _fake_row(probe_id="pid-1", probe_name="probeA", recording_id="rec1"),
+        _fake_row(probe_id="pid-2", probe_name="probeB", recording_id="rec1"),
+        _fake_row(probe_id="pid-3", probe_name="probeC", recording_id="rec2"),
+    ]
+    results = [
+        ProcessResult(probe_id=r.probe_id, recording_id=r.recording_id, wrote_files=True)
+        for r in rows
+    ]
+
+    probes = _build_probes(
+        rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config()
+    )
+
+    assert set(probes.keys()) == {"rec1", "rec2"}
+    assert set(probes["rec1"].keys()) == {"probeA", "probeB"}
+    assert set(probes["rec2"].keys()) == {"probeC"}
+
+
+def test_same_probe_name_across_recordings_kept_distinct(tmp_path):
+    """Same probe_name in two recordings stays distinct (the bug fixed in 2.0.0)."""
+    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    # Same probe_name "45883-1" appears in rec1 and rec2 (re-inserted probe).
+    rows = [
+        _fake_row(probe_id="pid-1a", probe_name="45883-1", recording_id="rec1"),
+        _fake_row(probe_id="pid-1b", probe_name="45883-1", recording_id="rec2"),
+    ]
+    results = [
+        ProcessResult(probe_id=r.probe_id, recording_id=r.recording_id, wrote_files=True)
+        for r in rows
+    ]
+
+    probes = _build_probes(
+        rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config()
+    )
+
+    assert probes["rec1"]["45883-1"].probe_id == "pid-1a"
+    assert probes["rec2"]["45883-1"].probe_id == "pid-1b"
+    # Each entry has exactly one shank — they must NOT be merged into a
+    # 2-shank probe under one recording (the pre-2.0.0 silent-merge bug).
+    assert probes["rec1"]["45883-1"].num_shanks == 1
+    assert probes["rec2"]["45883-1"].num_shanks == 1
+
+
+def test_multi_shank_collapses_into_one_probe(tmp_path):
+    """Rows differing only by probe_shank collapse into one ProbeEntry."""
+    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    rows = [
+        _fake_row(probe_id="pid", probe_name="probeM", recording_id="rec1", probe_shank=0),
+        _fake_row(probe_id="pid", probe_name="probeM", recording_id="rec1", probe_shank=1),
+    ]
+    results = [
+        ProcessResult(probe_id="pid", recording_id="rec1", wrote_files=True),
+    ]
+
+    probes = _build_probes(
+        rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config()
+    )
+
+    assert list(probes["rec1"].keys()) == ["probeM"]
+    entry = probes["rec1"]["probeM"]
+    assert entry.num_shanks == 2
+    assert {pk.shank for pk in entry.xyz_picks} == {1, 2}  # 1-based in datapackage
