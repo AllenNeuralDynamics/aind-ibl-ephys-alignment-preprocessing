@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.0 (2026-07-08)
+
+### BREAKING CHANGE
+
+- datapackage schema bumped to 1.1.0. Consumers must
+resolve transform paths against the datapackage directory.
+
+### Feat
+
+- nest probes by recording_id (schema 2.0.0)
+- record transforms as paths relative to the manifest root
+
 ## v0.2.0 (2026-04-26)
 
 ### Feat
