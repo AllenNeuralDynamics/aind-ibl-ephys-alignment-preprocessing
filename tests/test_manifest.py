@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from aind_ibl_ephys_alignment_preprocessing.manifest import (
     SCHEMA_VERSION,
     DataPackage,
@@ -125,7 +127,9 @@ def test_datapackage_round_trip(tmp_path):
         ),
         probes={},
     )
-    path = write_datapackage(dp, tmp_path)
+    # validate=False: this exercises serialization round-trip, not on-disk
+    # path existence (the fake paths above don't exist under tmp_path).
+    path = write_datapackage(dp, tmp_path, validate=False)
     loaded = load_datapackage(path)
     assert loaded == dp
 
@@ -214,3 +218,130 @@ def test_multi_shank_collapses_into_one_probe(tmp_path):
     entry = probes["rec1"]["probeM"]
     assert entry.num_shanks == 2
     assert {pk.shank for pk in entry.xyz_picks} == {1, 2}  # 1-based in datapackage
+
+
+def test_ephys_dir_is_probe_gui_folder_not_spikes_subdir(tmp_path):
+    """ephys points at the probe gui_folder (where the ALF collection lives),
+    not a nonexistent ``spikes`` subdirectory (regression for the GUI load bug)."""
+    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    rows = [_fake_row(probe_id="pid-1", probe_name="46101", recording_id="rec1")]
+    results = [ProcessResult(probe_id="pid-1", recording_id="rec1", wrote_files=True)]
+
+    probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
+
+    ephys = probes["rec1"]["46101"].ephys
+    assert ephys == "rec1/46101"
+    assert not ephys.endswith("/spikes")
+    # xyz_picks resolve to the same folder — ephys and picks are co-located.
+    assert probes["rec1"]["46101"].xyz_picks[0].ccf == "rec1/46101/xyz_picks.json"
+
+
+def _touch(p: Path) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("x")
+
+
+def _valid_datapackage_on_disk(root: Path) -> DataPackage:
+    """Lay down a minimal valid output tree under *root* and return a matching
+    DataPackage whose relative paths all resolve."""
+    from aind_ibl_ephys_alignment_preprocessing.manifest import (
+        CcfSpaceHistology,
+        HistologyPaths,
+        ImageSpaceHistology,
+        ProbeEntry,
+        XyzPicks,
+    )
+
+    for rel in [
+        "tx/ita.mat",
+        "tx/itw.nii.gz",
+        "tx/tca.mat",
+        "tx/tcw.nii.gz",
+        "image_space_histology/histology_registration.nrrd",
+        "image_space_histology/histology_registration_pipeline.nrrd",
+        "image_space_histology/ccf_in_mouse.nrrd",
+        "image_space_histology/labels_in_mouse.nrrd",
+        "ccf_space_histology/histology_registration.nrrd",
+        "rec1/46101/xyz_picks.json",
+        "rec1/46101/xyz_picks_image_space.json",
+        "rec1/46101/channels.localCoordinates.npy",
+    ]:
+        _touch(root / rel)
+
+    return DataPackage(
+        schema_version=SCHEMA_VERSION,
+        mouse_id="m1",
+        transforms=TransformPaths(
+            image_to_template_affine="tx/ita.mat",
+            image_to_template_warp="tx/itw.nii.gz",
+            template_to_ccf_affine="tx/tca.mat",
+            template_to_ccf_warp="tx/tcw.nii.gz",
+        ),
+        histology=HistologyPaths(
+            image_space=ImageSpaceHistology(
+                registration="image_space_histology/histology_registration.nrrd",
+                registration_pipeline="image_space_histology/histology_registration_pipeline.nrrd",
+                ccf_template="image_space_histology/ccf_in_mouse.nrrd",
+                labels="image_space_histology/labels_in_mouse.nrrd",
+            ),
+            ccf_space=CcfSpaceHistology(
+                registration="ccf_space_histology/histology_registration.nrrd",
+            ),
+        ),
+        probes={
+            "rec1": {
+                "46101": ProbeEntry(
+                    probe_id="pid-1",
+                    num_shanks=1,
+                    ephys="rec1/46101",
+                    xyz_picks=[
+                        XyzPicks(
+                            ccf="rec1/46101/xyz_picks.json",
+                            image_space="rec1/46101/xyz_picks_image_space.json",
+                            shank=None,
+                        )
+                    ],
+                )
+            }
+        },
+    )
+
+
+def test_write_datapackage_passes_when_all_paths_exist(tmp_path):
+    """A datapackage whose paths all resolve writes and round-trips."""
+    from aind_ibl_ephys_alignment_preprocessing.manifest import (
+        load_datapackage,
+        write_datapackage,
+    )
+
+    dp = _valid_datapackage_on_disk(tmp_path)
+    assert dp.missing_paths(tmp_path) == []
+    path = write_datapackage(dp, tmp_path)  # validate=True by default
+    assert load_datapackage(path) == dp
+
+
+def test_write_datapackage_raises_on_bad_ephys_dir(tmp_path):
+    """The original bug: ephys points at a dir lacking the ALF channel file."""
+    from aind_ibl_ephys_alignment_preprocessing.manifest import (
+        DataPackageError,
+        write_datapackage,
+    )
+
+    dp = _valid_datapackage_on_disk(tmp_path)
+    entry = dp.probes["rec1"]["46101"].model_copy(update={"ephys": "rec1/46101/spikes"})
+    bad = dp.model_copy(update={"probes": {"rec1": {"46101": entry}}})
+
+    assert "rec1/46101/spikes/ (ephys directory)" in bad.missing_paths(tmp_path)
+    with pytest.raises(DataPackageError, match="not found"):
+        write_datapackage(bad, tmp_path)
+    # Nothing was written.
+    assert not (tmp_path / "datapackage.json").exists()
+
+
+def test_missing_file_is_reported(tmp_path):
+    """A missing referenced file (not just ephys) is flagged."""
+    dp = _valid_datapackage_on_disk(tmp_path)
+    (tmp_path / "image_space_histology/labels_in_mouse.nrrd").unlink()
+    assert "image_space_histology/labels_in_mouse.nrrd" in dp.missing_paths(tmp_path)

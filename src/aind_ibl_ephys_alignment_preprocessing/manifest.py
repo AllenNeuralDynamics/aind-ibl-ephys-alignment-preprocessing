@@ -96,6 +96,16 @@ class ProbeEntry(BaseModel, frozen=True):
     xyz_picks: list[XyzPicks]
 
 
+class DataPackageError(Exception):
+    """Raised when a datapackage references paths that are missing on disk."""
+
+
+# File the GUI loads first from each ephys collection dir (load_data_local.py).
+# Its presence is the load-bearing signal that ``ephys`` points at a real ALF
+# collection rather than an empty/wrong directory.
+_REQUIRED_EPHYS_FILE = "channels.localCoordinates.npy"
+
+
 class DataPackage(BaseModel, frozen=True):
     """Top-level datapackage manifest for preprocessing outputs."""
 
@@ -106,6 +116,76 @@ class DataPackage(BaseModel, frozen=True):
     # Nested ``recording_id -> probe_name -> ProbeEntry``. Per-shank rows
     # collapse into ``ProbeEntry.xyz_picks``.
     probes: dict[str, dict[str, ProbeEntry]]
+
+    def referenced_files(self) -> list[str]:
+        """Every relative *file* path this datapackage points at.
+
+        Excludes ``ephys`` entries, which are directories (see
+        :meth:`referenced_ephys_dirs`).
+        """
+        paths: list[str] = [
+            self.transforms.image_to_template_affine,
+            self.transforms.image_to_template_warp,
+            self.transforms.template_to_ccf_affine,
+            self.transforms.template_to_ccf_warp,
+            self.histology.image_space.registration,
+            self.histology.image_space.registration_pipeline,
+            self.histology.image_space.ccf_template,
+            self.histology.image_space.labels,
+            *self.histology.image_space.additional_channels,
+            self.histology.ccf_space.registration,
+            *self.histology.ccf_space.additional_channels,
+        ]
+        for recording in self.probes.values():
+            for probe in recording.values():
+                for xp in probe.xyz_picks:
+                    paths.append(xp.ccf)
+                    paths.append(xp.image_space)
+        return paths
+
+    def referenced_ephys_dirs(self) -> list[str]:
+        """Relative ephys collection directories (one per probe with ephys)."""
+        return [
+            probe.ephys for recording in self.probes.values() for probe in recording.values() if probe.ephys is not None
+        ]
+
+    def missing_paths(self, root: Path) -> list[str]:
+        """Return referenced paths that do not exist under *root*.
+
+        *root* is the directory that will hold ``datapackage.json``; all stored
+        paths are relative to it. Each ``ephys`` entry must be a directory
+        containing ``channels.localCoordinates.npy`` (what the GUI loads first),
+        so a wrong ephys directory is reported rather than passing silently.
+        """
+        root = Path(root)
+        missing: list[str] = []
+        for rel in self.referenced_files():
+            if not (root / rel).exists():
+                missing.append(rel)
+        for rel in self.referenced_ephys_dirs():
+            ephys = root / rel
+            if not ephys.is_dir():
+                missing.append(f"{rel}/ (ephys directory)")
+            elif not (ephys / _REQUIRED_EPHYS_FILE).is_file():
+                missing.append(f"{rel}/{_REQUIRED_EPHYS_FILE}")
+        return sorted(missing)
+
+    def validate_paths(self, root: Path) -> None:
+        """Raise :class:`DataPackageError` if any referenced path is missing.
+
+        Parameters
+        ----------
+        root : Path
+            Directory the paths are relative to (where ``datapackage.json``
+            will be written).
+        """
+        missing = self.missing_paths(root)
+        if missing:
+            listing = "\n  ".join(missing)
+            raise DataPackageError(
+                f"datapackage for mouse {self.mouse_id!r} references "
+                f"{len(missing)} path(s) not found under {root}:\n  {listing}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -252,9 +332,12 @@ def _build_probes(
                 )
             )
 
-        # Ephys path (same for all shanks of a probe)
+        # Ephys path (same for all shanks of a probe). The conversion writes
+        # the ALF collection (spikes/clusters/channels.*) directly into the
+        # probe's gui_folder -- NOT a "spikes" subdirectory -- so ephys_dir is
+        # the gui_folder itself, matching where xyz_picks.json also lives.
         first_row = rows[0]
-        ephys_dir = first_row.gui_folder(outputs) / "spikes"
+        ephys_dir = first_row.gui_folder(outputs)
         ephys_path = _rel(ephys_dir, manifest_root) if not config.skip_ephys else None
 
         probes.setdefault(recording_id, {})[probe_name] = ProbeEntry(
@@ -272,14 +355,31 @@ def _build_probes(
 # ---------------------------------------------------------------------------
 
 
-def write_datapackage(dp: DataPackage, output_dir: Path) -> Path:
+def write_datapackage(dp: DataPackage, output_dir: Path, *, validate: bool = True) -> Path:
     """Write *dp* as ``datapackage.json`` in *output_dir*.
+
+    Parameters
+    ----------
+    dp : DataPackage
+        The datapackage to serialize.
+    output_dir : Path
+        Directory to write ``datapackage.json`` into. All paths in *dp* are
+        relative to this directory.
+    validate : bool
+        When True (default), verify every path *dp* references exists under
+        *output_dir* before writing, raising :class:`DataPackageError` on any
+        miss. This turns a well-typed but dangling manifest (e.g. an ephys dir
+        pointing at a nonexistent subdirectory) into a loud failure at write
+        time instead of a runtime error in the GUI. Set False to serialize
+        without touching the filesystem (round-trip tests, fixtures).
 
     Returns
     -------
     Path
         The path of the written file.
     """
+    if validate:
+        dp.validate_paths(output_dir)
     path = output_dir / "datapackage.json"
     path.write_text(dp.model_dump_json(indent=2, exclude_none=True))
     return path
