@@ -19,15 +19,13 @@ from aind_ibl_ephys_alignment_preprocessing.types import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "2.0.0"
-# Why 2.0.0: probes were previously a flat ``dict[probe_name, ProbeEntry]``
-# which silently merged rows from different recordings sharing a probe_name
-# (e.g. the same physical probe re-inserted for a follow-up recording) into
-# one entry, since ``probe_name`` alone is not a unique key. The unique key
-# is the triplet ``(recording_id, probe_name, probe_shank)``. The fix nests
-# probes by recording_id, then by probe_name, with shanks collapsed into the
-# entry's ``xyz_picks`` list. The shape is incompatible with 1.x, so it's a
-# major bump.
+SCHEMA_VERSION = "2.1.0"
+# Why 2.1.0: 2.0.0 fixed cross-recording probe-name collisions by nesting
+# probes under recording_id. 2.1.0 keeps that shape but makes the inner key
+# explicitly be the ephys ALF collection, and adds logical_probe plus separate
+# histology/ephys shank fields so split-stream quadbase probes and single-
+# stream multi-shank probes are both representable without reinterpreting
+# probe_name/probe_shank.
 
 
 # ---------------------------------------------------------------------------
@@ -78,21 +76,34 @@ class XyzPicks(BaseModel, frozen=True):
 
     ccf: str
     image_space: str
+    histology_track_id: str | None = None
+    histology_shank: int | None = None
+    ephys_shank: int | None = None
     shank: int | None = None
 
 
-class ProbeEntry(BaseModel, frozen=True):
-    """Manifest entry for a single probe within a recording session.
+class ChannelTablePaths(BaseModel, frozen=True):
+    """Paths to the producer-owned ephys channel geometry table."""
 
-    Uniquely identified by the ``(recording_id, probe_name)`` pair from the
-    parent dict path; ``recording_id`` and ``probe_name`` are therefore not
-    repeated as fields here. Multi-shank probes collapse into a single entry
-    with one ``XyzPicks`` per shank.
+    local_coordinates: str
+    raw_ind: str
+    shank_ind: str
+
+
+class ProbeEntry(BaseModel, frozen=True):
+    """Manifest entry for one ephys collection within a recording session.
+
+    Uniquely identified by the ``(recording_id, ephys_collection)`` pair from
+    the parent dict path. ``logical_probe`` may be shared by multiple ephys
+    collections when the acquisition split one physical probe into streams.
     """
 
     probe_id: str
+    logical_probe: str | None = None
+    ephys_collection: str | None = None
     num_shanks: int
     ephys: str | None = None
+    channel_table: ChannelTablePaths | None = None
     xyz_picks: list[XyzPicks]
 
 
@@ -113,8 +124,8 @@ class DataPackage(BaseModel, frozen=True):
     mouse_id: str
     transforms: TransformPaths
     histology: HistologyPaths
-    # Nested ``recording_id -> probe_name -> ProbeEntry``. Per-shank rows
-    # collapse into ``ProbeEntry.xyz_picks``.
+    # Nested ``recording_id -> ephys_collection -> ProbeEntry``. Per-shank
+    # rows collapse into ``ProbeEntry.xyz_picks``.
     probes: dict[str, dict[str, ProbeEntry]]
 
     def referenced_files(self) -> list[str]:
@@ -138,6 +149,10 @@ class DataPackage(BaseModel, frozen=True):
         ]
         for recording in self.probes.values():
             for probe in recording.values():
+                if probe.channel_table is not None:
+                    paths.append(probe.channel_table.local_coordinates)
+                    paths.append(probe.channel_table.raw_ind)
+                    paths.append(probe.channel_table.shank_ind)
                 for xp in probe.xyz_picks:
                     paths.append(xp.ccf)
                     paths.append(xp.image_space)
@@ -296,58 +311,110 @@ def _build_probes(
     # Build lookup of successful probe_ids
     successful = {r.probe_id for r in results if r.wrote_files}
 
-    # Group rows by (recording_id, probe_name) — the unique probe key.
-    # Rows that differ only in probe_shank collapse into one entry's
-    # xyz_picks list (multi-shank probe). The same probe_name appearing
-    # under two recording_ids stays distinct.
+    # Group rows by (recording_id, ephys_collection) — the ephys collection is
+    # the ALF output folder created by aind-ephys-ibl-gui-conversion. Rows that
+    # differ only in ephys_shank collapse into one entry's xyz_picks list. The
+    # same collection label under two recording_ids stays distinct.
     groups: dict[tuple[str, str], list[ManifestRow]] = defaultdict(list)
     for row in manifest_rows:
-        if str(row.probe_id) in successful:
-            groups[(row.recording_id, row.probe_name)].append(row)
+        if _row_histology_track_id(row) in successful:
+            groups[(row.recording_id, _row_ephys_collection(row))].append(row)
 
     probes: dict[str, dict[str, ProbeEntry]] = {}
-    for (recording_id, probe_name), rows in groups.items():
-        has_shanks = any(r.probe_shank is not None for r in rows)
-        num_shanks = len(rows) if has_shanks else 1
+    for (recording_id, ephys_collection), rows in groups.items():
+        logical_probes = {_row_logical_probe(r) for r in rows}
+        if len(logical_probes) != 1:
+            raise ValueError(
+                "Rows for one ephys_collection must share logical_probe: "
+                f"{recording_id}/{ephys_collection} has {sorted(logical_probes)}"
+            )
+        ephys_shanks = {s for s in (_row_ephys_shank(r) for r in rows) if s is not None}
+        num_shanks = len(ephys_shanks) if ephys_shanks else 1
 
         # Build xyz_picks list
         xyz_picks_list: list[XyzPicks] = []
         for row in rows:
             gui_folder = row.gui_folder(outputs)
-            if row.probe_shank is None:
+            histology_shank = _row_histology_shank(row)
+            ephys_shank = _row_ephys_shank(row)
+            file_shank = histology_shank if histology_shank is not None else ephys_shank
+            if file_shank is None:
                 gui_ccf = "xyz_picks.json"
                 gui_img = "xyz_picks_image_space.json"
                 shank = None
             else:
-                shank_id = int(row.probe_shank) + 1
+                shank_id = int(file_shank) + 1
                 gui_ccf = f"xyz_picks_shank{shank_id}.json"
                 gui_img = f"xyz_picks_shank{shank_id}_image_space.json"
-                shank = shank_id
+                shank = int(ephys_shank) + 1 if ephys_shank is not None else shank_id
 
             xyz_picks_list.append(
                 XyzPicks(
                     ccf=_rel(gui_folder / gui_ccf, manifest_root),
                     image_space=_rel(gui_folder / gui_img, manifest_root),
+                    histology_track_id=_row_histology_track_id(row),
+                    histology_shank=histology_shank,
+                    ephys_shank=ephys_shank,
                     shank=shank,
                 )
             )
 
-        # Ephys path (same for all shanks of a probe). The conversion writes
-        # the ALF collection (spikes/clusters/channels.*) directly into the
-        # probe's gui_folder -- NOT a "spikes" subdirectory -- so ephys_dir is
-        # the gui_folder itself, matching where xyz_picks.json also lives.
+        # Ephys path (same for all shanks of an ephys collection). The
+        # conversion writes the ALF collection (spikes/clusters/channels.*)
+        # directly into gui_folder -- NOT a "spikes" subdirectory.
         first_row = rows[0]
         ephys_dir = first_row.gui_folder(outputs)
         ephys_path = _rel(ephys_dir, manifest_root) if not config.skip_ephys else None
+        channel_table = (
+            ChannelTablePaths(
+                local_coordinates=_rel(
+                    ephys_dir / "channels.localCoordinates.npy",
+                    manifest_root,
+                ),
+                raw_ind=_rel(ephys_dir / "channels.rawInd.npy", manifest_root),
+                shank_ind=_rel(ephys_dir / "channels.shankInd.npy", manifest_root),
+            )
+            if not config.skip_ephys
+            else None
+        )
 
-        probes.setdefault(recording_id, {})[probe_name] = ProbeEntry(
-            probe_id=first_row.probe_id,
+        probes.setdefault(recording_id, {})[ephys_collection] = ProbeEntry(
+            probe_id=_row_histology_track_id(first_row),
+            logical_probe=_row_logical_probe(first_row),
+            ephys_collection=ephys_collection,
             num_shanks=num_shanks,
             ephys=ephys_path,
+            channel_table=channel_table,
             xyz_picks=xyz_picks_list,
         )
 
     return probes
+
+
+def _row_histology_track_id(row: ManifestRow) -> str:
+    return str(getattr(row, "histology_track_id", None) or row.probe_id)
+
+
+def _row_logical_probe(row: ManifestRow) -> str:
+    return str(getattr(row, "logical_probe", None) or getattr(row, "ephys_collection", None) or row.probe_name)
+
+
+def _row_ephys_collection(row: ManifestRow) -> str:
+    return str(getattr(row, "ephys_collection", None) or row.probe_name)
+
+
+def _row_histology_shank(row: ManifestRow) -> int | None:
+    value = getattr(row, "histology_shank", None)
+    if value is None:
+        value = getattr(row, "probe_shank", None)
+    return int(value) if value is not None else None
+
+
+def _row_ephys_shank(row: ManifestRow) -> int | None:
+    value = getattr(row, "ephys_shank", None)
+    if value is None:
+        value = getattr(row, "probe_shank", None)
+    return int(value) if value is not None else None
 
 
 # ---------------------------------------------------------------------------

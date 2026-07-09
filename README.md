@@ -159,8 +159,9 @@ Each of these is described in detail below.
 
 ### Manifest CSV
 
-A CSV file describing which probes to process. Each row represents one probe
-(or one shank of a multi-shank probe).
+A CSV file describing how histology tracks map onto ephys collections. Each
+row represents one histology track (or one histology shank) mapped to one
+ephys collection and ephys shank.
 
 **Required columns:**
 
@@ -169,31 +170,43 @@ A CSV file describing which probes to process. Each row represents one probe
 | `mouseid` | Mouse identifier. All rows must reference the same mouse. |
 | `sorted_recording` | Name of the spike-sorted recording folder under `data_root`. The recording ID is derived by stripping a `_sorted` suffix if present. |
 | `probe_file` | Basename (without extension) of the Neuroglancer annotation file. Resolved via glob `*/<probe_file>.<annotation_format>` under `data_root`. |
-| `probe_id` | Unique probe identifier. |
-| `probe_name` | Subfolder name used for GUI output artifacts. |
+| `histology_track_id` | Neuroglancer layer / histology track identifier. Legacy alias: `probe_id`. |
+| `ephys_collection` | Ephys ALF output folder produced by `aind-ephys-ibl-gui-conversion` (for example `ProbeA`). Legacy alias: `probe_name`. |
 
 **Optional columns:**
 
 | Column | Default | Description |
 |--------|---------|-------------|
 | `annotation_format` | `json` | File extension for the annotation file (lowercase). |
-| `probe_shank` | *null* | 0-based shank index for multi-shank probes. Leave empty for single-shank. |
+| `logical_probe` | `ephys_collection` | Physical/logical probe identity. Split quadbase streams can share one `logical_probe` while using different `ephys_collection` values. |
+| `histology_shank` | `probe_shank` | 0-based shank index in the physical/histology probe. |
+| `ephys_shank` | `probe_shank`, else `histology_shank` | 0-based shank index within `ephys_collection`. For split quadbase streams this is usually `0` even when `histology_shank` is 0..3. |
+| `probe_id` | *legacy* | Alias for `histology_track_id`. |
+| `probe_name` | *legacy* | Alias for `ephys_collection`. |
+| `probe_shank` | *legacy* | Alias for both `histology_shank` and `ephys_shank`. |
 | `surface_finding` | *null* | Path (relative to `data_root`) to a surface-finding file. |
 
 **Constraints:**
 - All rows must have the same `mouseid`.
-- The tuple `(recording_id, probe_name, probe_shank)` must be unique across
-  rows.
-- For multi-shank probes, multiple rows can share the same `probe_name` but
-  must differ in `probe_shank`.
+- The tuple `(mouseid, histology_track_id, histology_shank)` must be unique.
+- The tuple `(recording_id, ephys_collection, histology_shank)` must be unique
+  for GUI filename generation.
+- The tuple `(recording_id, ephys_collection, ephys_shank)` must be unique for
+  ephys shank mapping.
+- For single-stream multi-shank probes, multiple rows share one
+  `ephys_collection` and differ in `ephys_shank`.
+- For split quadbase probes, multiple rows can share one `logical_probe` but
+  use different `ephys_collection` values; each collection can have
+  `ephys_shank=0`.
 
 **Example:**
 
 ```csv
-mouseid,sorted_recording,probe_file,probe_id,probe_name,probe_shank
-mouse001,2024-06-01_rec_sorted,track_annotations_probeA,A0001,probeA,
-mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank0,B0001_s0,probeB,0
-mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank1,B0001_s1,probeB,1
+mouseid,sorted_recording,probe_file,histology_track_id,logical_probe,ephys_collection,histology_shank,ephys_shank
+mouse001,2024-06-01_rec_sorted,track_annotations_probeA,A0001,probeA,ProbeA,,
+mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank0,B0001,probeB,ProbeB,0,0
+mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank1,B0001,probeB,ProbeB,1,1
+mouse001,2024-06-01_rec_sorted,track_annotations_quad_shank3,Q0001,quad0,ProbeD,3,0
 ```
 
 ### Neuroglancer JSON
@@ -274,11 +287,14 @@ results_root/
     |   +-- datapackage.json                  # Machine-readable output manifest
     |
     +-- <recording_id>/
-        +-- <probe_name>/
+        +-- <ephys_collection>/
             |-- xyz_picks.json                # Probe track picks (CCF coordinates)
             |-- xyz_picks_image_space.json    # Probe track picks (image space)
             |-- xyz_picks_shank<N>.json       # Per-shank picks (multi-shank only)
-            +-- spikes/                       # Ephys ALF output (if not skipped)
+            |-- channels.localCoordinates.npy  # Ephys channel table
+            |-- channels.rawInd.npy
+            |-- channels.shankInd.npy
+            +-- band_corr/                    # Full matrices + row_channels.json
 ```
 
 The `datapackage.json` file contains a structured manifest of all outputs,

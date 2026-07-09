@@ -25,9 +25,9 @@ def _fake_config(template_to_ccf_dir: Path) -> SimpleNamespace:
     return SimpleNamespace(template_to_ccf_dir=template_to_ccf_dir)
 
 
-def test_schema_version_is_2_0_0():
-    """Schema is 2.0.0 — probes are nested by ``recording_id`` then ``probe_name``."""
-    assert SCHEMA_VERSION == "2.0.0"
+def test_schema_version_is_2_1_0():
+    """Schema is 2.1.0 — probe keys now mean ``ephys_collection``."""
+    assert SCHEMA_VERSION == "2.1.0"
 
 
 def test_transforms_are_relative_to_manifest_root(tmp_path):
@@ -148,13 +148,45 @@ def _fake_pipeline_config(skip_ephys: bool = False) -> SimpleNamespace:
 def _fake_row(*, probe_id: str, probe_name: str, recording_id: str, probe_shank=None):
     """Build a stand-in for ManifestRow exposing only what _build_probes reads."""
     sorted_recording = f"{recording_id}_sorted_2025-01-01"
+    ephys_collection = probe_name
     return SimpleNamespace(
         probe_id=probe_id,
-        probe_name=probe_name,
+        probe_name=ephys_collection,
+        histology_track_id=probe_id,
+        logical_probe=ephys_collection,
+        ephys_collection=ephys_collection,
         recording_id=recording_id,
         sorted_recording=sorted_recording,
         probe_shank=probe_shank,
-        gui_folder=lambda outputs, _rec=recording_id, _name=probe_name: outputs.tracks_root.parent / _rec / _name,
+        histology_shank=probe_shank,
+        ephys_shank=probe_shank,
+        gui_folder=lambda outputs, _rec=recording_id, _name=ephys_collection: outputs.tracks_root.parent / _rec / _name,
+    )
+
+
+def _fake_row_explicit(
+    *,
+    histology_track_id: str,
+    logical_probe: str,
+    ephys_collection: str,
+    recording_id: str,
+    histology_shank=None,
+    ephys_shank=None,
+):
+    """Build a stand-in using the explicit manifest v2.1 vocabulary."""
+    sorted_recording = f"{recording_id}_sorted_2025-01-01"
+    return SimpleNamespace(
+        probe_id=histology_track_id,
+        probe_name=ephys_collection,
+        histology_track_id=histology_track_id,
+        logical_probe=logical_probe,
+        ephys_collection=ephys_collection,
+        recording_id=recording_id,
+        sorted_recording=sorted_recording,
+        probe_shank=None,
+        histology_shank=histology_shank,
+        ephys_shank=ephys_shank,
+        gui_folder=lambda outputs, _rec=recording_id, _name=ephys_collection: outputs.tracks_root.parent / _rec / _name,
     )
 
 
@@ -218,6 +250,48 @@ def test_multi_shank_collapses_into_one_probe(tmp_path):
     entry = probes["rec1"]["probeM"]
     assert entry.num_shanks == 2
     assert {pk.shank for pk in entry.xyz_picks} == {1, 2}  # 1-based in datapackage
+    assert entry.logical_probe == "probeM"
+    assert entry.ephys_collection == "probeM"
+    assert {pk.histology_shank for pk in entry.xyz_picks} == {0, 1}
+    assert {pk.ephys_shank for pk in entry.xyz_picks} == {0, 1}
+
+
+def test_split_stream_quadbase_maps_histology_to_ephys_shank(tmp_path):
+    """A split quadbase stream can be one ephys shank of a logical probe."""
+    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    rows = [
+        _fake_row_explicit(
+            histology_track_id="track-probe0-shank3",
+            logical_probe="probe0",
+            ephys_collection="ProbeD",
+            recording_id="rec1",
+            histology_shank=3,
+            ephys_shank=0,
+        )
+    ]
+    results = [
+        ProcessResult(
+            probe_id="track-probe0-shank3",
+            recording_id="rec1",
+            wrote_files=True,
+        )
+    ]
+
+    probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
+
+    entry = probes["rec1"]["ProbeD"]
+    assert entry.logical_probe == "probe0"
+    assert entry.ephys_collection == "ProbeD"
+    assert entry.num_shanks == 1
+    assert entry.ephys == "rec1/ProbeD"
+    assert entry.channel_table is not None
+    assert entry.channel_table.shank_ind == "rec1/ProbeD/channels.shankInd.npy"
+    assert entry.xyz_picks[0].ccf == "rec1/ProbeD/xyz_picks_shank4.json"
+    assert entry.xyz_picks[0].histology_shank == 3
+    assert entry.xyz_picks[0].ephys_shank == 0
+    assert entry.xyz_picks[0].shank == 1
 
 
 def test_ephys_dir_is_probe_gui_folder_not_spikes_subdir(tmp_path):
@@ -248,6 +322,7 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
     DataPackage whose relative paths all resolve."""
     from aind_ibl_ephys_alignment_preprocessing.manifest import (
         CcfSpaceHistology,
+        ChannelTablePaths,
         HistologyPaths,
         ImageSpaceHistology,
         ProbeEntry,
@@ -267,6 +342,8 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
         "rec1/46101/xyz_picks.json",
         "rec1/46101/xyz_picks_image_space.json",
         "rec1/46101/channels.localCoordinates.npy",
+        "rec1/46101/channels.rawInd.npy",
+        "rec1/46101/channels.shankInd.npy",
     ]:
         _touch(root / rel)
 
@@ -294,8 +371,15 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
             "rec1": {
                 "46101": ProbeEntry(
                     probe_id="pid-1",
+                    logical_probe="46101",
+                    ephys_collection="46101",
                     num_shanks=1,
                     ephys="rec1/46101",
+                    channel_table=ChannelTablePaths(
+                        local_coordinates="rec1/46101/channels.localCoordinates.npy",
+                        raw_ind="rec1/46101/channels.rawInd.npy",
+                        shank_ind="rec1/46101/channels.shankInd.npy",
+                    ),
                     xyz_picks=[
                         XyzPicks(
                             ccf="rec1/46101/xyz_picks.json",

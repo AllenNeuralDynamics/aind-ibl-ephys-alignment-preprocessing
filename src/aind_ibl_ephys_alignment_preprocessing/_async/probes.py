@@ -83,20 +83,20 @@ async def process_manifest_row_async(
         return ProcessResult(row.probe_id, row.recording_id, False, "Only JSON annotations supported")
     pattern = f"*/{row.probe_file}.{ext}"
     ann_path = next(data_root.glob(pattern), None)
-    probe_id = str(row.probe_id)
+    probe_id = str(row.histology_track_id)
     if ann_path is None:
         return ProcessResult(probe_id, str(row.sorted_recording), False, f"Annotation not found: {pattern}")
 
     gui_folder = row.gui_folder(outputs)
-    if row.probe_shank is None:
-        img_name = f"{row.probe_id}_image_space.json"
-        ccf_name = f"{row.probe_id}_ccf.json"
+    if row.histology_shank is None:
+        img_name = f"{probe_id}_image_space.json"
+        ccf_name = f"{probe_id}_ccf.json"
         gui_img = "xyz_picks_image_space.json"
         gui_ccf = "xyz_picks.json"
     else:
-        shank_id = int(row.probe_shank) + 1
-        img_name = f"{row.probe_id}_shank{shank_id}_image_space.json"
-        ccf_name = f"{row.probe_id}_shank{shank_id}_ccf.json"
+        shank_id = int(row.histology_shank) + 1
+        img_name = f"{probe_id}_shank{shank_id}_image_space.json"
+        ccf_name = f"{probe_id}_shank{shank_id}_ccf.json"
         gui_img = f"xyz_picks_shank{shank_id}_image_space.json"
         gui_ccf = f"xyz_picks_shank{shank_id}.json"
 
@@ -181,7 +181,7 @@ async def process_manifest_row_async(
         limits,
         str(outputs.ccf),
         create_slicer_fcsv,
-        str(outputs.ccf / f"{row.probe_id}.fcsv"),
+        str(outputs.ccf / f"{probe_id}.fcsv"),
         pts_ccf,
         direction="LPS",
     )
@@ -219,7 +219,7 @@ async def process_manifest_row_async(
 
     logger.info("[Probe %s] Completed: wrote xyz_picks to 4 locations", row.probe_id)
     return ProcessResult(
-        probe_id=str(row.probe_id),
+        probe_id=probe_id,
         recording_id=row.recording_id,
         wrote_files=True,
         skipped_reason=None,

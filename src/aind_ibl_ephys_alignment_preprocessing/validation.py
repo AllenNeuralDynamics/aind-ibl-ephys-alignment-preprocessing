@@ -31,7 +31,20 @@ if TYPE_CHECKING:
 
 def _norm_shank_series(s: pd.Series[Any]) -> pd.Series[Any]:
     """Treat NaN/None as a sentinel so duplicates behave predictably."""
-    return s.fillna(-1).astype(int)
+    return pd.to_numeric(s.replace("", pd.NA), errors="coerce").fillna(-1).astype(int)
+
+
+def _coalesce_manifest_column(df: pd.DataFrame, names: tuple[str, ...]) -> pd.Series[Any]:
+    """Return the first non-null manifest column among *names*."""
+    out = pd.Series(pd.NA, index=df.index, dtype="object")
+    for name in names:
+        if name not in df.columns:
+            continue
+        values = df[name]
+        present = values.notna() & (values.astype(str) != "")
+        mask = out.isna() & present
+        out.loc[mask] = values.loc[mask]
+    return out
 
 
 @dataclass(frozen=True)
@@ -194,31 +207,77 @@ class PipelineValidator:
                         severity="warning",
                     )
 
+    def _validate_required_column_group(
+        self,
+        df: pd.DataFrame,
+        names: tuple[str, ...],
+        label: str,
+        category: str,
+    ) -> None:
+        """Validate that at least one alias column exists and is populated."""
+        present_names = [name for name in names if name in df.columns]
+        if not present_names:
+            self._add_result(
+                False,
+                category,
+                f"{label}_required",
+                f"Missing required column; expected one of: {', '.join(names)}",
+            )
+            return
+
+        values = _coalesce_manifest_column(df, names)
+        null_count = values.isna().sum()
+        if null_count:
+            self._add_result(
+                False,
+                category,
+                f"{label}_nulls",
+                f"Column group '{label}' has {null_count} null/empty values",
+                severity="warning",
+            )
+        else:
+            self._add_result(
+                True,
+                category,
+                f"{label}_required",
+                f"Column group '{label}' present via {tuple(present_names)}",
+                severity="info",
+            )
+
     def _validate_uniqueness_constraints(self, df: pd.DataFrame, category: str) -> None:
         """Check uniqueness constraints and recording-id multiplicity."""
+        df = df.copy()
         if "recording_id" not in df.columns and "sorted_recording" in df.columns:
             df = df.assign(
                 recording_id=df["sorted_recording"].astype(str).str.split("_sorted", n=1, expand=True)[0],
             )
 
-        shank_col = "probe_shank"
-        if shank_col not in df.columns:
-            df[shank_col] = None
-        df["_probe_shank_norm"] = _norm_shank_series(df[shank_col])
+        df["_histology_track_id"] = _coalesce_manifest_column(df, ("histology_track_id", "probe_id"))
+        df["_ephys_collection"] = _coalesce_manifest_column(df, ("ephys_collection", "probe_name"))
+        df["_histology_shank_norm"] = _norm_shank_series(
+            _coalesce_manifest_column(df, ("histology_shank", "probe_shank"))
+        )
+        df["_ephys_shank_norm"] = _norm_shank_series(_coalesce_manifest_column(df, ("ephys_shank", "probe_shank")))
 
-        if {"mouseid", "probe_id"}.issubset(df.columns):
+        if {"mouseid", "_histology_track_id"}.issubset(df.columns):
             self._add_unique_violation_results(
                 df,
-                subset=["mouseid", "probe_id", "_probe_shank_norm"],
-                label="bregma_xyz (mouseid, probe_id, probe_shank)",
+                subset=["mouseid", "_histology_track_id", "_histology_shank_norm"],
+                label="bregma_xyz (mouseid, histology_track_id, histology_shank)",
                 category=category,
             )
 
-        if {"recording_id", "probe_name"}.issubset(df.columns):
+        if {"recording_id", "_ephys_collection"}.issubset(df.columns):
             self._add_unique_violation_results(
                 df,
-                subset=["recording_id", "probe_name", "_probe_shank_norm"],
-                label="GUI (recording_id, probe_name, probe_shank)",
+                subset=["recording_id", "_ephys_collection", "_histology_shank_norm"],
+                label="GUI files (recording_id, ephys_collection, histology_shank)",
+                category=category,
+            )
+            self._add_unique_violation_results(
+                df,
+                subset=["recording_id", "_ephys_collection", "_ephys_shank_norm"],
+                label="ephys shanks (recording_id, ephys_collection, ephys_shank)",
                 category=category,
             )
 
@@ -243,9 +302,6 @@ class PipelineValidator:
                     severity="warning",
                 )
 
-        if "_probe_shank_norm" in df.columns:
-            df.drop(columns=["_probe_shank_norm"], inplace=True)
-
     def validate_manifest_structure(self) -> None:
         """Validate manifest CSV file structure and required columns."""
         category = "Manifest CSV"
@@ -264,7 +320,7 @@ class PipelineValidator:
             return
         self._add_result(True, category, "readable", f"Manifest CSV readable ({len(df)} rows)", severity="info")
 
-        required_cols = ["mouseid", "sorted_recording", "probe_file", "probe_id", "probe_name"]
+        required_cols = ["mouseid", "sorted_recording", "probe_file"]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             self._add_result(
@@ -275,6 +331,18 @@ class PipelineValidator:
 
         self._validate_mouseid_consistency(df, category)
         self._validate_null_columns(df, required_cols, category)
+        self._validate_required_column_group(
+            df,
+            ("histology_track_id", "probe_id"),
+            "histology_track_id",
+            category,
+        )
+        self._validate_required_column_group(
+            df,
+            ("ephys_collection", "probe_name"),
+            "ephys_collection",
+            category,
+        )
         self._validate_uniqueness_constraints(df, category)
 
     # -- Category 3: Reference Data --------------------------------------------

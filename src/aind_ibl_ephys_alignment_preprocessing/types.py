@@ -249,9 +249,9 @@ class ManifestRow:
     Parameters
     ----------
     probe_id : str
-        Probe identifier.
+        Legacy alias for ``histology_track_id``.
     probe_name : str
-        Subfolder name for GUI artifacts.
+        Legacy alias for ``ephys_collection``.
     probe_file : str
         Basename of the annotation file (no extension).
     sorted_recording : str
@@ -261,7 +261,18 @@ class ManifestRow:
     annotation_format : str
         Annotation file format (default ``"json"``).
     probe_shank : int | None
-        0-based shank index.
+        Legacy alias for both ``histology_shank`` and ``ephys_shank``.
+    histology_track_id : str | None
+        Neuroglancer layer / histology track identifier.
+    logical_probe : str | None
+        Physical/logical probe identity. Multiple ephys collections may share
+        this value for split-stream probes.
+    ephys_collection : str | None
+        ALF/ephys output collection folder, derived from the Open Ephys stream.
+    histology_shank : int | None
+        0-based physical/histology shank index.
+    ephys_shank : int | None
+        0-based shank index within ``ephys_collection``.
     surface_finding : Path | None
         Optional surface-finding file path fragment.
     row_index : int | None
@@ -275,8 +286,31 @@ class ManifestRow:
     mouseid: str
     annotation_format: str = "json"
     probe_shank: int | None = None
+    histology_track_id: str | None = None
+    logical_probe: str | None = None
+    ephys_collection: str | None = None
+    histology_shank: int | None = None
+    ephys_shank: int | None = None
     surface_finding: Path | None = None
     row_index: int | None = None
+
+    def __post_init__(self) -> None:
+        """Populate new explicit fields from legacy manifest aliases."""
+        histology_track_id = self.histology_track_id or self.probe_id
+        ephys_collection = self.ephys_collection or self.probe_name
+        logical_probe = self.logical_probe or ephys_collection
+        histology_shank = self.histology_shank if self.histology_shank is not None else self.probe_shank
+        ephys_shank = (
+            self.ephys_shank
+            if self.ephys_shank is not None
+            else (self.probe_shank if self.probe_shank is not None else histology_shank)
+        )
+
+        object.__setattr__(self, "histology_track_id", histology_track_id)
+        object.__setattr__(self, "ephys_collection", ephys_collection)
+        object.__setattr__(self, "logical_probe", logical_probe)
+        object.__setattr__(self, "histology_shank", histology_shank)
+        object.__setattr__(self, "ephys_shank", ephys_shank)
 
     @property
     def recording_id(self) -> str:
@@ -285,7 +319,7 @@ class ManifestRow:
 
     def gui_folder(self, outputs: OutputDirs) -> Path:
         """Per-recording GUI output folder."""
-        return outputs.tracks_root.parent / self.recording_id / self.probe_name
+        return outputs.tracks_root.parent / self.recording_id / str(self.ephys_collection)
 
     @classmethod
     def from_series(cls, s: pd.Series[Any]) -> ManifestRow:
@@ -297,17 +331,44 @@ class ManifestRow:
             except Exception:
                 return None
 
+        def opt_int_from(*names: str) -> int | None:
+            for name in names:
+                value = opt_int(s.get(name))
+                if value is not None:
+                    return value
+            return None
+
+        def opt_str_from(*names: str, default: str | None = None) -> str:
+            for name in names:
+                value = s.get(name)
+                if pd.notna(value) and str(value) != "":
+                    return str(value)
+            if default is not None:
+                return default
+            return ""
+
         def opt_path(x: Any) -> Path | None:
             return Path(str(x)) if pd.notna(x) and str(x) else None
 
+        histology_track_id = opt_str_from("histology_track_id", "probe_id")
+        ephys_collection = opt_str_from("ephys_collection", "probe_name")
+        logical_probe = opt_str_from("logical_probe", default=ephys_collection)
+        histology_shank = opt_int_from("histology_shank", "probe_shank")
+        ephys_shank = opt_int_from("ephys_shank", "probe_shank", "histology_shank")
+
         return cls(
-            probe_id=str(s.get("probe_id")),
-            probe_name=str(s.get("probe_name")),
+            probe_id=histology_track_id,
+            probe_name=ephys_collection,
             probe_file=str(s.get("probe_file")),
             sorted_recording=str(s.get("sorted_recording")),
             mouseid=str(s.get("mouseid")),
             annotation_format=str(s.get("annotation_format", "json")).lower(),
             probe_shank=opt_int(s.get("probe_shank")),
+            histology_track_id=histology_track_id,
+            logical_probe=logical_probe,
+            ephys_collection=ephys_collection,
+            histology_shank=histology_shank,
+            ephys_shank=ephys_shank,
             surface_finding=opt_path(s.get("surface_finding")),
             row_index=int(s.name) if hasattr(s, "name") else None,  # type: ignore[call-overload]
         )

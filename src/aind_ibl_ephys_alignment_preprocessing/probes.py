@@ -72,7 +72,7 @@ def process_manifest_row(
     pattern = f"*/{row.probe_file}.{ext}"
 
     ann_path = next(data_root.glob(pattern), None)
-    probe_id = str(row.probe_id)
+    probe_id = str(row.histology_track_id)
     if ann_path is None:
         return ProcessResult(probe_id, str(row.sorted_recording), False, f"Annotation not found: {pattern}")
 
@@ -121,7 +121,7 @@ def process_manifest_row(
         asset_info.pipeline_registration_chains.pt_tx_str,
         whichtoinvert=asset_info.pipeline_registration_chains.pt_tx_inverted,
     )
-    create_slicer_fcsv(str(outputs.ccf / f"{row.probe_id}.fcsv"), pts_ccf, direction="LPS")
+    create_slicer_fcsv(str(outputs.ccf / f"{probe_id}.fcsv"), pts_ccf, direction="LPS")
 
     # 6) IBL xyz-picks (um) from CCF (ML/AP/DV with signed flips)
     ccf_mlapdv_um = convert_coordinate_system(1000.0 * pts_ccf, src_coord="LPS", dst_coord="RPI")
@@ -134,15 +134,15 @@ def process_manifest_row(
     xyz_picks_ccf = {"xyz_picks": bregma_mlapdv_um.tolist()}
 
     gui_folder = row.gui_folder(outputs)
-    if row.probe_shank is None:
-        img_name = f"{row.probe_id}_image_space.json"
-        ccf_name = f"{row.probe_id}_ccf.json"
+    if row.histology_shank is None:
+        img_name = f"{probe_id}_image_space.json"
+        ccf_name = f"{probe_id}_ccf.json"
         gui_img = "xyz_picks_image_space.json"
         gui_ccf = "xyz_picks.json"
     else:
-        shank_id = int(row.probe_shank) + 1
-        img_name = f"{row.probe_id}_shank{shank_id}_image_space.json"
-        ccf_name = f"{row.probe_id}_shank{shank_id}_ccf.json"
+        shank_id = int(row.histology_shank) + 1
+        img_name = f"{probe_id}_shank{shank_id}_image_space.json"
+        ccf_name = f"{probe_id}_shank{shank_id}_ccf.json"
         gui_img = f"xyz_picks_shank{shank_id}_image_space.json"
         gui_ccf = f"xyz_picks_shank{shank_id}.json"
 
@@ -156,7 +156,7 @@ def process_manifest_row(
     (gui_folder / gui_ccf).write_text(json.dumps(xyz_picks_ccf))
 
     return ProcessResult(
-        probe_id=str(row.probe_id),
+        probe_id=probe_id,
         recording_id=row.recording_id,
         wrote_files=True,
         skipped_reason=None,
