@@ -1,4 +1,4 @@
-"""Datapackage manifest for preprocessing pipeline outputs."""
+"""Datapackage for preprocessing pipeline outputs."""
 
 from __future__ import annotations
 
@@ -99,6 +99,7 @@ class ChannelTablePaths(BaseModel, frozen=True):
 
     local_coordinates: PathReference
     raw_ind: PathReference
+    contact_id: PathReference | None = None
     shank_ind: PathReference
 
 
@@ -168,7 +169,7 @@ class ReferenceResolver:
 
 
 class DataPackage(BaseModel, frozen=True):
-    """Top-level datapackage manifest for preprocessing outputs."""
+    """Top-level datapackage for preprocessing outputs."""
 
     schema_version: str
     mouse_id: str
@@ -204,6 +205,8 @@ class DataPackage(BaseModel, frozen=True):
                 if probe.channel_table is not None:
                     paths.append(probe.channel_table.local_coordinates)
                     paths.append(probe.channel_table.raw_ind)
+                    if probe.channel_table.contact_id is not None:
+                        paths.append(probe.channel_table.contact_id)
                     paths.append(probe.channel_table.shank_ind)
                 for xp in probe.xyz_picks:
                     paths.append(xp.ccf)
@@ -490,6 +493,7 @@ def _build_probes(
         first_row = rows[0]
         ephys_dir = first_row.gui_folder(outputs)
         ephys_path = _local_ref(ephys_dir, manifest_root) if not config.skip_ephys else None
+        contact_id_path = ephys_dir / "channels.contactId.npy"
         channel_table = (
             ChannelTablePaths(
                 local_coordinates=_local_ref(
@@ -497,6 +501,7 @@ def _build_probes(
                     manifest_root,
                 ),
                 raw_ind=_local_ref(ephys_dir / "channels.rawInd.npy", manifest_root),
+                contact_id=_local_ref(contact_id_path, manifest_root) if contact_id_path.is_file() else None,
                 shank_ind=_local_ref(ephys_dir / "channels.shankInd.npy", manifest_root),
             )
             if not config.skip_ephys

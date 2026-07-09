@@ -370,7 +370,7 @@ without leaking producer-local mount paths into the datapackage.
 
 ## 8. Work items (once agreed)
 
-- **Producer** (`manifest.py`): emit `external_assets` registry
+- **Producer** (`datapackage.py`): emit `external_assets` registry
   (role/name/id/uri[/checksum]); emit transforms (and any external histology) as
   `{asset, path}`; add `platform`; convert internal paths to
   `{asset: null, path}`; bump schema to 3.0.0. Drop `_rel_up`. Add tests

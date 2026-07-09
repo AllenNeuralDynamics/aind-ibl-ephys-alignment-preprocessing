@@ -26,15 +26,15 @@ from aind_ibl_ephys_alignment_preprocessing._async.histology import (
     transform_ccf_to_image_space_async,
     write_registration_channel_images_async,
 )
+from aind_ibl_ephys_alignment_preprocessing.datapackage import (
+    build_datapackage,
+    producer_asset_overrides,
+    write_datapackage,
+)
 from aind_ibl_ephys_alignment_preprocessing.discovery import (
     determine_desired_level,
     find_asset_info,
     prepare_result_dirs,
-)
-from aind_ibl_ephys_alignment_preprocessing.manifest import (
-    build_datapackage,
-    producer_asset_overrides,
-    write_datapackage,
 )
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
@@ -226,6 +226,6 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
         asset_roots=[config.data_root],
         asset_overrides=producer_asset_overrides(asset_info, config),
     )
-    logger.info("[Orchestrator] Wrote datapackage manifest to %s", dp_path)
+    logger.info("[Orchestrator] Wrote datapackage to %s", dp_path)
 
     return processed_results

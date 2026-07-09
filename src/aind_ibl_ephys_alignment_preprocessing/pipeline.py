@@ -13,6 +13,12 @@ from aind_zarr_utils.pipeline_transformed import base_and_pipeline_anatomical_st
 from aind_zarr_utils.zarr import _open_zarr
 from iblatlas.atlas import AllenAtlas
 
+from aind_ibl_ephys_alignment_preprocessing.datapackage import (
+    build_datapackage,
+    infer_process_results_from_outputs,
+    producer_asset_overrides,
+    write_datapackage,
+)
 from aind_ibl_ephys_alignment_preprocessing.discovery import (
     determine_desired_level,
     find_asset_info,
@@ -25,12 +31,6 @@ from aind_ibl_ephys_alignment_preprocessing.histology import (
     transform_ccf_labels_to_image_space,
     transform_ccf_to_image_space,
     write_registration_channel_images,
-)
-from aind_ibl_ephys_alignment_preprocessing.manifest import (
-    build_datapackage,
-    infer_process_results_from_outputs,
-    producer_asset_overrides,
-    write_datapackage,
 )
 from aind_ibl_ephys_alignment_preprocessing.probes import process_manifest_row
 from aind_ibl_ephys_alignment_preprocessing.types import (
@@ -129,7 +129,7 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
         asset_roots=[config.data_root],
         asset_overrides=producer_asset_overrides(asset_info, config),
     )
-    logger.info("Wrote datapackage manifest to %s", dp_path)
+    logger.info("Wrote datapackage to %s", dp_path)
 
     return processed_results
 
@@ -165,7 +165,7 @@ def regenerate_datapackage(
         asset_roots=[config.data_root],
         asset_overrides=producer_asset_overrides(asset_info, config),
     )
-    logger.info("Regenerated datapackage manifest at %s", dp_path)
+    logger.info("Regenerated datapackage at %s", dp_path)
     return dp_path
 
 

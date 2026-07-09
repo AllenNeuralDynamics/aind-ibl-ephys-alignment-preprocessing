@@ -331,6 +331,7 @@ results_root/
             |-- xyz_picks_shank<N>.json       # Per-shank picks (multi-shank only)
             |-- channels.localCoordinates.npy  # Ephys channel table
             |-- channels.rawInd.npy
+            |-- channels.contactId.npy          # Optional; new ephys conversion outputs
             |-- channels.shankInd.npy
             +-- band_corr/                    # Full matrices + row_channels.json
 ```
@@ -340,7 +341,7 @@ including transform chain paths, histology volume paths, and per-probe
 metadata. It can be loaded back with:
 
 ```python
-from aind_ibl_ephys_alignment_preprocessing.manifest import load_datapackage
+from aind_ibl_ephys_alignment_preprocessing.datapackage import load_datapackage
 
 dp = load_datapackage("/path/to/datapackage.json")
 ```

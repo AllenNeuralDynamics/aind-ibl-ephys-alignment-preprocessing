@@ -1,4 +1,4 @@
-"""Tests for the datapackage manifest builder."""
+"""Tests for the datapackage builder."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aind_ibl_ephys_alignment_preprocessing.manifest import (
+from aind_ibl_ephys_alignment_preprocessing.datapackage import (
     SCHEMA_VERSION,
     DataPackage,
     ExternalAsset,
@@ -119,7 +119,7 @@ def test_transform_paths_fields_shape():
 
 def test_datapackage_round_trip(tmp_path):
     """Serialize + parse a minimal DataPackage to check schema is loadable."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import (
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import (
         CcfSpaceHistology,
         HistologyPaths,
         ImageSpaceHistology,
@@ -219,7 +219,7 @@ def _fake_row_explicit(
 
 def test_probes_nested_by_recording_then_name(tmp_path):
     """Probes are grouped under recording_id, then probe_name."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
     from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
 
     rows = [
@@ -238,7 +238,7 @@ def test_probes_nested_by_recording_then_name(tmp_path):
 
 def test_same_probe_name_across_recordings_kept_distinct(tmp_path):
     """Same probe_name in two recordings stays distinct (the bug fixed in 2.0.0)."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
     from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
 
     # Same probe_name "45883-1" appears in rec1 and rec2 (re-inserted probe).
@@ -260,7 +260,7 @@ def test_same_probe_name_across_recordings_kept_distinct(tmp_path):
 
 def test_multi_shank_collapses_into_one_probe(tmp_path):
     """Rows differing only by probe_shank collapse into one ProbeEntry."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
     from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
 
     rows = [
@@ -285,7 +285,7 @@ def test_multi_shank_collapses_into_one_probe(tmp_path):
 
 def test_split_stream_quadbase_maps_histology_to_ephys_shank(tmp_path):
     """A split quadbase stream can be one ephys shank of a logical probe."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
     from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
 
     rows = [
@@ -305,6 +305,7 @@ def test_split_stream_quadbase_maps_histology_to_ephys_shank(tmp_path):
             wrote_files=True,
         )
     ]
+    _touch(tmp_path / "rec1/ProbeD/channels.contactId.npy")
 
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
 
@@ -314,6 +315,7 @@ def test_split_stream_quadbase_maps_histology_to_ephys_shank(tmp_path):
     assert entry.num_shanks == 1
     assert entry.ephys == _local("rec1/ProbeD")
     assert entry.channel_table is not None
+    assert entry.channel_table.contact_id == _local("rec1/ProbeD/channels.contactId.npy")
     assert entry.channel_table.shank_ind == _local("rec1/ProbeD/channels.shankInd.npy")
     assert entry.xyz_picks[0].ccf == _local("rec1/ProbeD/xyz_picks_shank4.json")
     assert entry.xyz_picks[0].histology_shank == 3
@@ -321,10 +323,25 @@ def test_split_stream_quadbase_maps_histology_to_ephys_shank(tmp_path):
     assert entry.xyz_picks[0].shank == 1
 
 
+def test_channel_table_omits_missing_contact_id_for_existing_outputs(tmp_path):
+    """Datapackage-only regeneration must tolerate older ephys outputs."""
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    rows = [_fake_row(probe_id="pid-1", probe_name="46101", recording_id="rec1")]
+    results = [ProcessResult(probe_id="pid-1", recording_id="rec1", wrote_files=True)]
+
+    probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
+
+    channel_table = probes["rec1"]["46101"].channel_table
+    assert channel_table is not None
+    assert channel_table.contact_id is None
+
+
 def test_ephys_dir_is_probe_gui_folder_not_spikes_subdir(tmp_path):
     """ephys points at the probe gui_folder (where the ALF collection lives),
     not a nonexistent ``spikes`` subdirectory (regression for the GUI load bug)."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
     from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
 
     rows = [_fake_row(probe_id="pid-1", probe_name="46101", recording_id="rec1")]
@@ -342,7 +359,7 @@ def test_ephys_dir_is_probe_gui_folder_not_spikes_subdir(tmp_path):
 
 def test_infer_process_results_from_existing_outputs(tmp_path):
     """Datapackage-only regeneration can infer completed rows from xyz-picks."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import infer_process_results_from_outputs
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import infer_process_results_from_outputs
 
     outputs = _fake_outputs(tmp_path)
     row_done = _fake_row(probe_id="pid-1", probe_name="probeA", recording_id="rec1")
@@ -368,7 +385,7 @@ def _touch(p: Path) -> None:
 def _valid_datapackage_on_disk(root: Path) -> DataPackage:
     """Lay down a minimal valid output tree under *root* and return a matching
     DataPackage whose relative paths all resolve."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import (
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import (
         CcfSpaceHistology,
         ChannelTablePaths,
         HistologyPaths,
@@ -397,6 +414,7 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
         "rec1/46101/xyz_picks_image_space.json",
         "rec1/46101/channels.localCoordinates.npy",
         "rec1/46101/channels.rawInd.npy",
+        "rec1/46101/channels.contactId.npy",
         "rec1/46101/channels.shankInd.npy",
     ]:
         _touch(root / rel)
@@ -437,6 +455,7 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
                     channel_table=ChannelTablePaths(
                         local_coordinates=_local("rec1/46101/channels.localCoordinates.npy"),
                         raw_ind=_local("rec1/46101/channels.rawInd.npy"),
+                        contact_id=_local("rec1/46101/channels.contactId.npy"),
                         shank_ind=_local("rec1/46101/channels.shankInd.npy"),
                     ),
                     xyz_picks=[
@@ -458,7 +477,7 @@ def _asset_roots(root: Path) -> list[Path]:
 
 def test_write_datapackage_passes_when_all_paths_exist(tmp_path):
     """A datapackage whose paths all resolve writes and round-trips."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import (
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import (
         load_datapackage,
         write_datapackage,
     )
@@ -471,7 +490,7 @@ def test_write_datapackage_passes_when_all_paths_exist(tmp_path):
 
 def test_write_datapackage_raises_on_bad_ephys_dir(tmp_path):
     """The original bug: ephys points at a dir lacking the ALF channel file."""
-    from aind_ibl_ephys_alignment_preprocessing.manifest import (
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import (
         DataPackageError,
         write_datapackage,
     )
