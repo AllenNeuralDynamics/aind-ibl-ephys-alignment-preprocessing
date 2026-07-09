@@ -12,6 +12,7 @@ __all__ = [
     "__version__",
     "PipelineConfig",
     "ProcessResult",
+    "regenerate_datapackage",
     "run_pipeline",
     "run_pipeline_async",
 ]
@@ -31,6 +32,10 @@ def __getattr__(name: str) -> object:
         from aind_ibl_ephys_alignment_preprocessing.pipeline import run_pipeline
 
         return run_pipeline
+    if name == "regenerate_datapackage":
+        from aind_ibl_ephys_alignment_preprocessing.pipeline import regenerate_datapackage
+
+        return regenerate_datapackage
     if name == "run_pipeline_async":
         from aind_ibl_ephys_alignment_preprocessing._async.pipeline import run_pipeline_async
 

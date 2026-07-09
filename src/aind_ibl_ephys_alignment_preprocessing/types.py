@@ -213,6 +213,7 @@ class AssetInfo:
     """SmartSPIM asset discovery results."""
 
     asset_path: Path
+    asset_uri: str | None
     zarr_volumes: ZarrPaths
     pipeline_registration_chains: PipelineRegistrationInfo
     registration_dir_path: Path

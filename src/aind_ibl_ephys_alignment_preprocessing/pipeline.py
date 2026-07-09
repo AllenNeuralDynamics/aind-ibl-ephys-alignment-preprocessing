@@ -26,7 +26,12 @@ from aind_ibl_ephys_alignment_preprocessing.histology import (
     transform_ccf_to_image_space,
     write_registration_channel_images,
 )
-from aind_ibl_ephys_alignment_preprocessing.manifest import build_datapackage, write_datapackage
+from aind_ibl_ephys_alignment_preprocessing.manifest import (
+    build_datapackage,
+    infer_process_results_from_outputs,
+    producer_asset_overrides,
+    write_datapackage,
+)
 from aind_ibl_ephys_alignment_preprocessing.probes import process_manifest_row
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
@@ -118,7 +123,79 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
 
     manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
     dp = build_datapackage(mouse_id, manifest_rows, processed_results, asset_info, out, config)
-    dp_path = write_datapackage(dp, config.results_root / mouse_id)
+    dp_path = write_datapackage(
+        dp,
+        config.results_root / mouse_id,
+        asset_roots=[config.data_root],
+        asset_overrides=producer_asset_overrides(asset_info, config),
+    )
     logger.info("Wrote datapackage manifest to %s", dp_path)
 
     return processed_results
+
+
+def regenerate_datapackage(
+    config: PipelineConfig,
+    *,
+    validate: bool = True,
+    source_results: Path | None = None,
+) -> Path:
+    """Rewrite ``datapackage.json`` from existing preprocessing outputs only.
+
+    If *source_results* is provided, copy the existing immutable output tree
+    into ``config.results_root`` first. This supports Code Ocean workflows where
+    a previous results asset is mounted read-only under ``/data`` and the new
+    run must write corrected metadata under ``/results``.
+    """
+    manifest_df = pd.read_csv(config.manifest_csv)
+    mouse_id: str = str(manifest_df["mouseid"].astype("string").iat[0])
+    config.results_root.mkdir(parents=True, exist_ok=True)
+    if source_results is not None:
+        copy_existing_results(source_results, config.results_root, mouse_id)
+    shutil.copy(config.manifest_csv, config.results_root / "manifest.csv")
+    out = prepare_result_dirs(mouse_id, config.results_root)
+    asset_info = find_asset_info(config)
+    manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
+    processed_results = infer_process_results_from_outputs(manifest_rows, out)
+    dp = build_datapackage(mouse_id, manifest_rows, processed_results, asset_info, out, config)
+    dp_path = write_datapackage(
+        dp,
+        config.results_root / mouse_id,
+        validate=validate,
+        asset_roots=[config.data_root],
+        asset_overrides=producer_asset_overrides(asset_info, config),
+    )
+    logger.info("Regenerated datapackage manifest at %s", dp_path)
+    return dp_path
+
+
+def copy_existing_results(source_results: Path, results_root: Path, mouse_id: str) -> Path:
+    """Copy a prior mouse output tree into *results_root* and return its destination.
+
+    *source_results* may be either the prior results asset root, containing a
+    ``<mouse_id>/`` child, or the mouse output directory itself.
+    """
+    source_mouse_root = _resolve_existing_mouse_root(Path(source_results), mouse_id)
+    destination = Path(results_root) / mouse_id
+    if source_mouse_root.resolve() == destination.resolve():
+        return destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Copying existing mouse results from %s to %s", source_mouse_root, destination)
+    shutil.copytree(source_mouse_root, destination, dirs_exist_ok=True, copy_function=shutil.copy2)
+    return destination
+
+
+def _resolve_existing_mouse_root(source_results: Path, mouse_id: str) -> Path:
+    """Resolve source results path to the directory containing datapackage.json."""
+    source_results = Path(source_results)
+    direct_datapackage = source_results / "datapackage.json"
+    if direct_datapackage.is_file():
+        return source_results
+    nested = source_results / mouse_id
+    if (nested / "datapackage.json").is_file() or nested.is_dir():
+        return nested
+    raise FileNotFoundError(
+        "Could not find existing mouse results for "
+        f"{mouse_id!r} under {source_results}. Expected either "
+        f"{source_results}/datapackage.json or {nested}/datapackage.json."
+    )

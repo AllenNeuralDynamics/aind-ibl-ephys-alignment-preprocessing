@@ -91,11 +91,32 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
     registration_in_ccf_precomputed = registration_dir_path / "moved_ls_to_ccf.nii.gz"
     return AssetInfo(
         asset_path=asset_path,
+        asset_uri=_infer_asset_uri(a_zarr_uri, asset_pathlike),
         zarr_volumes=zarr_paths,
         pipeline_registration_chains=pipeline_reg_info,
         registration_dir_path=registration_dir_path,
         registration_in_ccf_precomputed=registration_in_ccf_precomputed,
     )
+
+
+def _infer_asset_uri(source_uri: str, asset_pathlike: str) -> str | None:
+    """Infer the asset-level URI from a source URI inside that asset.
+
+    Neuroglancer sources often point inside the stitched SmartSPIM asset, for
+    example ``s3://bucket/<asset>/image_tile_fusing/...``. The datapackage
+    registry should name the asset that contains ``image_atlas_alignment/``,
+    not the nested zarr. If the source URI does not contain the inferred asset
+    pathlike verbatim, keep the durable URI unknown.
+    """
+    if "://" not in source_uri:
+        return None
+    marker = str(asset_pathlike).strip("/")
+    if not marker:
+        return None
+    idx = source_uri.find(marker)
+    if idx < 0:
+        return None
+    return source_uri[: idx + len(marker)]
 
 
 def prepare_result_dirs(mouse_id: str, results_root: Path) -> OutputDirs:

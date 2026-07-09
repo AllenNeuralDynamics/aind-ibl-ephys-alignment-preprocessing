@@ -10,6 +10,8 @@ import pytest
 from aind_ibl_ephys_alignment_preprocessing.manifest import (
     SCHEMA_VERSION,
     DataPackage,
+    ExternalAsset,
+    PathReference,
     TransformPaths,
     _build_transforms,
 )
@@ -17,21 +19,33 @@ from aind_ibl_ephys_alignment_preprocessing.manifest import (
 
 def _fake_asset_info(reg_dir: Path) -> SimpleNamespace:
     # AssetInfo is a frozen dataclass with extra fields that _build_transforms
-    # does not read; only registration_dir_path is consulted.
-    return SimpleNamespace(registration_dir_path=reg_dir)
+    # does not read; only asset_path/registration_dir_path are consulted.
+    return SimpleNamespace(
+        asset_path=reg_dir.parents[1],
+        asset_uri=None,
+        registration_dir_path=reg_dir,
+    )
 
 
 def _fake_config(template_to_ccf_dir: Path) -> SimpleNamespace:
-    return SimpleNamespace(template_to_ccf_dir=template_to_ccf_dir)
+    return SimpleNamespace(template_to_ccf_dir=template_to_ccf_dir, data_root=template_to_ccf_dir.parent)
 
 
-def test_schema_version_is_2_1_0():
-    """Schema is 2.1.0 — probe keys now mean ``ephys_collection``."""
-    assert SCHEMA_VERSION == "2.1.0"
+def _local(path: str) -> PathReference:
+    return PathReference(asset=None, path=path)
 
 
-def test_transforms_are_relative_to_manifest_root(tmp_path):
-    """_build_transforms should emit paths relative to the manifest root."""
+def _external(asset: str, path: str) -> PathReference:
+    return PathReference(asset=asset, path=path)
+
+
+def test_schema_version_is_3_0_0():
+    """Schema is 3.0.0 — paths are reference objects, not locations."""
+    assert SCHEMA_VERSION == "3.0.0"
+
+
+def test_transforms_are_external_asset_references(tmp_path):
+    """_build_transforms should emit paths inside external assets."""
     manifest_root = tmp_path / "results" / "mouse42"
     smartspim = tmp_path / "data" / "SmartSPIM_mouse42_123" / "image_atlas_alignment" / "Ex_561_Em_600"
     template_to_ccf = tmp_path / "data" / "spim_template_to_ccf"
@@ -42,19 +56,25 @@ def test_transforms_are_relative_to_manifest_root(tmp_path):
         manifest_root,
     )
 
-    # All four paths must resolve correctly when joined with manifest_root.
-    for rel, expected in [
+    # All four refs must resolve correctly through their asset roots.
+    roots = {
+        "smartspim": smartspim.parents[1],
+        "spim_template_to_ccf": template_to_ccf,
+    }
+    for ref, expected in [
         (tx.image_to_template_affine, smartspim / "ls_to_template_SyN_0GenericAffine.mat"),
         (tx.image_to_template_warp, smartspim / "ls_to_template_SyN_1InverseWarp.nii.gz"),
         (tx.template_to_ccf_affine, template_to_ccf / "syn_0GenericAffine.mat"),
         (tx.template_to_ccf_warp, template_to_ccf / "syn_1InverseWarp.nii.gz"),
     ]:
-        assert not Path(rel).is_absolute(), f"expected relative path, got {rel!r}"
-        assert (manifest_root / rel).resolve() == expected.resolve()
+        assert ref.asset is not None
+        assert not Path(ref.path).is_absolute(), f"expected internal asset path, got {ref.path!r}"
+        assert ".." not in Path(ref.path).parts
+        assert (roots[ref.asset] / ref.path).resolve() == expected.resolve()
 
 
-def test_transforms_traverse_up_for_sibling_assets(tmp_path):
-    """When the SmartSPIM asset is a sibling of the mouse root, path uses ``..``."""
+def test_transforms_do_not_traverse_to_sibling_assets(tmp_path):
+    """Sibling assets are referenced by asset key, never by ``..`` traversal."""
     manifest_root = tmp_path / "results" / "mouse42"
     smartspim = tmp_path / "SmartSPIM_mouse42_123" / "image_atlas_alignment" / "Ex_561_Em_600"
     template_to_ccf = tmp_path / "spim_template_to_ccf"
@@ -65,8 +85,10 @@ def test_transforms_traverse_up_for_sibling_assets(tmp_path):
         manifest_root,
     )
 
-    assert tx.image_to_template_affine.startswith("../"), tx.image_to_template_affine
-    assert tx.template_to_ccf_affine.startswith("../"), tx.template_to_ccf_affine
+    assert tx.image_to_template_affine.asset == "smartspim"
+    assert tx.template_to_ccf_affine.asset == "spim_template_to_ccf"
+    for ref in tx.model_dump().values():
+        assert ".." not in Path(ref["path"]).parts
 
 
 def test_transforms_posix_style_separators(tmp_path):
@@ -82,7 +104,7 @@ def test_transforms_posix_style_separators(tmp_path):
 
     # No backslashes anywhere.
     for value in tx.model_dump().values():
-        assert "\\" not in value, value
+        assert "\\" not in value["path"], value
 
 
 def test_transform_paths_fields_shape():
@@ -108,21 +130,26 @@ def test_datapackage_round_trip(tmp_path):
     dp = DataPackage(
         schema_version=SCHEMA_VERSION,
         mouse_id="mouse42",
+        platform="local",
+        external_assets={
+            "smartspim": ExternalAsset(role="smartspim_registration", name="SmartSPIM"),
+            "spim_template_to_ccf": ExternalAsset(role="template_to_ccf", name="spim_template_to_ccf"),
+        },
         transforms=TransformPaths(
-            image_to_template_affine="../SmartSPIM/image_atlas_alignment/Ex_561_Em_600/a.mat",
-            image_to_template_warp="../SmartSPIM/image_atlas_alignment/Ex_561_Em_600/w.nii.gz",
-            template_to_ccf_affine="../spim_template_to_ccf/a.mat",
-            template_to_ccf_warp="../spim_template_to_ccf/w.nii.gz",
+            image_to_template_affine=_external("smartspim", "image_atlas_alignment/Ex_561_Em_600/a.mat"),
+            image_to_template_warp=_external("smartspim", "image_atlas_alignment/Ex_561_Em_600/w.nii.gz"),
+            template_to_ccf_affine=_external("spim_template_to_ccf", "a.mat"),
+            template_to_ccf_warp=_external("spim_template_to_ccf", "w.nii.gz"),
         ),
         histology=HistologyPaths(
             image_space=ImageSpaceHistology(
-                registration="image_space_histology/histology_registration.nrrd",
-                registration_pipeline="image_space_histology/histology_registration_pipeline.nrrd",
-                ccf_template="image_space_histology/ccf_in_mouse.nrrd",
-                labels="image_space_histology/labels_in_mouse.nrrd",
+                registration=_local("image_space_histology/histology_registration.nrrd"),
+                registration_pipeline=_local("image_space_histology/histology_registration_pipeline.nrrd"),
+                ccf_template=_local("image_space_histology/ccf_in_mouse.nrrd"),
+                labels=_local("image_space_histology/labels_in_mouse.nrrd"),
             ),
             ccf_space=CcfSpaceHistology(
-                registration="ccf_space_histology/histology_registration.nrrd",
+                registration=_local("ccf_space_histology/histology_registration.nrrd"),
             ),
         ),
         probes={},
@@ -285,10 +312,10 @@ def test_split_stream_quadbase_maps_histology_to_ephys_shank(tmp_path):
     assert entry.logical_probe == "probe0"
     assert entry.ephys_collection == "ProbeD"
     assert entry.num_shanks == 1
-    assert entry.ephys == "rec1/ProbeD"
+    assert entry.ephys == _local("rec1/ProbeD")
     assert entry.channel_table is not None
-    assert entry.channel_table.shank_ind == "rec1/ProbeD/channels.shankInd.npy"
-    assert entry.xyz_picks[0].ccf == "rec1/ProbeD/xyz_picks_shank4.json"
+    assert entry.channel_table.shank_ind == _local("rec1/ProbeD/channels.shankInd.npy")
+    assert entry.xyz_picks[0].ccf == _local("rec1/ProbeD/xyz_picks_shank4.json")
     assert entry.xyz_picks[0].histology_shank == 3
     assert entry.xyz_picks[0].ephys_shank == 0
     assert entry.xyz_picks[0].shank == 1
@@ -306,10 +333,31 @@ def test_ephys_dir_is_probe_gui_folder_not_spikes_subdir(tmp_path):
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
 
     ephys = probes["rec1"]["46101"].ephys
-    assert ephys == "rec1/46101"
-    assert not ephys.endswith("/spikes")
+    assert ephys == _local("rec1/46101")
+    assert ephys is not None
+    assert not ephys.path.endswith("/spikes")
     # xyz_picks resolve to the same folder — ephys and picks are co-located.
-    assert probes["rec1"]["46101"].xyz_picks[0].ccf == "rec1/46101/xyz_picks.json"
+    assert probes["rec1"]["46101"].xyz_picks[0].ccf == _local("rec1/46101/xyz_picks.json")
+
+
+def test_infer_process_results_from_existing_outputs(tmp_path):
+    """Datapackage-only regeneration can infer completed rows from xyz-picks."""
+    from aind_ibl_ephys_alignment_preprocessing.manifest import infer_process_results_from_outputs
+
+    outputs = _fake_outputs(tmp_path)
+    row_done = _fake_row(probe_id="pid-1", probe_name="probeA", recording_id="rec1")
+    row_missing = _fake_row(probe_id="pid-2", probe_name="probeB", recording_id="rec1")
+
+    done_dir = row_done.gui_folder(outputs)
+    _touch(done_dir / "xyz_picks.json")
+    _touch(done_dir / "xyz_picks_image_space.json")
+
+    results = infer_process_results_from_outputs([row_done, row_missing], outputs)
+
+    assert [(r.probe_id, r.wrote_files) for r in results] == [
+        ("pid-1", True),
+        ("pid-2", False),
+    ]
 
 
 def _touch(p: Path) -> None:
@@ -329,11 +377,17 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
         XyzPicks,
     )
 
+    smartspim = root.parent / "SmartSPIM"
+    template_to_ccf = root.parent / "spim_template_to_ccf"
+    for p in [
+        smartspim / "image_atlas_alignment/Ex_561_Em_600/ita.mat",
+        smartspim / "image_atlas_alignment/Ex_561_Em_600/itw.nii.gz",
+        template_to_ccf / "tca.mat",
+        template_to_ccf / "tcw.nii.gz",
+    ]:
+        _touch(p)
+
     for rel in [
-        "tx/ita.mat",
-        "tx/itw.nii.gz",
-        "tx/tca.mat",
-        "tx/tcw.nii.gz",
         "image_space_histology/histology_registration.nrrd",
         "image_space_histology/histology_registration_pipeline.nrrd",
         "image_space_histology/ccf_in_mouse.nrrd",
@@ -350,21 +404,26 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
     return DataPackage(
         schema_version=SCHEMA_VERSION,
         mouse_id="m1",
+        platform="local",
+        external_assets={
+            "smartspim": ExternalAsset(role="smartspim_registration", name="SmartSPIM"),
+            "spim_template_to_ccf": ExternalAsset(role="template_to_ccf", name="spim_template_to_ccf"),
+        },
         transforms=TransformPaths(
-            image_to_template_affine="tx/ita.mat",
-            image_to_template_warp="tx/itw.nii.gz",
-            template_to_ccf_affine="tx/tca.mat",
-            template_to_ccf_warp="tx/tcw.nii.gz",
+            image_to_template_affine=_external("smartspim", "image_atlas_alignment/Ex_561_Em_600/ita.mat"),
+            image_to_template_warp=_external("smartspim", "image_atlas_alignment/Ex_561_Em_600/itw.nii.gz"),
+            template_to_ccf_affine=_external("spim_template_to_ccf", "tca.mat"),
+            template_to_ccf_warp=_external("spim_template_to_ccf", "tcw.nii.gz"),
         ),
         histology=HistologyPaths(
             image_space=ImageSpaceHistology(
-                registration="image_space_histology/histology_registration.nrrd",
-                registration_pipeline="image_space_histology/histology_registration_pipeline.nrrd",
-                ccf_template="image_space_histology/ccf_in_mouse.nrrd",
-                labels="image_space_histology/labels_in_mouse.nrrd",
+                registration=_local("image_space_histology/histology_registration.nrrd"),
+                registration_pipeline=_local("image_space_histology/histology_registration_pipeline.nrrd"),
+                ccf_template=_local("image_space_histology/ccf_in_mouse.nrrd"),
+                labels=_local("image_space_histology/labels_in_mouse.nrrd"),
             ),
             ccf_space=CcfSpaceHistology(
-                registration="ccf_space_histology/histology_registration.nrrd",
+                registration=_local("ccf_space_histology/histology_registration.nrrd"),
             ),
         ),
         probes={
@@ -374,16 +433,16 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
                     logical_probe="46101",
                     ephys_collection="46101",
                     num_shanks=1,
-                    ephys="rec1/46101",
+                    ephys=_local("rec1/46101"),
                     channel_table=ChannelTablePaths(
-                        local_coordinates="rec1/46101/channels.localCoordinates.npy",
-                        raw_ind="rec1/46101/channels.rawInd.npy",
-                        shank_ind="rec1/46101/channels.shankInd.npy",
+                        local_coordinates=_local("rec1/46101/channels.localCoordinates.npy"),
+                        raw_ind=_local("rec1/46101/channels.rawInd.npy"),
+                        shank_ind=_local("rec1/46101/channels.shankInd.npy"),
                     ),
                     xyz_picks=[
                         XyzPicks(
-                            ccf="rec1/46101/xyz_picks.json",
-                            image_space="rec1/46101/xyz_picks_image_space.json",
+                            ccf=_local("rec1/46101/xyz_picks.json"),
+                            image_space=_local("rec1/46101/xyz_picks_image_space.json"),
                             shank=None,
                         )
                     ],
@@ -391,6 +450,10 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
             }
         },
     )
+
+
+def _asset_roots(root: Path) -> list[Path]:
+    return [root.parent]
 
 
 def test_write_datapackage_passes_when_all_paths_exist(tmp_path):
@@ -401,8 +464,8 @@ def test_write_datapackage_passes_when_all_paths_exist(tmp_path):
     )
 
     dp = _valid_datapackage_on_disk(tmp_path)
-    assert dp.missing_paths(tmp_path) == []
-    path = write_datapackage(dp, tmp_path)  # validate=True by default
+    assert dp.missing_paths(tmp_path, asset_roots=_asset_roots(tmp_path)) == []
+    path = write_datapackage(dp, tmp_path, asset_roots=_asset_roots(tmp_path))  # validate=True by default
     assert load_datapackage(path) == dp
 
 
@@ -414,12 +477,15 @@ def test_write_datapackage_raises_on_bad_ephys_dir(tmp_path):
     )
 
     dp = _valid_datapackage_on_disk(tmp_path)
-    entry = dp.probes["rec1"]["46101"].model_copy(update={"ephys": "rec1/46101/spikes"})
+    entry = dp.probes["rec1"]["46101"].model_copy(update={"ephys": _local("rec1/46101/spikes")})
     bad = dp.model_copy(update={"probes": {"rec1": {"46101": entry}}})
 
-    assert "rec1/46101/spikes/ (ephys directory)" in bad.missing_paths(tmp_path)
+    assert "rec1/46101/spikes/ (ephys directory)" in bad.missing_paths(
+        tmp_path,
+        asset_roots=_asset_roots(tmp_path),
+    )
     with pytest.raises(DataPackageError, match="not found"):
-        write_datapackage(bad, tmp_path)
+        write_datapackage(bad, tmp_path, asset_roots=_asset_roots(tmp_path))
     # Nothing was written.
     assert not (tmp_path / "datapackage.json").exists()
 
@@ -428,4 +494,7 @@ def test_missing_file_is_reported(tmp_path):
     """A missing referenced file (not just ephys) is flagged."""
     dp = _valid_datapackage_on_disk(tmp_path)
     (tmp_path / "image_space_histology/labels_in_mouse.nrrd").unlink()
-    assert "image_space_histology/labels_in_mouse.nrrd" in dp.missing_paths(tmp_path)
+    assert "image_space_histology/labels_in_mouse.nrrd" in dp.missing_paths(
+        tmp_path,
+        asset_roots=_asset_roots(tmp_path),
+    )

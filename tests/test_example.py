@@ -100,9 +100,10 @@ def test_ephys_importable():
 
 def test_pipeline_importable():
     """Smoke test: pipeline module imports."""
-    from aind_ibl_ephys_alignment_preprocessing.pipeline import run_pipeline
+    from aind_ibl_ephys_alignment_preprocessing.pipeline import regenerate_datapackage, run_pipeline
 
     assert callable(run_pipeline)
+    assert callable(regenerate_datapackage)
 
 
 def test_async_concurrency_importable():
@@ -164,3 +165,20 @@ def test_reference_paths_for_data_root():
     rp = ReferencePaths.for_data_root(Path("/mydata"))
     assert rp.template_25 == Path("/mydata/smartspim_lca_template/smartspim_lca_template_25.nii.gz")
     assert rp.ibl_atlas_histology_path == Path("/mydata/iblatlas_allenatlas")
+
+
+def test_copy_existing_results_from_asset_root(tmp_path):
+    """Datapackage-only mode can copy an immutable prior results asset."""
+    from aind_ibl_ephys_alignment_preprocessing.pipeline import copy_existing_results
+
+    source_asset = tmp_path / "data" / "old_preprocessed_asset"
+    source_mouse = source_asset / "mouse42"
+    source_file = source_mouse / "rec1" / "ProbeA" / "xyz_picks.json"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("{}")
+    (source_mouse / "datapackage.json").write_text("{}")
+
+    destination = copy_existing_results(source_asset, tmp_path / "results", "mouse42")
+
+    assert destination == tmp_path / "results" / "mouse42"
+    assert (destination / "rec1" / "ProbeA" / "xyz_picks.json").read_text() == "{}"

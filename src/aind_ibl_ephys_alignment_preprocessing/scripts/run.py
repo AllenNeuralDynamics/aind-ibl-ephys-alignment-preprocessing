@@ -21,8 +21,25 @@ def main() -> None:
     parser.add_argument("--manifest", required=True, help="Manifest CSV file path.")
     parser.add_argument("--skip-ephys", action="store_true", help="Skip ephys extraction.")
     parser.add_argument("--validate-only", action="store_true", help="Run validation only, then exit.")
+    parser.add_argument(
+        "--datapackage-only",
+        action="store_true",
+        help="Regenerate datapackage.json from existing outputs without rerunning preprocessing.",
+    )
+    parser.add_argument(
+        "--source-results",
+        type=Path,
+        default=None,
+        help=(
+            "Existing results asset/root or mouse output directory to copy into "
+            "results-root before --datapackage-only regeneration."
+        ),
+    )
     parser.add_argument("--async", dest="run_async", action="store_true", help="Run pipeline asynchronously.")
     args = parser.parse_args()
+
+    if args.source_results is not None and not args.datapackage_only:
+        parser.error("--source-results is only valid with --datapackage-only")
 
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
 
@@ -42,6 +59,12 @@ def main() -> None:
         results = validator.validate_all()
         validator.print_summary(results)
         sys.exit(0 if not validator.has_errors(results) else 1)
+
+    if args.datapackage_only:
+        from aind_ibl_ephys_alignment_preprocessing.pipeline import regenerate_datapackage
+
+        regenerate_datapackage(config, source_results=args.source_results)
+        return
 
     if args.run_async:
         from aind_ibl_ephys_alignment_preprocessing._async.pipeline import run_pipeline_async

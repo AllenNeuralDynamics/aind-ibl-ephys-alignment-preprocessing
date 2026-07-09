@@ -31,7 +31,11 @@ from aind_ibl_ephys_alignment_preprocessing.discovery import (
     find_asset_info,
     prepare_result_dirs,
 )
-from aind_ibl_ephys_alignment_preprocessing.manifest import build_datapackage, write_datapackage
+from aind_ibl_ephys_alignment_preprocessing.manifest import (
+    build_datapackage,
+    producer_asset_overrides,
+    write_datapackage,
+)
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
     PipelineConfig,
@@ -216,7 +220,12 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
 
     manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
     dp = build_datapackage(mouse_id, manifest_rows, processed_results, asset_info, out, config)
-    dp_path = write_datapackage(dp, config.results_root / mouse_id)
+    dp_path = write_datapackage(
+        dp,
+        config.results_root / mouse_id,
+        asset_roots=[config.data_root],
+        asset_overrides=producer_asset_overrides(asset_info, config),
+    )
     logger.info("[Orchestrator] Wrote datapackage manifest to %s", dp_path)
 
     return processed_results

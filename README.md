@@ -55,6 +55,8 @@ aind-ibl-preprocess \
 | `--scratch-root PATH` | Scratch directory for temporary files (default: system temp) |
 | `--skip-ephys` | Skip electrophysiology extraction |
 | `--validate-only` | Run pre-flight validation checks and exit |
+| `--datapackage-only` | Regenerate `datapackage.json` from existing outputs without rerunning histology or ephys preprocessing |
+| `--source-results PATH` | Existing results asset/root or mouse output directory to copy into `results_root` before `--datapackage-only` regeneration |
 | `--async` | Run the pipeline asynchronously with concurrency |
 
 ### Validation
@@ -74,6 +76,42 @@ aind-ibl-preprocess \
 This checks file existence, manifest structure, reference data availability,
 disk space (warns below 50 GB, errors below 10 GB), and available RAM
 (minimum 8 GB).
+
+### Regenerating only `datapackage.json`
+
+If preprocessing has already produced the histology/ephys outputs, you can
+rewrite just the datapackage metadata:
+
+```bash
+aind-ibl-preprocess \
+    --data-root /path/to/data \
+    --results-root /path/to/results \
+    --neuroglancer neuroglancer.json \
+    --manifest manifest.csv \
+    --datapackage-only
+```
+
+This path rediscovers asset metadata, infers successful manifest rows from
+existing `xyz_picks*.json` outputs, validates referenced files, and writes a
+fresh `datapackage.json`. It does not rerun ANTs transforms, zarr reads, probe
+track conversion, or ephys extraction.
+
+On Code Ocean, previous `/results` assets are immutable when attached back to a
+new capsule. Attach the old preprocessed results asset under `/data`, then copy
+it into the new run's `/results` before rewriting the datapackage:
+
+```bash
+aind-ibl-preprocess \
+    --data-root /data \
+    --results-root /results \
+    --neuroglancer neuroglancer.json \
+    --manifest manifest.csv \
+    --datapackage-only \
+    --source-results /data/<old_preprocessed_results_asset>
+```
+
+`--source-results` may point either at the prior results asset root, containing
+`<mouseid>/datapackage.json`, or directly at the `<mouseid>` output directory.
 
 ## Python API
 
