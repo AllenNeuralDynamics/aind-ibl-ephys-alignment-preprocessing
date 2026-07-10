@@ -49,8 +49,15 @@ async def process_manifest_row_async(
     outputs: OutputDirs,
     limits: Limits,
     data_root: Path,
+    *,
+    emit_qc: bool = False,
 ) -> ProcessResult:
     """Async end-to-end processing for a single manifest row.
+
+    Always writes the image-space ``xyz_picks`` (the only track output the
+    alignment GUI reads). The QC outputs (FCSVs + CCF/bregma picks, which need
+    the two ANTs point-warps via ``hist_stub_buggy`` + ``ibl_atlas``) are
+    produced only when *emit_qc* is True.
 
     Parameters
     ----------
@@ -88,58 +95,95 @@ async def process_manifest_row_async(
         return ProcessResult(probe_id, str(row.sorted_recording), False, f"Annotation not found: {pattern}")
 
     gui_folder = row.gui_folder(outputs)
-    if row.histology_shank is None:
-        img_name = f"{probe_id}_image_space.json"
-        ccf_name = f"{probe_id}_ccf.json"
-        gui_img = "xyz_picks_image_space.json"
-        gui_ccf = "xyz_picks.json"
-    else:
-        shank_id = int(row.histology_shank) + 1
-        img_name = f"{probe_id}_shank{shank_id}_image_space.json"
-        ccf_name = f"{probe_id}_shank{shank_id}_ccf.json"
-        gui_img = f"xyz_picks_shank{shank_id}_image_space.json"
-        gui_ccf = f"xyz_picks_shank{shank_id}.json"
+    shank_suffix = "" if row.histology_shank is None else f"_shank{int(row.histology_shank) + 1}"
+    img_name = f"{probe_id}{shank_suffix}_image_space.json"
+    gui_img = f"xyz_picks{shank_suffix}_image_space.json"
+    ccf_name = f"{probe_id}{shank_suffix}_ccf.json"
+    gui_ccf = f"xyz_picks{shank_suffix}.json"
 
     p_img = outputs.bregma_xyz / img_name
     p_ccf = outputs.bregma_xyz / ccf_name
-    if p_img.exists() and p_ccf.exists():
+    # Image-space picks are always produced; CCF picks only under QC.
+    if p_img.exists() and (not emit_qc or p_ccf.exists()):
         return ProcessResult(probe_id, str(row.sorted_recording), True, "Already processed")
 
-    # Load NG points
+    # Load NG points in the image-space stub domain — the only mapping the GUI needs.
     ng_data = await read_json_in_thread(ann_path, limits)
     anno_zarr = asset_info.zarr_volumes.registration
     metadata = asset_info.zarr_volumes.metadata
-    async with asyncio.TaskGroup() as tg:
-        probe_pt_dict_task = tg.create_task(
-            to_thread_logged(
-                neuroglancer_annotations_to_anatomical,
-                ng_data,
-                anno_zarr,
-                metadata,
-                layer_names=[probe_id],
-                stub_image=hist_stub,
-            ),
-            name=f"ng-to-anat-{probe_id}",
-        )
-        probe_pt_dict_buggy_task = tg.create_task(
-            to_thread_logged(
-                neuroglancer_annotations_to_anatomical,
-                ng_data,
-                anno_zarr,
-                metadata,
-                layer_names=[probe_id],
-                stub_image=hist_stub_buggy,
-            ),
-            name=f"ng-to-anat-buggy-{probe_id}",
-        )
-    probe_pt_dict, _ = probe_pt_dict_task.result()
-    probe_pt_dict_buggy, _ = probe_pt_dict_buggy_task.result()
+    probe_pt_dict, _ = await to_thread_logged(
+        neuroglancer_annotations_to_anatomical,
+        ng_data,
+        anno_zarr,
+        metadata,
+        layer_names=[probe_id],
+        stub_image=hist_stub,
+    )
     probe_pts = probe_pt_dict.get(probe_id, None)
     if probe_pts is None:
         return ProcessResult(probe_id, str(row.sorted_recording), False, f"Probe points not found: {probe_id}")
-    probe_pts_buggy = probe_pt_dict_buggy[probe_id]
 
-    # Write SPIM FCSV
+    # Image-space xyz-picks (um) — no ANTs warp, just an LPS->RAS flip.
+    xyz_img = 1000.0 * convert_coordinate_system(probe_pts, src_coord="LPS", dst_coord="RAS")
+    img_json_str = json.dumps({"xyz_picks": xyz_img.tolist()})
+
+    await io_to_thread_on(limits, str(gui_folder), gui_folder.mkdir, parents=True, exist_ok=True)
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(
+            io_to_thread_on(limits, str(p_img), p_img.write_text, img_json_str),
+            name=f"write-bregma-img-{probe_id}",
+        )
+        tg.create_task(
+            io_to_thread_on(limits, str(gui_folder), (gui_folder / gui_img).write_text, img_json_str),
+            name=f"write-gui-img-{probe_id}",
+        )
+
+    if emit_qc:
+        await _write_qc_probe_outputs_async(
+            asset_info=asset_info,
+            ng_data=ng_data,
+            probe_id=probe_id,
+            probe_pts=probe_pts,
+            hist_stub_buggy=hist_stub_buggy,
+            ibl_atlas=ibl_atlas,
+            outputs=outputs,
+            gui_folder=gui_folder,
+            p_ccf=p_ccf,
+            gui_ccf=gui_ccf,
+            limits=limits,
+        )
+
+    logger.info("[Probe %s] Completed", row.probe_id)
+    return ProcessResult(
+        probe_id=probe_id,
+        recording_id=row.recording_id,
+        wrote_files=True,
+        skipped_reason=None,
+    )
+
+
+async def _write_qc_probe_outputs_async(
+    *,
+    asset_info: AssetInfo,
+    ng_data: dict,  # type: ignore[type-arg]
+    probe_id: str,
+    probe_pts: object,
+    hist_stub_buggy: sitk.Image,
+    ibl_atlas: AllenAtlas,
+    outputs: OutputDirs,
+    gui_folder: Path,
+    p_ccf: Path,
+    gui_ccf: str,
+    limits: Limits,
+) -> None:
+    """QC outputs the GUI never reads: SPIM/template/CCF FCSVs + CCF/bregma picks.
+
+    Requires the two ANTs point-warps (via ``hist_stub_buggy``) and ``ibl_atlas``.
+    """
+    anno_zarr = asset_info.zarr_volumes.registration
+    metadata = asset_info.zarr_volumes.metadata
+
+    # SPIM FCSV (no warp)
     await io_to_thread_on(
         limits,
         str(outputs.spim),
@@ -149,17 +193,26 @@ async def process_manifest_row_async(
         direction="LPS",
     )
 
+    probe_pt_dict_buggy, _ = await to_thread_logged(
+        neuroglancer_annotations_to_anatomical,
+        ng_data,
+        anno_zarr,
+        metadata,
+        layer_names=[probe_id],
+        stub_image=hist_stub_buggy,
+    )
+    probe_pts_buggy = probe_pt_dict_buggy[probe_id]
+
     # Image -> Template
     tx_list_pt_template = [
         str(asset_info.registration_dir_path / "ls_to_template_SyN_0GenericAffine.mat"),
         str(asset_info.registration_dir_path / "ls_to_template_SyN_1InverseWarp.nii.gz"),
     ]
-    tx_list_pt_template_invert = [True, False]
     pts_template = await to_thread_logged(
         apply_ants_transforms_to_point_arr,
         probe_pts_buggy,
         tx_list_pt_template,
-        whichtoinvert=tx_list_pt_template_invert,
+        whichtoinvert=[True, False],
     )
     await io_to_thread_on(
         limits,
@@ -186,44 +239,20 @@ async def process_manifest_row_async(
         direction="LPS",
     )
 
-    # IBL xyz-picks
+    # CCF/bregma xyz-picks (um)
     ccf_mlapdv_um = convert_coordinate_system(1000.0 * pts_ccf, src_coord="LPS", dst_coord="RPI")
     bregma_mlapdv_um = 1_000_000.0 * ibl_atlas.ccf2xyz(ccf_mlapdv_um, ccf_order="mlapdv")
-    xyz_img = 1000.0 * convert_coordinate_system(probe_pts, src_coord="LPS", dst_coord="RAS")
+    ccf_json_str = json.dumps({"xyz_picks": bregma_mlapdv_um.tolist()})
 
-    xyz_picks_image = {"xyz_picks": xyz_img.tolist()}
-    xyz_picks_ccf = {"xyz_picks": bregma_mlapdv_um.tolist()}
-
-    # Write bregma_xyz JSONs
-    img_json_str = json.dumps(xyz_picks_image)
-    ccf_json_str = json.dumps(xyz_picks_ccf)
     async with asyncio.TaskGroup() as tg:
         tg.create_task(
-            io_to_thread_on(limits, str(p_img), p_img.write_text, img_json_str), name=f"write-bregma-img-{probe_id}"
-        )
-        tg.create_task(
-            io_to_thread_on(limits, str(p_ccf), p_ccf.write_text, ccf_json_str), name=f"write-bregma-ccf-{probe_id}"
-        )
-
-    # Per-recording GUI artifacts
-    await io_to_thread_on(limits, str(gui_folder), gui_folder.mkdir, parents=True, exist_ok=True)
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(
-            io_to_thread_on(limits, str(gui_folder), (gui_folder / gui_img).write_text, img_json_str),
-            name=f"write-gui-img-{probe_id}",
+            io_to_thread_on(limits, str(p_ccf), p_ccf.write_text, ccf_json_str),
+            name=f"write-bregma-ccf-{probe_id}",
         )
         tg.create_task(
             io_to_thread_on(limits, str(gui_folder), (gui_folder / gui_ccf).write_text, ccf_json_str),
             name=f"write-gui-ccf-{probe_id}",
         )
-
-    logger.info("[Probe %s] Completed: wrote xyz_picks to 4 locations", row.probe_id)
-    return ProcessResult(
-        probe_id=probe_id,
-        recording_id=row.recording_id,
-        wrote_files=True,
-        skipped_reason=None,
-    )
 
 
 async def process_manifest_row_limit_async(
@@ -235,11 +264,13 @@ async def process_manifest_row_limit_async(
     outputs: OutputDirs,
     limits: Limits,
     data_root: Path,
+    *,
+    emit_qc: bool = False,
 ) -> ProcessResult:
     """Rate-limited wrapper around :func:`process_manifest_row_async`."""
     async with limits.manifest_rows:
         return await process_manifest_row_async(
-            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root
+            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root, emit_qc=emit_qc
         )
 
 
@@ -252,11 +283,13 @@ async def process_manifest_row_safe_async(
     outputs: OutputDirs,
     limits: Limits,
     data_root: Path,
+    *,
+    emit_qc: bool = False,
 ) -> ProcessResult:
     """Error-catching wrapper that converts exceptions to :class:`ProcessResult`."""
     try:
         return await process_manifest_row_limit_async(
-            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root
+            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root, emit_qc=emit_qc
         )
     except Exception as e:
         logger.exception("Row failed: probe=%s recording=%s", row.probe_id, row.recording_id)

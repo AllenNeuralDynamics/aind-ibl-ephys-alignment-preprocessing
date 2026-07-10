@@ -32,16 +32,16 @@ def process_manifest_row(
     ibl_atlas: AllenAtlas,
     outputs: OutputDirs,
     data_root: Path,
+    *,
+    emit_qc: bool = False,
 ) -> ProcessResult:
     """End-to-end processing for a single manifest row.
 
-    Steps
-    -----
-    1. Locate annotation, load NG points.
-    2. Convert to image-space physical (LPS) coordinates.
-    3. Write FCSV for SPIM/template/CCF.
-    4. Convert to IBL xyz-picks and write JSONs (with shank handling).
-    5. Copy xyz-picks into GUI sorting folder.
+    Always writes the image-space ``xyz_picks`` (the only track output the
+    alignment GUI reads). The QC/diagnostic outputs — SPIM/template/CCF Slicer
+    FCSVs and the CCF/bregma ``xyz_picks`` — are produced only when *emit_qc* is
+    True; they require the ANTs point-warps (via ``hist_stub_buggy``) and the
+    ``ibl_atlas``, and nothing in the alignment workflow consumes them.
 
     Parameters
     ----------
@@ -52,13 +52,17 @@ def process_manifest_row(
     hist_stub : sitk.Image
         Histology stub image with correct domain.
     hist_stub_buggy : sitk.Image
-        Histology stub image in pipeline (buggy) domain.
+        Histology stub image in pipeline (buggy) domain. Only used when
+        *emit_qc* is True.
     ibl_atlas : AllenAtlas
-        Allen atlas instance for CCF-to-bregma conversion.
+        Allen atlas instance for CCF-to-bregma conversion. Only used when
+        *emit_qc* is True.
     outputs : OutputDirs
         Output directory tree.
     data_root : Path
         Root directory for input data.
+    emit_qc : bool
+        Produce the GUI-unused QC outputs (FCSVs + CCF/bregma picks).
 
     Returns
     -------
@@ -91,14 +95,66 @@ def process_manifest_row(
     if probe_pts is None:
         return ProcessResult(probe_id, str(row.sorted_recording), False, f"Probe points not found: {probe_id}")
 
-    # 3) Write SPIM FCSV
+    # Image-space xyz-picks (um) — the ONLY track output the alignment GUI reads.
+    # No ANTs warp: just a coordinate-system flip of the stub-domain NG points.
+    xyz_img = 1000.0 * convert_coordinate_system(probe_pts, src_coord="LPS", dst_coord="RAS")
+    xyz_picks_image = {"xyz_picks": xyz_img.tolist()}
+
+    gui_folder = row.gui_folder(outputs)
+    shank_suffix = "" if row.histology_shank is None else f"_shank{int(row.histology_shank) + 1}"
+    img_name = f"{probe_id}{shank_suffix}_image_space.json"
+    gui_img = f"xyz_picks{shank_suffix}_image_space.json"
+
+    (outputs.bregma_xyz / img_name).write_text(json.dumps(xyz_picks_image))
+    gui_folder.mkdir(parents=True, exist_ok=True)
+    (gui_folder / gui_img).write_text(json.dumps(xyz_picks_image))
+
+    if emit_qc:
+        _write_qc_probe_outputs(
+            asset_info=asset_info,
+            ng_data=ng_data,
+            probe_id=probe_id,
+            probe_pts=probe_pts,
+            hist_stub_buggy=hist_stub_buggy,
+            ibl_atlas=ibl_atlas,
+            outputs=outputs,
+            gui_folder=gui_folder,
+            shank_suffix=shank_suffix,
+        )
+
+    return ProcessResult(
+        probe_id=probe_id,
+        recording_id=row.recording_id,
+        wrote_files=True,
+        skipped_reason=None,
+    )
+
+
+def _write_qc_probe_outputs(
+    *,
+    asset_info: AssetInfo,
+    ng_data: dict,  # type: ignore[type-arg]
+    probe_id: str,
+    probe_pts: object,
+    hist_stub_buggy: sitk.Image,
+    ibl_atlas: AllenAtlas,
+    outputs: OutputDirs,
+    gui_folder: Path,
+    shank_suffix: str,
+) -> None:
+    """Write GUI-unused QC outputs: SPIM/template/CCF FCSVs + CCF/bregma xyz-picks.
+
+    These require the two ANTs point-warps (via ``hist_stub_buggy``) and the
+    ``ibl_atlas``; nothing in the alignment workflow reads them.
+    """
+    # SPIM FCSV (no warp)
     create_slicer_fcsv(str(outputs.spim / f"{probe_id}.fcsv"), probe_pts, direction="LPS")
 
-    # 4) Image -> Template (points) via buggy pipeline transform
+    # Image -> Template (points) via buggy pipeline transform
     probe_pt_dict_buggy, _ = neuroglancer_annotations_to_anatomical(
         ng_data,
-        anno_zarr,
-        metadata,
+        asset_info.zarr_volumes.registration,
+        asset_info.zarr_volumes.metadata,
         layer_names=[probe_id],
         stub_image=hist_stub_buggy,
     )
@@ -107,15 +163,14 @@ def process_manifest_row(
         str(asset_info.registration_dir_path / "ls_to_template_SyN_0GenericAffine.mat"),
         str(asset_info.registration_dir_path / "ls_to_template_SyN_1InverseWarp.nii.gz"),
     ]
-    tx_list_pt_template_invert = [True, False]
     pts_template = apply_ants_transforms_to_point_arr(
         probe_pts_buggy,
         tx_list_pt_template,
-        whichtoinvert=tx_list_pt_template_invert,
+        whichtoinvert=[True, False],
     )
     create_slicer_fcsv(str(outputs.template / f"{probe_id}.fcsv"), pts_template, direction="LPS")
 
-    # 5) Template -> CCF (points)
+    # Template -> CCF (points)
     pts_ccf = apply_ants_transforms_to_point_arr(
         probe_pts_buggy,
         asset_info.pipeline_registration_chains.pt_tx_str,
@@ -123,41 +178,12 @@ def process_manifest_row(
     )
     create_slicer_fcsv(str(outputs.ccf / f"{probe_id}.fcsv"), pts_ccf, direction="LPS")
 
-    # 6) IBL xyz-picks (um) from CCF (ML/AP/DV with signed flips)
+    # IBL CCF/bregma xyz-picks (um), ML/AP/DV with signed flips
     ccf_mlapdv_um = convert_coordinate_system(1000.0 * pts_ccf, src_coord="LPS", dst_coord="RPI")
     bregma_mlapdv_um = 1_000_000.0 * ibl_atlas.ccf2xyz(ccf_mlapdv_um, ccf_order="mlapdv")
-
-    # Image-space xyz-picks (um)
-    xyz_img = 1000.0 * convert_coordinate_system(probe_pts, src_coord="LPS", dst_coord="RAS")
-
-    xyz_picks_image = {"xyz_picks": xyz_img.tolist()}
     xyz_picks_ccf = {"xyz_picks": bregma_mlapdv_um.tolist()}
 
-    gui_folder = row.gui_folder(outputs)
-    if row.histology_shank is None:
-        img_name = f"{probe_id}_image_space.json"
-        ccf_name = f"{probe_id}_ccf.json"
-        gui_img = "xyz_picks_image_space.json"
-        gui_ccf = "xyz_picks.json"
-    else:
-        shank_id = int(row.histology_shank) + 1
-        img_name = f"{probe_id}_shank{shank_id}_image_space.json"
-        ccf_name = f"{probe_id}_shank{shank_id}_ccf.json"
-        gui_img = f"xyz_picks_shank{shank_id}_image_space.json"
-        gui_ccf = f"xyz_picks_shank{shank_id}.json"
-
-    # 7) Write bregma_xyz JSONs (global per-mouse)
-    (outputs.bregma_xyz / img_name).write_text(json.dumps(xyz_picks_image))
+    ccf_name = f"{probe_id}{shank_suffix}_ccf.json"
+    gui_ccf = f"xyz_picks{shank_suffix}.json"
     (outputs.bregma_xyz / ccf_name).write_text(json.dumps(xyz_picks_ccf))
-
-    # 8) Per-recording GUI artifacts
-    gui_folder.mkdir(parents=True, exist_ok=True)
-    (gui_folder / gui_img).write_text(json.dumps(xyz_picks_image))
     (gui_folder / gui_ccf).write_text(json.dumps(xyz_picks_ccf))
-
-    return ProcessResult(
-        probe_id=probe_id,
-        recording_id=row.recording_id,
-        wrote_files=True,
-        skipped_reason=None,
-    )

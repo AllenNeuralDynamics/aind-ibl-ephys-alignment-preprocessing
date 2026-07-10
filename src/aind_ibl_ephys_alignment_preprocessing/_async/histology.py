@@ -233,8 +233,14 @@ async def process_additional_channel_pipeline_async(
     limits: Limits,
     scratch_root: Path,
     level: int = 3,
+    *,
+    emit_qc: bool = False,
 ) -> None:
-    """Async process a single additional OME-Zarr channel."""
+    """Async process a single additional OME-Zarr channel.
+
+    Writes the image-space channel NRRD always; the CCF-space warp (GUI-unused
+    QC) only when *emit_qc* is True.
+    """
     from aind_zarr_utils.zarr import zarr_to_sitk
 
     ch_str = Path(zarr_path).stem
@@ -244,6 +250,11 @@ async def process_additional_channel_pipeline_async(
     channel_dst = outputs.histology_img / f"{ch_str}.nrrd"
     await convert_img_to_direction_and_write_async(img_raw, channel_dst, limits)
     logger.info("[Channel %s] converted to %s and written to disk", ch_str, _BLESSED_DIRECTION)
+
+    if not emit_qc:
+        logger.info("[Channel %s] Completed (image-space only; QC off)", ch_str)
+        return
+
     ants_hist_img = await io_to_thread_on(limits, str(channel_dst), ants.image_read, str(channel_dst), pixeltype=None)
     logger.info("[Channel %s] read into ANTs complete", ch_str)
     ants.copy_image_info(pipeline_histology_space_img, ants_hist_img)
@@ -280,6 +291,8 @@ async def process_additional_channels_pipeline_async(
     limits: Limits,
     scratch_root: Path,
     level: int = 3,
+    *,
+    emit_qc: bool = False,
 ) -> None:
     """Async dispatch all additional channels in parallel."""
     async with asyncio.TaskGroup() as tg:
@@ -295,6 +308,7 @@ async def process_additional_channels_pipeline_async(
                     limits,
                     scratch_root=scratch_root,
                     level=level,
+                    emit_qc=emit_qc,
                 ),
                 name=f"channel-{ch_name}",
             )

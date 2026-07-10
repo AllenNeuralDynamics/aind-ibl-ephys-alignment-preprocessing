@@ -36,10 +36,22 @@ def main() -> None:
         ),
     )
     parser.add_argument("--async", dest="run_async", action="store_true", help="Run pipeline asynchronously.")
+    parser.add_argument(
+        "--qc",
+        default="0",
+        help=(
+            "Emit QC/diagnostic outputs the alignment GUI never reads (Slicer FCSVs, "
+            "CCF/bregma xyz_picks, CCF-space histology volumes). Off by default; pass a "
+            "truthy value (1/true/yes) to enable. Takes a value (not a bare flag) so it "
+            "round-trips through Code Ocean app-panel string parameters."
+        ),
+    )
     args = parser.parse_args()
 
     if args.source_results is not None and not args.datapackage_only:
         parser.error("--source-results is only valid with --datapackage-only")
+
+    emit_qc = str(args.qc).strip().lower() in {"1", "true", "yes", "y", "t", "on"}
 
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
 
@@ -50,6 +62,7 @@ def main() -> None:
         neuroglancer_file=Path(args.neuroglancer),
         manifest_csv=Path(args.manifest),
         skip_ephys=args.skip_ephys,
+        emit_qc=emit_qc,
     )
 
     if args.validate_only:

@@ -20,7 +20,7 @@ from aind_ibl_ephys_alignment_preprocessing.types import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "3.0.0"
+SCHEMA_VERSION = "3.1.0"
 # Why 3.0.0: 2.x stored filesystem locations as strings. 3.0.0 changes every
 # datapackage path into a reference object ``{asset, path}``, where
 # ``asset=None`` means datapackage-local and external assets are resolved via
@@ -77,16 +77,26 @@ class CcfSpaceHistology(BaseModel, frozen=True):
 
 
 class HistologyPaths(BaseModel, frozen=True):
-    """Histology output paths grouped by coordinate space."""
+    """Histology output paths grouped by coordinate space.
+
+    ``ccf_space`` (histology volumes warped into CCF) is a QC output the GUI
+    never reads; it is omitted (``None``) unless the pipeline ran with
+    ``emit_qc``.
+    """
 
     image_space: ImageSpaceHistology
-    ccf_space: CcfSpaceHistology
+    ccf_space: CcfSpaceHistology | None = None
 
 
 class XyzPicks(BaseModel, frozen=True):
-    """References to xyz-picks JSON files for one shank (or whole probe)."""
+    """References to xyz-picks JSON files for one shank (or whole probe).
 
-    ccf: PathReference
+    ``ccf`` is a QC output the alignment GUI never reads (it recomputes CCF from
+    ``image_space`` + the transforms). It is omitted (``None``) unless the
+    pipeline ran with ``emit_qc``.
+    """
+
+    ccf: PathReference | None = None
     image_space: PathReference
     histology_track_id: str | None = None
     histology_shank: int | None = None
@@ -197,9 +207,10 @@ class DataPackage(BaseModel, frozen=True):
             self.histology.image_space.ccf_template,
             self.histology.image_space.labels,
             *self.histology.image_space.additional_channels,
-            self.histology.ccf_space.registration,
-            *self.histology.ccf_space.additional_channels,
         ]
+        if self.histology.ccf_space is not None:
+            paths.append(self.histology.ccf_space.registration)
+            paths.extend(self.histology.ccf_space.additional_channels)
         for recording in self.probes.values():
             for probe in recording.values():
                 if probe.channel_table is not None:
@@ -209,7 +220,8 @@ class DataPackage(BaseModel, frozen=True):
                         paths.append(probe.channel_table.contact_id)
                     paths.append(probe.channel_table.shank_ind)
                 for xp in probe.xyz_picks:
-                    paths.append(xp.ccf)
+                    if xp.ccf is not None:
+                        paths.append(xp.ccf)
                     paths.append(xp.image_space)
         return paths
 
@@ -313,7 +325,7 @@ def build_datapackage(
 
     external_assets = _build_external_assets(asset_info, config)
     transforms = _build_transforms(asset_info, config, manifest_root)
-    histology = _build_histology(outputs, manifest_root)
+    histology = _build_histology(outputs, manifest_root, config)
     probes = _build_probes(manifest_rows, results, outputs, manifest_root, config)
 
     return DataPackage(
@@ -403,7 +415,7 @@ def producer_asset_overrides(asset_info: AssetInfo, config: PipelineConfig) -> d
     }
 
 
-def _build_histology(outputs: OutputDirs, manifest_root: Path) -> HistologyPaths:
+def _build_histology(outputs: OutputDirs, manifest_root: Path, config: PipelineConfig) -> HistologyPaths:
     img_dir = outputs.histology_img
     ccf_dir = outputs.histology_ccf
 
@@ -413,15 +425,22 @@ def _build_histology(outputs: OutputDirs, manifest_root: Path) -> HistologyPaths
         key=lambda ref: ref.path,
     )
 
-    # CCF-space additional channels (histology_*.nrrd excluding registration)
-    ccf_additional = sorted(
-        (
-            _local_ref(p, manifest_root)
-            for p in ccf_dir.glob("histology_*.nrrd")
-            if p.name != "histology_registration.nrrd"
-        ),
-        key=lambda ref: ref.path,
-    )
+    # CCF-space histology is a QC-only output the GUI never reads; omit it unless
+    # the pipeline ran with emit_qc (in which case it was warped + written).
+    ccf_space: CcfSpaceHistology | None = None
+    if config.emit_qc:
+        ccf_additional = sorted(
+            (
+                _local_ref(p, manifest_root)
+                for p in ccf_dir.glob("histology_*.nrrd")
+                if p.name != "histology_registration.nrrd"
+            ),
+            key=lambda ref: ref.path,
+        )
+        ccf_space = CcfSpaceHistology(
+            registration=_local_ref(ccf_dir / "histology_registration.nrrd", manifest_root),
+            additional_channels=ccf_additional,
+        )
 
     return HistologyPaths(
         image_space=ImageSpaceHistology(
@@ -431,10 +450,7 @@ def _build_histology(outputs: OutputDirs, manifest_root: Path) -> HistologyPaths
             labels=_local_ref(img_dir / "labels_in_mouse.nrrd", manifest_root),
             additional_channels=img_additional,
         ),
-        ccf_space=CcfSpaceHistology(
-            registration=_local_ref(ccf_dir / "histology_registration.nrrd", manifest_root),
-            additional_channels=ccf_additional,
-        ),
+        ccf_space=ccf_space,
     )
 
 
@@ -478,7 +494,7 @@ def _build_probes(
 
             xyz_picks_list.append(
                 XyzPicks(
-                    ccf=_local_ref(gui_folder / gui_ccf, manifest_root),
+                    ccf=(_local_ref(gui_folder / gui_ccf, manifest_root) if config.emit_qc else None),
                     image_space=_local_ref(gui_folder / gui_img, manifest_root),
                     histology_track_id=_row_histology_track_id(row),
                     histology_shank=histology_shank,

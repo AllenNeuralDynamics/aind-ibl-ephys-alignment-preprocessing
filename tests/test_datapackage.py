@@ -39,9 +39,9 @@ def _external(asset: str, path: str) -> PathReference:
     return PathReference(asset=asset, path=path)
 
 
-def test_schema_version_is_3_0_0():
-    """Schema is 3.0.0 — paths are reference objects, not locations."""
-    assert SCHEMA_VERSION == "3.0.0"
+def test_schema_version_is_3_1_0():
+    """Schema is 3.1.0 — 3.1 made QC-only refs (ccf picks) optional; GUI needs 3.x."""
+    assert SCHEMA_VERSION == "3.1.0"
 
 
 def test_transforms_are_external_asset_references(tmp_path):
@@ -168,8 +168,8 @@ def _fake_outputs(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(tracks_root=tmp_path / "_unused_tracks")
 
 
-def _fake_pipeline_config(skip_ephys: bool = False) -> SimpleNamespace:
-    return SimpleNamespace(skip_ephys=skip_ephys)
+def _fake_pipeline_config(skip_ephys: bool = False, emit_qc: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(skip_ephys=skip_ephys, emit_qc=emit_qc)
 
 
 def _fake_row(*, probe_id: str, probe_name: str, recording_id: str, probe_shank=None):
@@ -517,3 +517,39 @@ def test_missing_file_is_reported(tmp_path):
         tmp_path,
         asset_roots=_asset_roots(tmp_path),
     )
+
+
+def test_emit_qc_false_omits_ccf_picks(tmp_path):
+    """With emit_qc off, xyz_picks.ccf is omitted (GUI never reads it); image_space stays."""
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    rows = [_fake_row(probe_id="46101", probe_name="46101", recording_id="rec1")]
+    results = [ProcessResult(probe_id=r.probe_id, recording_id=r.recording_id, wrote_files=True) for r in rows]
+
+    probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config(emit_qc=False))
+    pick = probes["rec1"]["46101"].xyz_picks[0]
+    assert pick.ccf is None
+    assert pick.image_space == _local("rec1/46101/xyz_picks_image_space.json")
+
+    # And with emit_qc on, ccf is present again.
+    probes_qc = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config(emit_qc=True))
+    assert probes_qc["rec1"]["46101"].xyz_picks[0].ccf == _local("rec1/46101/xyz_picks.json")
+
+
+def test_emit_qc_false_omits_ccf_space_histology(tmp_path):
+    """With emit_qc off, the CCF-space histology tree is omitted (GUI reads image-space)."""
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_histology
+
+    img_dir = tmp_path / "image_space_histology"
+    ccf_dir = tmp_path / "ccf_space_histology"
+    img_dir.mkdir()
+    ccf_dir.mkdir()
+    outputs = SimpleNamespace(histology_img=img_dir, histology_ccf=ccf_dir)
+
+    hist_off = _build_histology(outputs, tmp_path, _fake_pipeline_config(emit_qc=False))
+    assert hist_off.ccf_space is None
+    assert hist_off.image_space.registration is not None  # image-space always kept
+
+    hist_on = _build_histology(outputs, tmp_path, _fake_pipeline_config(emit_qc=True))
+    assert hist_on.ccf_space is not None

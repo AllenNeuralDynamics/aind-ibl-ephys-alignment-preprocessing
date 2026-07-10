@@ -72,7 +72,8 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     node, zarr_metadata = _open_zarr(asset_info.zarr_volumes.registration)
     level = determine_desired_level(zarr_metadata, desired_voxel_size_um=config.desired_voxel_size_um)
 
-    copy_registration_channel_ccf_reorient(asset_info, out)
+    if config.emit_qc:  # CCF-space registration volume is GUI-unused QC
+        copy_registration_channel_ccf_reorient(asset_info, out)
     raw_img_path, pipeline_img_path = write_registration_channel_images(
         asset_info, out, level=level, opened_zarr=(node, zarr_metadata)
     )
@@ -89,6 +90,7 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
         out,
         scratch_root=scratch_root,
         level=level,
+        emit_qc=config.emit_qc,
     )
     transform_ccf_to_image_space(asset_info, ref_imgs, raw_img_ants, pipeline_img_ants, out)
     transform_ccf_labels_to_image_space(asset_info, ref_paths, raw_img_ants, pipeline_img_ants, out)
@@ -110,7 +112,14 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     for _, row in manifest_df.iterrows():
         mr = ManifestRow.from_series(row)
         result = process_manifest_row(
-            mr, asset_info, raw_img_stub, raw_img_stub_buggy, ibl_atlas, out, config.data_root
+            mr,
+            asset_info,
+            raw_img_stub,
+            raw_img_stub_buggy,
+            ibl_atlas,
+            out,
+            config.data_root,
+            emit_qc=config.emit_qc,
         )
         processed_results.append(result)
         if not result.wrote_files:

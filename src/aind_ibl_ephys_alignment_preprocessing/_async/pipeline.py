@@ -59,6 +59,8 @@ async def _create_volumes_async(
     limits: Limits,
     scratch_root: Path,
     desired_voxel_size_um: float = 25.0,
+    *,
+    emit_qc: bool = False,
 ) -> None:
     """Create all volume outputs (registration channel + additional + CCF transforms)."""
     logger.info("[Histology] Starting volume processing")
@@ -93,7 +95,14 @@ async def _create_volumes_async(
     async with asyncio.TaskGroup() as tg:
         tg.create_task(
             process_additional_channels_pipeline_async(
-                pipeline_img_ants, asset_info, ref_imgs, out, limits, scratch_root=scratch_root, level=level
+                pipeline_img_ants,
+                asset_info,
+                ref_imgs,
+                out,
+                limits,
+                scratch_root=scratch_root,
+                level=level,
+                emit_qc=emit_qc,
             ),
             name="process-additional-channels",
         )
@@ -182,6 +191,7 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
                 limits,
                 scratch_root=scratch_root,
                 desired_voxel_size_um=config.desired_voxel_size_um,
+                emit_qc=config.emit_qc,
             ),
             name=f"create-volumes-{mouse_id}",
         )
@@ -207,10 +217,11 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
             name=f"process-manifest-subprocess-{mouse_id}",
         )
 
-        tg.create_task(
-            copy_registration_channel_ccf_reorient_async(asset_info, out, limits),
-            name=f"copy-ccf-registration-{mouse_id}",
-        )
+        if config.emit_qc:  # CCF-space registration volume is GUI-unused QC
+            tg.create_task(
+                copy_registration_channel_ccf_reorient_async(asset_info, out, limits),
+                name=f"copy-ccf-registration-{mouse_id}",
+            )
     logger.info("[Orchestrator] All parallel tasks completed")
     manifest_pool.shutdown(wait=True)
     processed_results: list[ProcessResult] = manifest_task.result()

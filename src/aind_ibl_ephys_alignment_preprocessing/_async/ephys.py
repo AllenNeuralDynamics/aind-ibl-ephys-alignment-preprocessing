@@ -95,7 +95,15 @@ async def process_manifest_async(
             mr = ManifestRow.from_series(row)
             t = tg.create_task(
                 process_manifest_row_safe_async(
-                    mr, asset_info, raw_img_stub, raw_img_stub_buggy, ibl_atlas, out, limits, config.data_root
+                    mr,
+                    asset_info,
+                    raw_img_stub,
+                    raw_img_stub_buggy,
+                    ibl_atlas,
+                    out,
+                    limits,
+                    config.data_root,
+                    emit_qc=config.emit_qc,
                 ),
                 name=f"probe-{mr.probe_id}-{mr.recording_id}",
             )

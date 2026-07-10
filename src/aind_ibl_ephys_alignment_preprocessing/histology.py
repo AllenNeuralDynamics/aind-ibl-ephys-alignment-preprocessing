@@ -132,8 +132,14 @@ def process_additional_channels_pipeline(
     outputs: OutputDirs,
     scratch_root: Path,
     level: int = 3,
+    *,
+    emit_qc: bool = False,
 ) -> None:
-    """Process non-alignment OME-Zarr channels into CCF and image space.
+    """Process non-alignment OME-Zarr channels into image space (+ CCF for QC).
+
+    The image-space channel NRRD (consumed by the GUI) is always written. The
+    CCF-space channel volume — a full-volume ANTs warp the GUI never reads — is
+    produced only when *emit_qc* is True.
 
     Parameters
     ----------
@@ -149,6 +155,8 @@ def process_additional_channels_pipeline(
         Temporary directory for intermediate files.
     level : int
         Multiscale zarr level.
+    emit_qc : bool
+        Also warp each channel into CCF space (GUI-unused QC output).
     """
     from aind_zarr_utils.zarr import zarr_to_sitk
 
@@ -158,6 +166,9 @@ def process_additional_channels_pipeline(
         channel_dst = outputs.histology_img / f"{ch_str}.nrrd"
         convert_img_direction_and_write(img_raw, channel_dst)
         del img_raw
+
+        if not emit_qc:
+            continue  # skip the GUI-unused CCF-space volume warp
 
         ants_hist_img = ants.image_read(str(channel_dst), pixeltype=None)
         ants.copy_image_info(pipeline_histology_space_img, ants_hist_img)

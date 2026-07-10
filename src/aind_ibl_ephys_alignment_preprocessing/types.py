@@ -81,6 +81,11 @@ class PipelineConfig(BaseModel, frozen=True):
     skip_ephys: bool = False
     desired_voxel_size_um: float = 25.0
     num_parallel_jobs: int = 4
+    # QC/diagnostic outputs that the alignment GUI never reads: the Slicer FCSVs
+    # (spim/template/ccf), the CCF/bregma xyz_picks, and the CCF-space histology
+    # volumes. Off by default — producing them costs the ANTs point-warps and the
+    # full-volume warps into CCF for no consumer. Turn on for QC/export runs.
+    emit_qc: bool = False
 
     @model_validator(mode="after")
     def _resolve_relative_paths(self) -> PipelineConfig:
