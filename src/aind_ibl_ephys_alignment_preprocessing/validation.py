@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
@@ -488,6 +489,40 @@ class PipelineValidator:
 
     # -- Category 5: Per-probe Files -------------------------------------------
 
+    def _validate_sorting_output(self, mr: ManifestRow, recording_folder: Path, category: str) -> None:
+        """Warn when a probe has no postprocessed spike-sorting output.
+
+        When the analyzer is absent -- the usual sign of failed upstream
+        sorting -- the pipeline skips both histology and ephys for the probe
+        and drops it from the datapackage. We surface it as a warning (not an
+        error) so the omission is expected rather than a surprise at the end of
+        the run. See :func:`~aind_ibl_ephys_alignment_preprocessing.ephys.has_sorting_output`.
+        """
+        from aind_ibl_ephys_alignment_preprocessing.ephys import has_sorting_output
+
+        collection = str(mr.ephys_collection)
+        item = f"{mr.probe_id}_sorting"
+
+        if has_sorting_output(recording_folder, collection):
+            self._add_result(
+                True,
+                category,
+                item,
+                f"Postprocessed sorting output found for '{collection}'",
+                severity="info",
+            )
+        else:
+            self._add_result(
+                False,
+                category,
+                item,
+                f"No postprocessed sorting output for ephys collection '{collection}' "
+                f"under {recording_folder / 'postprocessed'}; probe will be skipped "
+                "(histology + ephys) and dropped from the datapackage "
+                "(likely failed spike sorting)",
+                severity="warning",
+            )
+
     def validate_per_probe_files(self) -> None:
         """Validate that per-probe annotation files and ephys data exist."""
         category = "Per-Probe Files"
@@ -581,6 +616,8 @@ class PipelineValidator:
                         f"Open Ephys structure.oebin reachable under {clipped}",
                         severity="info",
                     )
+
+                self._validate_sorting_output(mr, recording_folder, category)
 
             if mr.surface_finding is not None:
                 surface_path = self.config.data_root / mr.surface_finding

@@ -5,11 +5,38 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from aind_ephys_ibl_gui_conversion.ephys import extract_continuous, extract_spikes
-
 from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow, OutputDirs
 
 logger = logging.getLogger(__name__)
+
+
+def has_sorting_output(recording_folder: Path, ephys_collection: str) -> bool:
+    """Return whether a sorted asset holds postprocessed output for a collection.
+
+    aind-ephys-ibl-gui-conversion builds each collection's ALF table from a
+    ``postprocessed/experiment*_<stream>_recording*`` analyzer under the sorted
+    asset, where ``<stream>`` embeds the ephys-collection token (e.g.
+    ``...ProbeA-AP``). When no such analyzer exists -- the usual sign of failed
+    upstream spike sorting -- the converter writes ``sorting_error.txt`` and
+    produces no usable ephys, so the probe is not worth processing.
+
+    Parameters
+    ----------
+    recording_folder : Path
+        The sorted-recording asset directory (``data_root / sorted_recording``).
+    ephys_collection : str
+        The ephys-collection token (the ALF output folder name / probe stream).
+
+    Returns
+    -------
+    bool
+        *True* if at least one non-LFP postprocessed analyzer matches the
+        collection.
+    """
+    postprocessed = recording_folder / "postprocessed"
+    if not postprocessed.is_dir():
+        return False
+    return any(p.is_dir() and "-LFP" not in p.name for p in postprocessed.glob(f"*{ephys_collection}*"))
 
 
 def run_ephys_for_recording(
@@ -37,6 +64,10 @@ def run_ephys_for_recording(
     num_parallel_jobs : int
         Number of parallel workers for ``compute_rms`` in ``extract_continuous``.
     """
+    # Imported lazily so lightweight consumers (e.g. pre-flight validation)
+    # can use ``has_sorting_output`` without pulling in spikeinterface.
+    from aind_ephys_ibl_gui_conversion.ephys import extract_continuous, extract_spikes
+
     sorted_rec = str(row.sorted_recording)
     if sorted_rec in processed:
         return

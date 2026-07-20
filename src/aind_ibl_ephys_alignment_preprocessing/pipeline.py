@@ -24,7 +24,7 @@ from aind_ibl_ephys_alignment_preprocessing.discovery import (
     find_asset_info,
     prepare_result_dirs,
 )
-from aind_ibl_ephys_alignment_preprocessing.ephys import run_ephys_for_recording
+from aind_ibl_ephys_alignment_preprocessing.ephys import has_sorting_output, run_ephys_for_recording
 from aind_ibl_ephys_alignment_preprocessing.histology import (
     copy_registration_channel_ccf_reorient,
     process_additional_channels_pipeline,
@@ -111,6 +111,29 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
 
     for _, row in manifest_df.iterrows():
         mr = ManifestRow.from_series(row)
+
+        # Skip probes whose upstream spike sorting failed: without postprocessed
+        # output the ephys conversion produces nothing usable, so the histology
+        # track would be dropped from the datapackage anyway. Skipping here
+        # avoids the (expensive) per-probe coordinate transforms.
+        if not config.skip_ephys and not has_sorting_output(
+            config.data_root / mr.sorted_recording, str(mr.ephys_collection)
+        ):
+            logger.warning(
+                "Skipping probe %s/%s: no spike-sorting output (bad sorting); histology and ephys skipped",
+                mr.recording_id,
+                mr.ephys_collection,
+            )
+            processed_results.append(
+                ProcessResult(
+                    probe_id=mr.probe_id,
+                    recording_id=mr.recording_id,
+                    wrote_files=False,
+                    skipped_reason="no spike-sorting output (bad sorting)",
+                )
+            )
+            continue
+
         result = process_manifest_row(
             mr,
             asset_info,

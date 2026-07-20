@@ -228,6 +228,7 @@ def test_probes_nested_by_recording_then_name(tmp_path):
         _fake_row(probe_id="pid-3", probe_name="probeC", recording_id="rec2"),
     ]
     results = [ProcessResult(probe_id=r.probe_id, recording_id=r.recording_id, wrote_files=True) for r in rows]
+    _seed_ephys(tmp_path, rows)
 
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
 
@@ -247,6 +248,7 @@ def test_same_probe_name_across_recordings_kept_distinct(tmp_path):
         _fake_row(probe_id="pid-1b", probe_name="45883-1", recording_id="rec2"),
     ]
     results = [ProcessResult(probe_id=r.probe_id, recording_id=r.recording_id, wrote_files=True) for r in rows]
+    _seed_ephys(tmp_path, rows)
 
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
 
@@ -270,6 +272,7 @@ def test_multi_shank_collapses_into_one_probe(tmp_path):
     results = [
         ProcessResult(probe_id="pid", recording_id="rec1", wrote_files=True),
     ]
+    _seed_ephys(tmp_path, rows)
 
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
 
@@ -306,6 +309,7 @@ def test_split_stream_quadbase_maps_histology_to_ephys_shank(tmp_path):
         )
     ]
     _touch(tmp_path / "rec1/ProbeD/channels.contactId.npy")
+    _touch(tmp_path / "rec1/ProbeD/channels.localCoordinates.npy")
 
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
 
@@ -330,6 +334,7 @@ def test_channel_table_omits_missing_contact_id_for_existing_outputs(tmp_path):
 
     rows = [_fake_row(probe_id="pid-1", probe_name="46101", recording_id="rec1")]
     results = [ProcessResult(probe_id="pid-1", recording_id="rec1", wrote_files=True)]
+    _seed_ephys(tmp_path, rows)
 
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
 
@@ -346,6 +351,7 @@ def test_ephys_dir_is_probe_gui_folder_not_spikes_subdir(tmp_path):
 
     rows = [_fake_row(probe_id="pid-1", probe_name="46101", recording_id="rec1")]
     results = [ProcessResult(probe_id="pid-1", recording_id="rec1", wrote_files=True)]
+    _seed_ephys(tmp_path, rows)
 
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
 
@@ -355,6 +361,45 @@ def test_ephys_dir_is_probe_gui_folder_not_spikes_subdir(tmp_path):
     assert not ephys.path.endswith("/spikes")
     # xyz_picks resolve to the same folder — ephys and picks are co-located.
     assert probes["rec1"]["46101"].xyz_picks[0].ccf == _local("rec1/46101/xyz_picks.json")
+
+
+def test_probe_dropped_when_ephys_output_missing(tmp_path):
+    """A probe whose sorting failed (no channels table) is dropped, not fatal.
+
+    Bad upstream sorting leaves the collection without
+    ``channels.localCoordinates.npy``. The well-sorted probe still ships; the
+    failed one is silently dropped so the datapackage write does not abort.
+    """
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    good = _fake_row(probe_id="pid-good", probe_name="probeGood", recording_id="rec1")
+    bad = _fake_row(probe_id="pid-bad", probe_name="probeBad", recording_id="rec1")
+    rows = [good, bad]
+    results = [ProcessResult(probe_id=r.probe_id, recording_id=r.recording_id, wrote_files=True) for r in rows]
+    # Only the well-sorted probe has its ALF channel table on disk.
+    _seed_ephys(tmp_path, [good])
+
+    probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
+
+    assert set(probes["rec1"].keys()) == {"probeGood"}
+
+
+def test_probe_kept_without_ephys_when_skip_ephys(tmp_path):
+    """With skip_ephys the datapackage is histology-only; no ephys file needed."""
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    rows = [_fake_row(probe_id="pid-1", probe_name="probeA", recording_id="rec1")]
+    results = [ProcessResult(probe_id=r.probe_id, recording_id=r.recording_id, wrote_files=True) for r in rows]
+    # No ephys files seeded on purpose.
+
+    probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config(skip_ephys=True))
+
+    entry = probes["rec1"]["probeA"]
+    assert entry.ephys is None
+    assert entry.channel_table is None
+    assert len(entry.xyz_picks) == 1
 
 
 def test_infer_process_results_from_existing_outputs(tmp_path):
@@ -380,6 +425,18 @@ def test_infer_process_results_from_existing_outputs(tmp_path):
 def _touch(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("x")
+
+
+def _seed_ephys(tmp_path: Path, rows) -> None:
+    """Lay down each collection's load-bearing ALF channel file.
+
+    ``_build_probes`` drops any probe whose ephys collection lacks
+    ``channels.localCoordinates.npy`` (what the GUI loads first), so tests that
+    expect a well-sorted probe to survive must create it first.
+    """
+    outputs = _fake_outputs(tmp_path)
+    for r in rows:
+        _touch(r.gui_folder(outputs) / "channels.localCoordinates.npy")
 
 
 def _valid_datapackage_on_disk(root: Path) -> DataPackage:
@@ -526,6 +583,7 @@ def test_emit_qc_false_omits_ccf_picks(tmp_path):
 
     rows = [_fake_row(probe_id="46101", probe_name="46101", recording_id="rec1")]
     results = [ProcessResult(probe_id=r.probe_id, recording_id=r.recording_id, wrote_files=True) for r in rows]
+    _seed_ephys(tmp_path, rows)
 
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config(emit_qc=False))
     pick = probes["rec1"]["46101"].xyz_picks[0]

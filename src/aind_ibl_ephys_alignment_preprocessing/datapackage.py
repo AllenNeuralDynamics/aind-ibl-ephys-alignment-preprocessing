@@ -481,6 +481,31 @@ def _build_probes(
                 "Rows for one ephys_collection must share logical_probe: "
                 f"{recording_id}/{ephys_collection} has {sorted(logical_probes)}"
             )
+
+        # All rows in a group share the ephys collection folder (the group key
+        # is (recording_id, ephys_collection)).
+        first_row = rows[0]
+        ephys_dir = first_row.gui_folder(outputs)
+
+        # Drop probes whose ephys was requested but never produced. Bad upstream
+        # spike sorting leaves the ALF collection without a channels table:
+        # aind-ephys-ibl-gui-conversion writes ``sorting_error.txt`` into the
+        # collection folder and skips it, so ``channels.localCoordinates.npy``
+        # (what the GUI loads first) never appears. Emitting ephys/channel_table
+        # references to that missing table would trip datapackage validation at
+        # write time and abort the whole mouse; instead drop just this probe and
+        # warn, so every well-sorted probe still ships.
+        if not config.skip_ephys and not (ephys_dir / _REQUIRED_EPHYS_FILE).is_file():
+            logger.warning(
+                "Dropping probe %s/%s from datapackage: ephys output missing "
+                "(%s not found in %s); likely failed spike sorting upstream",
+                recording_id,
+                ephys_collection,
+                _REQUIRED_EPHYS_FILE,
+                ephys_dir,
+            )
+            continue
+
         ephys_shanks = {s for s in (_row_ephys_shank(r) for r in rows) if s is not None}
         num_shanks = len(ephys_shanks) if ephys_shanks else 1
 
@@ -506,8 +531,6 @@ def _build_probes(
         # Ephys path (same for all shanks of an ephys collection). The
         # conversion writes the ALF collection (spikes/clusters/channels.*)
         # directly into gui_folder -- NOT a "spikes" subdirectory.
-        first_row = rows[0]
-        ephys_dir = first_row.gui_folder(outputs)
         ephys_path = _local_ref(ephys_dir, manifest_root) if not config.skip_ephys else None
         contact_id_path = ephys_dir / "channels.contactId.npy"
         channel_table = (
