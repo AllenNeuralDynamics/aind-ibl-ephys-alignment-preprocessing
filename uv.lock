@@ -47,6 +47,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aind-code-ocean-pipeline-utils"
+version = "0.4.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/a5/6f6f3ae6d83d09d40552688e639cf2d03d19e95da5c9c91e74b2b8cb1f49/aind_code_ocean_pipeline_utils-0.4.2.tar.gz", hash = "sha256:04268b9d66ce3bac6d038a012a16ac8c67bd46d48ee68c1d66819d4b3c9c4eba", size = 150982, upload-time = "2026-07-22T20:40:44.233Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/6f/2441cda2c7d0374be50be2c6d2917e5fae9f226b2196d9981c0dba2637d9/aind_code_ocean_pipeline_utils-0.4.2-py3-none-any.whl", hash = "sha256:5d0110be5ef3ce3114b8b2646ee30ccc176af0eafd911e7933c2cbac4f0c7579", size = 45335, upload-time = "2026-07-22T20:40:42.957Z" },
+]
+
+[[package]]
 name = "aind-ephys-ibl-gui-conversion"
 version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -71,6 +80,7 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "aind-anatomical-utils" },
+    { name = "aind-code-ocean-pipeline-utils" },
     { name = "aind-ephys-ibl-gui-conversion" },
     { name = "aind-registration-utils" },
     { name = "aind-s3-cache" },
@@ -129,6 +139,7 @@ types = [
 [package.metadata]
 requires-dist = [
     { name = "aind-anatomical-utils", specifier = ">=0.4" },
+    { name = "aind-code-ocean-pipeline-utils", specifier = ">=0.4" },
     { name = "aind-ephys-ibl-gui-conversion", specifier = ">=0.2.2" },
     { name = "aind-registration-utils", specifier = ">=0.4" },
     { name = "aind-s3-cache", specifier = ">=0.1" },
