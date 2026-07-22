@@ -6,9 +6,13 @@ pipeline instead runs each step as an independent node, so the work must be
 sliced into functions a DAG can dispatch separately. This module provides that
 slicing as thin, importable wrappers over the existing per-step functions:
 
-- :func:`stage_discover` (1x) -- read the manifest and emit one fan-out config
-  per ``(recording, ephys_collection)`` unit (via ``role_dispatch``). The
-  pipeline's Flatten edge then stages each config to its own ``ephys`` worker.
+- :func:`stage_discover` (1x) -- the **viability gate**: for each probe decide
+  up front whether both its ephys (sorting output) and its histology track
+  annotation exist, then emit only the viable work -- a filtered ``manifest.csv``
+  for ``histology``/``pack`` and one fan-out config per viable
+  ``(recording, ephys_collection)`` (via ``role_dispatch``). The pipeline's
+  Flatten edge stages each config to its own ``ephys`` worker. Because the
+  decision is made here, the ``histology`` and ``ephys`` stages do not re-check.
 - :func:`stage_histology` (1x/mouse) -- registration volumes, additional
   channels, CCF-to-image transforms, and the per-probe coordinate conversion
   (``xyz_picks``). Coordinate conversion depends only on the header-only
@@ -68,35 +72,117 @@ def _ephys_unit_name(recording_id: str, ephys_collection: str | None) -> str:
     return f"{recording_id}__{collection}"
 
 
+def _track_annotation_present(data_root: Path, mr: ManifestRow) -> tuple[bool, str | None]:
+    """Whether the probe's Neuroglancer track annotation exists and has points.
+
+    A light check (no coordinate transforms): the annotation JSON must be found
+    under ``data_root`` and its layer named by ``histology_track_id`` must carry
+    annotation points. Mirrors the two track-related skip paths in
+    :func:`~aind_ibl_ephys_alignment_preprocessing.probes.process_manifest_row`
+    (``Annotation not found`` / ``Probe points not found``) so ``discover`` can
+    make the same call up front.
+    """
+    if mr.annotation_format != "json":
+        return False, "only JSON annotations supported"
+    ann_path = next(data_root.glob(f"*/{mr.probe_file}.json"), None)
+    if ann_path is None:
+        return False, f"annotation file not found: */{mr.probe_file}.json"
+
+    from aind_s3_cache.json_utils import get_json
+    from aind_zarr_utils.neuroglancer import neuroglancer_annotations_to_indices
+
+    probe_id = str(mr.histology_track_id)
+    try:
+        points_by_layer, _ = neuroglancer_annotations_to_indices(get_json(str(ann_path)), layer_names=[probe_id])
+    except Exception as exc:  # malformed JSON / missing or unreadable layer
+        return False, f"track layer {probe_id!r} unreadable: {exc}"
+    points = points_by_layer.get(probe_id)
+    if points is None or len(points) == 0:
+        return False, f"no track points for layer {probe_id!r}"
+    return True, None
+
+
+def _probe_viability(config: PipelineConfig, mr: ManifestRow) -> tuple[bool, str | None]:
+    """Decide, up front, whether a probe is worth preprocessing.
+
+    A probe is viable only when **both** its ephys and its histology track are
+    usable: the upstream spike sorting produced output for the collection
+    (``has_sorting_output``) **and** its Neuroglancer track annotation exists
+    with points. Consolidating this at the launcher means histology and ephys
+    workers never have to re-decide it -- they process only what ``discover``
+    deemed viable. Mirrors the monolith's per-row skip, made once and up front.
+
+    Returns
+    -------
+    tuple[bool, str or None]
+        ``(viable, reason)``; ``reason`` is the skip cause when not viable.
+    """
+    if not config.skip_ephys and mr.ephys_collection is not None:
+        if not has_sorting_output(config.data_root / mr.sorted_recording, str(mr.ephys_collection)):
+            return False, "no spike-sorting output (bad sorting)"
+    return _track_annotation_present(config.data_root, mr)
+
+
 def stage_discover(config: PipelineConfig) -> list[Path]:
-    """Emit one ephys fan-out config per unique ``(recording, collection)``.
+    """Gate probe viability up front, then emit the viable fan-out work.
 
-    Reads the manifest and writes a schema-tagged ``config.json`` per unit into
-    ``config.results_root`` (via ``role_dispatch.write_stream_configs``), which
-    the pipeline's Flatten edge fans out to :func:`stage_ephys` workers. Each
-    config carries everything a worker needs without re-reading the manifest:
-    ``mouseid``, ``sorted_recording``, ``recording_id``, ``ephys_collection``
-    and ``surface_finding``.
+    The launcher is the single decision point for *what to process*: for each
+    manifest row it checks :func:`_probe_viability` (ephys output + track
+    annotation both present) and
 
-    Histology and packing are 1x/mouse and read the manifest directly, so they
-    need no discover config -- only the (genuinely fanned-out) ephys axis does.
+    - writes a **filtered ``manifest.csv``** (viable rows only) into
+      ``config.results_root`` for ``histology`` and ``pack`` to consume, and
+    - writes one schema-tagged ephys ``config.json`` per unique viable
+      ``(recording, collection)`` (via ``role_dispatch.write_stream_configs``),
+      which the pipeline's Flatten edge fans out to :func:`stage_ephys` workers.
+
+    Skipped probes are logged with a reason. Because the decision is made here,
+    ``stage_histology`` and ``stage_ephys`` do not re-check viability -- they
+    trust the filtered manifest / configs. No ephys configs are emitted when
+    ``skip_ephys`` is set.
 
     Parameters
     ----------
     config : PipelineConfig
-        Fully-resolved pipeline configuration.
+        Fully-resolved pipeline configuration. ``data_root`` must have the
+        sorted assets (for ``has_sorting_output``) and the annotation JSON (for
+        the track check) mounted.
 
     Returns
     -------
     list[pathlib.Path]
-        Paths of the written ``config.json`` files, one per fan-out unit.
+        Paths of the written ephys ``config.json`` files, one per viable unit.
     """
     manifest_df = pd.read_csv(config.manifest_csv)
     rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
 
+    viable: list[bool] = []
+    for mr in rows:
+        ok, reason = _probe_viability(config, mr)
+        if not ok:
+            logger.warning(
+                "[discover] skipping probe %s (%s/%s): %s",
+                mr.probe_id,
+                mr.recording_id,
+                mr.ephys_collection,
+                reason,
+            )
+        viable.append(ok)
+
+    config.results_root.mkdir(parents=True, exist_ok=True)
+    filtered_manifest = config.results_root / "manifest.csv"
+    manifest_df[pd.Series(viable, index=manifest_df.index)].to_csv(filtered_manifest, index=False)
+    logger.info("[discover] %d/%d probes viable -> %s", sum(viable), len(rows), filtered_manifest)
+
+    if config.skip_ephys:
+        logger.info("[discover] ephys disabled (skip_ephys); no fan-out configs emitted")
+        return []
+
     seen: set[tuple[str, str | None]] = set()
     items: list[dict[str, object]] = []
-    for mr in rows:
+    for mr, ok in zip(rows, viable):
+        if not ok or mr.ephys_collection is None:
+            continue
         key = (mr.recording_id, mr.ephys_collection)
         if key in seen:
             continue
@@ -178,23 +264,17 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
         out: Any,
         limits: Limits,
     ) -> list[ProcessResult]:
-        """Convert every probe row's coordinates concurrently (no ephys)."""
-        row_tasks: list[tuple[ManifestRow, asyncio.Task[ProcessResult] | None]] = []
+        """Convert every probe row's coordinates concurrently (no ephys).
+
+        Viability (ephys output + track present) was already decided by
+        ``stage_discover``, so every row in the (filtered) manifest is processed;
+        ``process_manifest_row_safe_async`` still returns a graceful skip for any
+        residual per-row issue.
+        """
+        row_tasks: list[tuple[ManifestRow, asyncio.Task[ProcessResult]]] = []
         async with asyncio.TaskGroup() as tg:
             for _, row in manifest_df.iterrows():
                 mr = ManifestRow.from_series(row)
-                if (
-                    not config.skip_ephys
-                    and mr.ephys_collection is not None
-                    and not has_sorting_output(config.data_root / mr.sorted_recording, str(mr.ephys_collection))
-                ):
-                    logger.warning(
-                        "[histology] Skipping probe %s/%s: no spike-sorting output (bad sorting)",
-                        mr.recording_id,
-                        mr.ephys_collection,
-                    )
-                    row_tasks.append((mr, None))
-                    continue
                 task = tg.create_task(
                     process_manifest_row_safe_async(
                         mr,
@@ -212,16 +292,6 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
 
         results: list[ProcessResult] = []
         for mr, row_task in row_tasks:
-            if row_task is None:
-                results.append(
-                    ProcessResult(
-                        probe_id=mr.probe_id,
-                        recording_id=mr.recording_id,
-                        wrote_files=False,
-                        skipped_reason="no spike-sorting output (bad sorting)",
-                    )
-                )
-                continue
             result = row_task.result()
             results.append(result)
             if not result.wrote_files:
@@ -334,9 +404,9 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
 
     Locates this worker's fan-out config under ``config.data_root`` (the
     schema-tagged ``config.json`` written by :func:`stage_discover` and staged
-    by the pipeline), then runs stream-filtered ephys extraction. Skips with a
-    log if the sorted asset has no postprocessed output for the collection
-    (failed upstream sorting), mirroring the monolith.
+    by the pipeline), then runs stream-filtered ephys extraction. ``discover``
+    only emits configs for viable units (sorting output present), so this stage
+    does not re-check ``has_sorting_output`` -- it trusts the config it is given.
 
     Parameters
     ----------
@@ -355,16 +425,6 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
     ephys_collection = cfg.get("ephys_collection")
     surface_raw = cfg.get("surface_finding")
     surface_finding = Path(str(surface_raw)) if surface_raw else None
-
-    if ephys_collection is not None and not has_sorting_output(
-        config.data_root / sorted_recording, str(ephys_collection)
-    ):
-        logger.warning(
-            "[ephys] Skipping %s/%s: no spike-sorting output (bad sorting)",
-            recording_id,
-            ephys_collection,
-        )
-        return
 
     out = prepare_result_dirs(mouse_id, config.results_root)
     run_ephys_for_stream(
