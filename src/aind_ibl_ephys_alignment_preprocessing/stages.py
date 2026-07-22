@@ -307,7 +307,29 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
     return asyncio.run(_run())
 
 
-def stage_ephys(config: PipelineConfig) -> None:
+def find_ephys_stream_config(data_root: Path) -> dict[str, Any]:
+    """Locate this ephys worker's staged fan-out config under ``data_root``.
+
+    Thin wrapper over ``role_dispatch.find_stream_config`` with the marker
+    :data:`EPHYS_STREAM_MARKER`. Exposed so a caller (e.g. the capsule's
+    ``processing.json`` node-naming) can read the config once and hand it to
+    :func:`stage_ephys` via ``stream_config`` rather than reading it twice.
+
+    Parameters
+    ----------
+    data_root : Path
+        Where the pipeline staged this worker's ``config.json`` (``/data``).
+
+    Returns
+    -------
+    dict
+        The parsed fan-out config for this ``(recording, collection)`` unit.
+    """
+    _, cfg = find_stream_config(data_root, schema_marker=EPHYS_STREAM_MARKER)
+    return cfg
+
+
+def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None = None) -> None:
     """Extract one ``(recording, collection)`` slice to IBL ALF.
 
     Locates this worker's fan-out config under ``config.data_root`` (the
@@ -321,8 +343,12 @@ def stage_ephys(config: PipelineConfig) -> None:
     config : PipelineConfig
         Fully-resolved pipeline configuration. ``data_root`` must be where the
         staged config and the sorted asset are mounted.
+    stream_config : dict or None
+        The already-read fan-out config for this unit (from
+        :func:`find_ephys_stream_config`). When ``None`` it is read here. Pass
+        it to avoid a second filesystem walk when the caller already read it.
     """
-    _, cfg = find_stream_config(config.data_root, schema_marker=EPHYS_STREAM_MARKER)
+    cfg = stream_config if stream_config is not None else find_ephys_stream_config(config.data_root)
     mouse_id = str(cfg["mouseid"])
     sorted_recording = str(cfg["sorted_recording"])
     recording_id = str(cfg["recording_id"])
