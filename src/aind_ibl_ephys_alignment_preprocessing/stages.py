@@ -439,30 +439,58 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
     logger.info("[ephys] Completed %s/%s", recording_id, ephys_collection)
 
 
-def stage_pack(config: PipelineConfig, *, source_results: Path | None = None) -> Path:
+def stage_pack(
+    config: PipelineConfig,
+    *,
+    source_results: Path | None = None,
+    merge_from: Path | None = None,
+) -> Path:
     """Assemble ``datapackage.json`` from the upstream nodes' outputs.
 
-    Delegates to
-    :func:`~aind_ibl_ephys_alignment_preprocessing.pipeline.regenerate_datapackage`,
-    which infers per-probe success from the assembled output tree (it does not
-    rerun histology or ephys). In a pipeline the upstream results are mounted
-    read-only under ``/data``; pass that path as ``source_results`` so they are
-    copied into ``config.results_root`` before the datapackage is written.
+    This is the pipeline's **fan-in** node. The histology node and each ephys
+    fan-out node write disjoint slices of one ``<mouse_id>/`` tree; ``pack``
+    unions them back together and builds the datapackage over the complete
+    output (inferring per-probe success from the assembled tree -- it does not
+    rerun histology or ephys).
+
+    Two staging modes, mutually exclusive:
+
+    - ``merge_from`` -- the pipeline fan-in path. All upstream captured results
+      are mounted read-only under this root (``/data``), each an independent
+      ``<mouse_id>/`` subtree (possibly one "indexed folders" level deep).
+      :func:`~aind_ibl_ephys_alignment_preprocessing.datapackage.merge_pipeline_outputs`
+      union-merges every one it finds into ``config.results_root/<mouse_id>/``
+      before the datapackage is written.
+    - ``source_results`` -- the single-tree regenerate path (rewrite metadata
+      for one prior results asset). Delegated to ``regenerate_datapackage``.
+
+    With neither set, the outputs are assumed to already live under
+    ``config.results_root``. ``config.manifest_csv`` must point at ``discover``'s
+    filtered manifest so the datapackage covers only viable probes.
 
     Parameters
     ----------
     config : PipelineConfig
         Fully-resolved pipeline configuration.
     source_results : Path or None
-        Prior results asset/root to stage into ``config.results_root`` first
-        (typically the mounted upstream outputs). ``None`` assumes the outputs
-        already live under ``config.results_root``.
+        Single prior results asset/root to stage in first (regenerate path).
+    merge_from : Path or None
+        Mount holding all upstream node outputs to union-merge (pipeline path).
 
     Returns
     -------
     pathlib.Path
         Path to the written ``datapackage.json``.
     """
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import merge_pipeline_outputs
     from aind_ibl_ephys_alignment_preprocessing.pipeline import regenerate_datapackage
+
+    if merge_from is not None:
+        if source_results is not None:
+            raise ValueError("stage_pack: pass either merge_from or source_results, not both")
+        manifest_df = pd.read_csv(config.manifest_csv)
+        mouse_id = str(manifest_df["mouseid"].astype("string").iat[0])
+        merge_pipeline_outputs(merge_from, config.results_root, mouse_id)
+        return regenerate_datapackage(config, source_results=None)
 
     return regenerate_datapackage(config, source_results=source_results)

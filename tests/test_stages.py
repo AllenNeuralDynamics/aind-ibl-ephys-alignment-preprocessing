@@ -17,6 +17,10 @@ import pytest
 from aind_code_ocean_pipeline_utils.role_dispatch import find_stream_config
 
 from aind_ibl_ephys_alignment_preprocessing import stages
+from aind_ibl_ephys_alignment_preprocessing.datapackage import (
+    _find_mouse_output_trees,
+    merge_pipeline_outputs,
+)
 from aind_ibl_ephys_alignment_preprocessing.stages import (
     EPHYS_STREAM_MARKER,
     _ephys_unit_name,
@@ -233,3 +237,95 @@ def test_track_annotation_present_ok(tmp_path: Path, monkeypatch: pytest.MonkeyP
     ok, reason = _track_annotation_present(tmp_path, _Row("my_ng", "Track1"))
     assert ok
     assert reason is None
+
+
+# ---------------------------------------------------------------------------
+# Fan-in merge (stage_pack)
+# ---------------------------------------------------------------------------
+
+
+def _write(path: Path, text: str = "x") -> None:
+    """Create a file (and parents) with some content."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def _histology_tree(root: Path, mouse_id: str) -> Path:
+    """A minimal histology output subtree under ``root/<mouse_id>``."""
+    mouse = root / mouse_id
+    _write(mouse / "ccf_space_histology" / "histology_ccf.nrrd")
+    _write(mouse / "track_data" / "bregma_xyz" / "probeA.npy")
+    _write(mouse / "rec1" / "probeA" / "xyz_picks.json")  # histology's slice of the shared dir
+    return mouse
+
+
+def _ephys_tree(root: Path, mouse_id: str, probe: str) -> Path:
+    """A minimal ephys output subtree under ``root/<mouse_id>`` for one probe."""
+    mouse = root / mouse_id
+    _write(mouse / "rec1" / probe / "spikes.times.npy")  # ephys's slice of the shared dir
+    _write(mouse / "rec1" / probe / "channels.localCoordinates.npy")
+    return mouse
+
+
+def test_find_mouse_output_trees_across_depths(tmp_path: Path) -> None:
+    """Mouse trees are found whether mounted as a direct child or one level deep."""
+    data = tmp_path / "data"
+    direct = _histology_tree(data / "histology_asset", "791094")  # depth 2
+    indexed = _ephys_tree(data / "ephys_asset" / "0", "791094", "probeA")  # depth 3
+
+    found = _find_mouse_output_trees(data, "791094")
+
+    assert {p.resolve() for p in found} == {direct.resolve(), indexed.resolve()}
+
+
+def test_find_mouse_output_trees_excludes_destination(tmp_path: Path) -> None:
+    """The merge destination is never returned as one of its own sources."""
+    data = tmp_path / "data"
+    _histology_tree(data / "histology_asset", "791094")
+    dest = _histology_tree(data / "results", "791094")  # lives under data_root
+
+    found = _find_mouse_output_trees(data, "791094", exclude=dest)
+
+    assert dest.resolve() not in {p.resolve() for p in found}
+
+
+def test_merge_pipeline_outputs_unions_disjoint_trees(tmp_path: Path) -> None:
+    """Histology + per-probe ephys trees union into one complete mouse tree."""
+    data = tmp_path / "data"
+    _histology_tree(data / "histology_asset", "791094")
+    _ephys_tree(data / "ephys_asset_A" / "0", "791094", "probeA")
+    _ephys_tree(data / "ephys_asset_B" / "0", "791094", "probeB")
+    results = tmp_path / "results"
+
+    merged = merge_pipeline_outputs(data, results, "791094")
+
+    assert merged == results / "791094"
+    # Histology outputs are present...
+    assert (merged / "ccf_space_histology" / "histology_ccf.nrrd").is_file()
+    assert (merged / "rec1" / "probeA" / "xyz_picks.json").is_file()
+    # ...alongside both probes' ephys ALF in the shared per-probe dirs.
+    assert (merged / "rec1" / "probeA" / "spikes.times.npy").is_file()
+    assert (merged / "rec1" / "probeB" / "channels.localCoordinates.npy").is_file()
+
+
+def test_merge_pipeline_outputs_warns_on_true_overlap(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A genuine cross-node file overlap is surfaced as a warning (last wins)."""
+    import logging
+
+    data = tmp_path / "data"
+    _write(data / "node_a" / "791094" / "rec1" / "probeA" / "spikes.times.npy", "a")
+    _write(data / "node_b" / "791094" / "rec1" / "probeA" / "spikes.times.npy", "b")
+    results = tmp_path / "results"
+
+    with caplog.at_level(logging.WARNING):
+        merged = merge_pipeline_outputs(data, results, "791094")
+
+    assert any("overlap" in r.message for r in caplog.records)
+    # Deterministic: sources are sorted, so node_b (last) wins.
+    assert (merged / "rec1" / "probeA" / "spikes.times.npy").read_text() == "b"
+
+
+def test_merge_pipeline_outputs_no_tree_raises(tmp_path: Path) -> None:
+    """No mouse tree under the mount is a loud failure, not a silent empty pack."""
+    with pytest.raises(FileNotFoundError, match="791094"):
+        merge_pipeline_outputs(tmp_path / "data", tmp_path / "results", "791094")
