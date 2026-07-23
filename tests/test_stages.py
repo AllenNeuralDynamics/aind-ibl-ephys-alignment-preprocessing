@@ -329,3 +329,48 @@ def test_merge_pipeline_outputs_no_tree_raises(tmp_path: Path) -> None:
     """No mouse tree under the mount is a loud failure, not a silent empty pack."""
     with pytest.raises(FileNotFoundError, match="791094"):
         merge_pipeline_outputs(tmp_path / "data", tmp_path / "results", "791094")
+
+
+def _stream_cfg(mouse_id: str, recording_id: str, collection: str | None) -> dict[str, object]:
+    """A minimal ephys fan-out config as stage_discover would emit it."""
+    return {
+        "mouseid": mouse_id,
+        "sorted_recording": f"{recording_id}_sorted",
+        "recording_id": recording_id,
+        "ephys_collection": collection,
+        "surface_finding": None,
+    }
+
+
+def test_stage_ephys_namespaces_output_by_unit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parallel ephys workers write disjoint top-level /results names, then pack unions them.
+
+    Every worker writing a bare ``/results/<mouse_id>/`` would collide at the
+    downstream Collect (``pack``) staging step. Namespacing by fan-out unit keeps
+    the top-level names disjoint while staying mergeable by ``pack``.
+    """
+    config = SimpleNamespace(
+        results_root=tmp_path / "results",
+        data_root=tmp_path / "data",
+        num_parallel_jobs=1,
+    )
+
+    def _fake_run(sorted_recording, recording_id, collection, surface, out, data_root, *, num_parallel_jobs):  # type: ignore[no-untyped-def]
+        # Emulate a real per-probe ALF write into this unit's mouse tree.
+        mouse_dir = out.tracks_root.parent
+        _write(mouse_dir / "rec1" / str(collection) / "spikes.times.npy")
+
+    monkeypatch.setattr(stages, "run_ephys_for_stream", _fake_run)
+
+    stages.stage_ephys(config, stream_config=_stream_cfg("791094", "ecephys_791094_A", "ProbeA"))
+    stages.stage_ephys(config, stream_config=_stream_cfg("791094", "ecephys_791094_A", "ProbeB"))
+
+    # Disjoint top-level folders -> no Collect-stage "input file name collision".
+    top_level = {p.name for p in config.results_root.iterdir()}
+    assert top_level == {"ecephys_791094_A__ProbeA", "ecephys_791094_A__ProbeB"}
+    assert (config.results_root / "ecephys_791094_A__ProbeA" / "791094").is_dir()
+
+    # ...and pack's layout-agnostic merge still unions both units into one tree.
+    merged = merge_pipeline_outputs(config.results_root, tmp_path / "packed", "791094")
+    assert (merged / "rec1" / "ProbeA" / "spikes.times.npy").is_file()
+    assert (merged / "rec1" / "ProbeB" / "spikes.times.npy").is_file()

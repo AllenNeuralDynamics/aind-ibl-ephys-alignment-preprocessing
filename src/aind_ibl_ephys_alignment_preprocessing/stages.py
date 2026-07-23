@@ -408,6 +408,12 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
     only emits configs for viable units (sorting output present), so this stage
     does not re-check ``has_sorting_output`` -- it trusts the config it is given.
 
+    Output is written to ``config.results_root/<unit_name>/<mouse_id>/...``
+    where ``unit_name`` is this fan-out unit's ``<recording>__<collection>``.
+    The per-unit namespace keeps parallel ephys instances' top-level ``/results``
+    names disjoint so the downstream Collect (``pack``) node does not abort on an
+    "input file name collision"; ``pack``'s merge unions the nested trees back.
+
     Parameters
     ----------
     config : PipelineConfig
@@ -426,7 +432,16 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
     surface_raw = cfg.get("surface_finding")
     surface_finding = Path(str(surface_raw)) if surface_raw else None
 
-    out = prepare_result_dirs(mouse_id, config.results_root)
+    # Namespace this worker's output by its fan-out unit so parallel ephys
+    # instances never share a top-level ``/results`` name. Every worker would
+    # otherwise write ``/results/<mouse_id>/``, which makes the downstream
+    # Collect (``pack``) node abort at staging with an "input file name
+    # collision" -- after every worker has already run. Writing under
+    # ``<unit_name>/`` keeps the names disjoint; ``pack``'s layout-agnostic
+    # merge (``merge_pipeline_outputs``) finds the nested ``<mouse_id>/`` tree
+    # and unions them back together.
+    unit_name = _ephys_unit_name(recording_id, str(ephys_collection) if ephys_collection is not None else None)
+    out = prepare_result_dirs(mouse_id, config.results_root / unit_name)
     run_ephys_for_stream(
         sorted_recording,
         recording_id,
@@ -436,7 +451,7 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
         config.data_root,
         num_parallel_jobs=config.num_parallel_jobs,
     )
-    logger.info("[ephys] Completed %s/%s", recording_id, ephys_collection)
+    logger.info("[ephys] Completed %s/%s -> %s", recording_id, ephys_collection, unit_name)
 
 
 def stage_pack(
