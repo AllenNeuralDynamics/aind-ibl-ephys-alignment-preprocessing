@@ -7,9 +7,9 @@ import shutil
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
@@ -21,7 +21,8 @@ from aind_ibl_ephys_alignment_preprocessing.types import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "3.1.0"
+SchemaVersion = Literal["3.1.0"]
+SCHEMA_VERSION: SchemaVersion = "3.1.0"
 # Why 3.0.0: 2.x stored filesystem locations as strings. 3.0.0 changes every
 # datapackage path into a reference object ``{asset, path}``, where
 # ``asset=None`` means datapackage-local and external assets are resolved via
@@ -36,8 +37,8 @@ SCHEMA_VERSION = "3.1.0"
 class PathReference(BaseModel, frozen=True):
     """A path inside either the datapackage asset or an external asset."""
 
-    asset: str | None = None
-    path: str
+    asset: str | None
+    path: str = Field(min_length=1)
 
 
 class ExternalAsset(BaseModel, frozen=True):
@@ -171,9 +172,9 @@ class ReferenceResolver:
                 return self.asset_overrides[key] / ref.path
 
         for root in self.asset_roots:
-            for key in (asset.name, asset.id):
-                if key:
-                    candidate = root / key / ref.path
+            for asset_key in (asset.name, asset.id):
+                if asset_key:
+                    candidate = root / asset_key / ref.path
                     if candidate.exists():
                         return candidate
         return None
@@ -182,7 +183,7 @@ class ReferenceResolver:
 class DataPackage(BaseModel, frozen=True):
     """Top-level datapackage for preprocessing outputs."""
 
-    schema_version: str
+    schema_version: SchemaVersion
     mouse_id: str
     platform: str
     external_assets: dict[str, ExternalAsset]
