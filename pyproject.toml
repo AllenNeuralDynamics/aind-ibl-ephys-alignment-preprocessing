@@ -52,6 +52,16 @@ docs = [
   "furo",
 ]
 
+# TEMPORARY branch pin (not yet released, 2026-07-22): local `uv sync`/tests
+# need the converter's feat/ephys-geometry-contract branch (the _stream_matches
+# per-collection ephys filter). The `dependencies` entry stays a plain
+# `>=0.2.2` version pin so a future release/wheel is clean -- uv sources are
+# dev-only and are NOT embedded in the built wheel, so the Code Ocean capsule
+# that installs this library from git must pin the converter branch itself (see
+# its environment/postInstall). Remove this block once the converter is released.
+[tool.uv.sources]
+aind-ephys-ibl-gui-conversion = { git = "https://github.com/AllenNeuralDynamics/aind-ephys-ibl-gui-conversion.git", branch = "feat/ephys-geometry-contract" }
+
 [tool.hatch.metadata]
 allow-direct-references = true
 

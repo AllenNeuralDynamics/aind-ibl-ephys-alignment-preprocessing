@@ -58,7 +58,7 @@ wheels = [
 [[package]]
 name = "aind-ephys-ibl-gui-conversion"
 version = "0.3.2"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/AllenNeuralDynamics/aind-ephys-ibl-gui-conversion.git?branch=feat%2Fephys-geometry-contract#85bec5399301b17e5e7d3ad700b0fab6fc8e0f2b" }
 dependencies = [
     { name = "aind-mri-utils" },
     { name = "antspyx" },
@@ -68,10 +68,6 @@ dependencies = [
     { name = "spikeinterface", extra = ["full"] },
     { name = "tqdm" },
     { name = "wavpack-numcodecs" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b2/d8/db6a5f898358ec815c75a93ce59c7f9396d06c693c79caa7cd2a8dcbe959/aind_ephys_ibl_gui_conversion-0.3.2.tar.gz", hash = "sha256:9b89433451b559ed88c1b704f5d77f6cf012919bafefe5b501409245e71c39d3", size = 248803, upload-time = "2026-07-03T00:17:50.578Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/30/ff/95c53fcb57d9b33440aa6a69f8017fbac8cb21d5099e857cf1bfebea106d/aind_ephys_ibl_gui_conversion-0.3.2-py3-none-any.whl", hash = "sha256:5d960d0c761dc36e2216b7b73560a3a59819031670ece7e5eb3ab7df65a89d6d", size = 29691, upload-time = "2026-07-03T00:17:49.636Z" },
 ]
 
 [[package]]
@@ -140,7 +136,7 @@ types = [
 requires-dist = [
     { name = "aind-anatomical-utils", specifier = ">=0.4" },
     { name = "aind-code-ocean-pipeline-utils", specifier = ">=0.4" },
-    { name = "aind-ephys-ibl-gui-conversion", specifier = ">=0.2.2" },
+    { name = "aind-ephys-ibl-gui-conversion", git = "https://github.com/AllenNeuralDynamics/aind-ephys-ibl-gui-conversion.git?branch=feat%2Fephys-geometry-contract" },
     { name = "aind-registration-utils", specifier = ">=0.4" },
     { name = "aind-s3-cache", specifier = ">=0.1" },
     { name = "aind-zarr-utils", specifier = ">=0.11.2" },
