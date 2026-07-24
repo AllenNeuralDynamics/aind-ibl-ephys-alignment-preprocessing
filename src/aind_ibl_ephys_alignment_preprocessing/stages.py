@@ -123,7 +123,11 @@ def _probe_viability(config: PipelineConfig, mr: ManifestRow) -> tuple[bool, str
     return _track_annotation_present(config.data_root, mr)
 
 
-def stage_discover(config: PipelineConfig) -> list[Path]:
+def stage_discover(
+    config: PipelineConfig,
+    *,
+    producer_record: dict[str, Any] | None = None,
+) -> list[Path]:
     """Gate probe viability up front, then emit the viable fan-out work.
 
     The launcher is the single decision point for *what to process*: for each
@@ -135,6 +139,18 @@ def stage_discover(config: PipelineConfig) -> list[Path]:
     - writes one schema-tagged ephys ``config.json`` per unique viable
       ``(recording, collection)`` (via ``role_dispatch.write_stream_configs``),
       which the pipeline's Flatten edge fans out to :func:`stage_ephys` workers.
+
+    Parameters
+    ----------
+    config : PipelineConfig
+        Resolved pipeline configuration.
+    producer_record : dict[str, Any], optional
+        This launcher's provenance shard (see
+        :func:`aind_code_ocean_pipeline_utils.records.make_record`). When given, it
+        is side-written into each fan-out unit's ``provenance/`` so an ephys worker
+        can infer ``discover`` as its parent by frontier. A Flatten fan-out
+        distributes per-item slices but does not broadcast the launcher's shared
+        ``provenance/``, so this per-unit copy is how the edge is carried across.
 
     Skipped probes are logged with a reason. Because the decision is made here,
     ``stage_histology`` and ``stage_ephys`` do not re-check viability -- they
@@ -203,6 +219,7 @@ def stage_discover(config: PipelineConfig) -> list[Path]:
         results_dir=config.results_root,
         schema_marker=EPHYS_STREAM_MARKER,
         name_key="name",
+        producer_record=producer_record,
     )
     logger.info("[discover] wrote %d ephys fan-out config(s)", len(written))
     return written
