@@ -48,11 +48,11 @@ wheels = [
 
 [[package]]
 name = "aind-code-ocean-pipeline-utils"
-version = "0.4.2"
+version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/73/a5/6f6f3ae6d83d09d40552688e639cf2d03d19e95da5c9c91e74b2b8cb1f49/aind_code_ocean_pipeline_utils-0.4.2.tar.gz", hash = "sha256:04268b9d66ce3bac6d038a012a16ac8c67bd46d48ee68c1d66819d4b3c9c4eba", size = 150982, upload-time = "2026-07-22T20:40:44.233Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/42/343241ca26bff37a2343da75f0ce90b811bf22bb6cb2fcae963b1a0563fa/aind_code_ocean_pipeline_utils-0.6.1.tar.gz", hash = "sha256:5c8f348c34353b09bca5abf4bd0409eea5d03977b6eb93e8dc8eb2b7ab68f22a", size = 173066, upload-time = "2026-07-24T22:42:23.183Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/6f/2441cda2c7d0374be50be2c6d2917e5fae9f226b2196d9981c0dba2637d9/aind_code_ocean_pipeline_utils-0.4.2-py3-none-any.whl", hash = "sha256:5d0110be5ef3ce3114b8b2646ee30ccc176af0eafd911e7933c2cbac4f0c7579", size = 45335, upload-time = "2026-07-22T20:40:42.957Z" },
+    { url = "https://files.pythonhosted.org/packages/45/5b/d29f653576a28012e31d71c6e5dd85510160a7f1249c162870576c18fc4f/aind_code_ocean_pipeline_utils-0.6.1-py3-none-any.whl", hash = "sha256:092043db31afbf2f2d94aced20835f92e89bc7a40ff88879f1596eeb67450e2b", size = 53113, upload-time = "2026-07-24T22:42:22.26Z" },
 ]
 
 [[package]]
