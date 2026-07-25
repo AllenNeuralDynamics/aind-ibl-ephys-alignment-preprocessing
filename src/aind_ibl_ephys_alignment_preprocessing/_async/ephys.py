@@ -21,7 +21,7 @@ from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     to_thread_logged,
 )
 from aind_ibl_ephys_alignment_preprocessing._async.probes import process_manifest_row_safe_async
-from aind_ibl_ephys_alignment_preprocessing.ephys import has_sorting_output
+from aind_ibl_ephys_alignment_preprocessing.ephys import find_session_dir, has_sorting_output
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     ManifestRow,
@@ -100,7 +100,7 @@ async def process_manifest_async(
             # so the histology track would be dropped from the datapackage
             # anyway. Skipping here avoids the per-probe coordinate transforms.
             if not config.skip_ephys and not has_sorting_output(
-                config.data_root / mr.sorted_recording, str(mr.ephys_collection)
+                find_session_dir(config.data_root, str(mr.sorted_recording)), str(mr.ephys_collection)
             ):
                 logger.warning(
                     "Skipping probe %s/%s: no spike-sorting output (bad sorting); histology and ephys skipped",

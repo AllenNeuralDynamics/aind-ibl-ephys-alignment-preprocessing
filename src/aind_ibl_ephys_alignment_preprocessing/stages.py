@@ -56,7 +56,7 @@ from aind_code_ocean_pipeline_utils.role_dispatch import (
 )
 
 from aind_ibl_ephys_alignment_preprocessing.discovery import prepare_result_dirs
-from aind_ibl_ephys_alignment_preprocessing.ephys import has_sorting_output, run_ephys_for_stream
+from aind_ibl_ephys_alignment_preprocessing.ephys import find_session_dir, has_sorting_output, run_ephys_for_stream
 from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow, PipelineConfig, ProcessResult
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,8 @@ def _probe_viability(config: PipelineConfig, mr: ManifestRow) -> tuple[bool, str
         ``(viable, reason)``; ``reason`` is the skip cause when not viable.
     """
     if not config.skip_ephys and mr.ephys_collection is not None:
-        if not has_sorting_output(config.data_root / mr.sorted_recording, str(mr.ephys_collection)):
+        sorted_dir = find_session_dir(config.data_root, str(mr.sorted_recording))
+        if not has_sorting_output(sorted_dir, str(mr.ephys_collection)):
             return False, "no spike-sorting output (bad sorting)"
     return _track_annotation_present(config.data_root, mr)
 

@@ -489,14 +489,16 @@ class PipelineValidator:
 
     # -- Category 5: Per-probe Files -------------------------------------------
 
-    def _validate_sorting_output(self, mr: ManifestRow, recording_folder: Path, category: str) -> None:
+    def _validate_sorting_output(self, mr: ManifestRow, recording_folder: Path | None, category: str) -> None:
         """Warn when a probe has no postprocessed spike-sorting output.
 
         When the analyzer is absent -- the usual sign of failed upstream
         sorting -- the pipeline skips both histology and ephys for the probe
         and drops it from the datapackage. We surface it as a warning (not an
         error) so the omission is expected rather than a surprise at the end of
-        the run. See :func:`~aind_ibl_ephys_alignment_preprocessing.ephys.has_sorting_output`.
+        the run. A ``None`` ``recording_folder`` (the sorted asset could not be
+        located at all) is treated the same as absent output.
+        See :func:`~aind_ibl_ephys_alignment_preprocessing.ephys.has_sorting_output`.
         """
         from aind_ibl_ephys_alignment_preprocessing.ephys import has_sorting_output
 
@@ -512,12 +514,15 @@ class PipelineValidator:
                 severity="info",
             )
         else:
+            where = (
+                f"{recording_folder / 'postprocessed'}" if recording_folder is not None else "(sorted asset not found)"
+            )
             self._add_result(
                 False,
                 category,
                 item,
                 f"No postprocessed sorting output for ephys collection '{collection}' "
-                f"under {recording_folder / 'postprocessed'}; probe will be skipped "
+                f"under {where}; probe will be skipped "
                 "(histology + ephys) and dropped from the datapackage "
                 "(likely failed spike sorting)",
                 severity="warning",
@@ -565,8 +570,10 @@ class PipelineValidator:
                     )
 
             if not self.config.skip_ephys:
-                recording_folder = self.config.data_root / mr.sorted_recording
-                if recording_folder.exists():
+                from aind_ibl_ephys_alignment_preprocessing.ephys import find_session_dir
+
+                recording_folder = find_session_dir(self.config.data_root, str(mr.sorted_recording))
+                if recording_folder is not None:
                     self._add_result(
                         True,
                         category,
@@ -576,29 +583,36 @@ class PipelineValidator:
                     )
                 else:
                     self._add_result(
-                        False, category, f"{mr.probe_id}_ephys", f"Ephys folder not found: {recording_folder}"
+                        False, category, f"{mr.probe_id}_ephys", f"Ephys folder not found for {mr.sorted_recording}"
                     )
 
-                # The runtime strips ``_sorted...`` from the sorted-asset path to locate the raw
-                # session, then expects ``ecephys_clipped/*/*/structure.oebin`` underneath. Probe
-                # for it here so a misnamed/empty asset fails pre-flight rather than 10 ephys
-                # subprocesses deep with a buried OpenEphys ValueError.
-                session_folder = self.config.data_root / mr.sorted_recording.split("_sorted")[0]
-                clipped = next(
-                    (
-                        p
-                        for p in (session_folder / "ecephys_clipped", session_folder / "ecephys" / "ecephys_clipped")
-                        if p.is_dir()
-                    ),
-                    None,
-                )
+                # The runtime resolves the raw session by NAME (recording_id =
+                # sorted_recording minus the ``_sorted...`` suffix), walking /data so raw and
+                # sorted need not be siblings, then expects
+                # ``ecephys_clipped/*/*/structure.oebin`` underneath. Probe for it here so a
+                # misnamed/empty asset fails pre-flight rather than 10 ephys subprocesses deep
+                # with a buried OpenEphys ValueError.
+                session_folder = find_session_dir(self.config.data_root, mr.recording_id)
+                clipped = None
+                if session_folder is not None:
+                    clipped = next(
+                        (
+                            p
+                            for p in (
+                                session_folder / "ecephys_clipped",
+                                session_folder / "ecephys" / "ecephys_clipped",
+                            )
+                            if p.is_dir()
+                        ),
+                        None,
+                    )
                 if clipped is None:
                     self._add_result(
                         False,
                         category,
                         f"{mr.probe_id}_ephys_clipped",
-                        f"No ecephys_clipped/ under {session_folder} (looked at "
-                        "ecephys_clipped/ and ecephys/ecephys_clipped/)",
+                        f"No ecephys_clipped/ for raw session {mr.recording_id} "
+                        "(looked at ecephys_clipped/ and ecephys/ecephys_clipped/)",
                     )
                 elif not any(clipped.glob("*/*/*/structure.oebin")):
                     self._add_result(
@@ -620,7 +634,9 @@ class PipelineValidator:
                 self._validate_sorting_output(mr, recording_folder, category)
 
             if mr.surface_finding is not None:
-                surface_path = self.config.data_root / mr.surface_finding
+                from aind_ibl_ephys_alignment_preprocessing.ephys import resolve_surface_finding
+
+                surface_path = resolve_surface_finding(self.config.data_root, mr.surface_finding)
                 if surface_path.exists():
                     self._add_result(
                         True,

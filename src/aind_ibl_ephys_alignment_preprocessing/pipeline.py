@@ -24,7 +24,11 @@ from aind_ibl_ephys_alignment_preprocessing.discovery import (
     find_asset_info,
     prepare_result_dirs,
 )
-from aind_ibl_ephys_alignment_preprocessing.ephys import has_sorting_output, run_ephys_for_recording
+from aind_ibl_ephys_alignment_preprocessing.ephys import (
+    find_session_dir,
+    has_sorting_output,
+    run_ephys_for_recording,
+)
 from aind_ibl_ephys_alignment_preprocessing.histology import (
     copy_registration_channel_ccf_reorient,
     process_additional_channels_pipeline,
@@ -117,7 +121,7 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
         # track would be dropped from the datapackage anyway. Skipping here
         # avoids the (expensive) per-probe coordinate transforms.
         if not config.skip_ephys and not has_sorting_output(
-            config.data_root / mr.sorted_recording, str(mr.ephys_collection)
+            find_session_dir(config.data_root, str(mr.sorted_recording)), str(mr.ephys_collection)
         ):
             logger.warning(
                 "Skipping probe %s/%s: no spike-sorting output (bad sorting); histology and ephys skipped",
