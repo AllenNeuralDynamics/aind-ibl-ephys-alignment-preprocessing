@@ -72,6 +72,22 @@ def _ephys_unit_name(recording_id: str, ephys_collection: str | None) -> str:
     return f"{recording_id}__{collection}"
 
 
+def _ephys_config_item(mr: ManifestRow) -> dict[str, object]:
+    """Build one ephys fan-out config payload from a manifest row.
+
+    Shared by :func:`stage_discover` (whole-mouse) and
+    :func:`stage_ephys_launch` (per-sort) so the config schema stays identical.
+    """
+    return {
+        "name": _ephys_unit_name(mr.recording_id, mr.ephys_collection),
+        "mouseid": str(mr.mouseid),
+        "sorted_recording": str(mr.sorted_recording),
+        "recording_id": mr.recording_id,
+        "ephys_collection": mr.ephys_collection,
+        "surface_finding": str(mr.surface_finding) if mr.surface_finding is not None else None,
+    }
+
+
 def _track_annotation_present(data_root: Path, mr: ManifestRow) -> tuple[bool, str | None]:
     """Whether the probe's Neuroglancer track annotation exists and has points.
 
@@ -204,16 +220,7 @@ def stage_discover(
         if key in seen:
             continue
         seen.add(key)
-        items.append(
-            {
-                "name": _ephys_unit_name(mr.recording_id, mr.ephys_collection),
-                "mouseid": str(mr.mouseid),
-                "sorted_recording": str(mr.sorted_recording),
-                "recording_id": mr.recording_id,
-                "ephys_collection": mr.ephys_collection,
-                "surface_finding": str(mr.surface_finding) if mr.surface_finding is not None else None,
-            }
-        )
+        items.append(_ephys_config_item(mr))
 
     written = write_stream_configs(
         items,
@@ -470,6 +477,84 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
         num_parallel_jobs=config.num_parallel_jobs,
     )
     logger.info("[ephys] Completed %s/%s -> %s", recording_id, ephys_collection, unit_name)
+
+
+def stage_ephys_launch(config: PipelineConfig) -> list[Path]:
+    """Emit fan-out configs for the one sort mounted here (per-sort ephys launcher).
+
+    The split architecture runs one ephys pipeline per sort. This launcher reads
+    ``discover``'s filtered ``manifest.csv`` and writes one ephys ``config.json``
+    per unique ``(recording, collection)`` -- but only for recordings whose
+    **sorted asset is actually mounted** under ``config.data_root``. A per-sort
+    ephys pipeline mounts exactly one sorted asset, so that scopes the fan-out to
+    this sort's probes; the pipeline's Flatten edge then dispatches one
+    :func:`stage_ephys` worker per config. No viability re-check (``discover``
+    already filtered) and no manifest is written.
+
+    Parameters
+    ----------
+    config : PipelineConfig
+        Resolved configuration. ``manifest_csv`` must point at ``discover``'s
+        filtered manifest; ``data_root`` must have this sort's sorted asset mounted.
+
+    Returns
+    -------
+    list[pathlib.Path]
+        Paths of the written ephys ``config.json`` files (this sort's units).
+    """
+    manifest_df = pd.read_csv(config.manifest_csv)
+    rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
+
+    seen: set[tuple[str, str | None]] = set()
+    items: list[dict[str, object]] = []
+    for mr in rows:
+        if mr.ephys_collection is None:
+            continue
+        # Scope to the sort mounted here: a per-sort ephys pipeline mounts one
+        # sorted asset, so only that recording's sorted dir resolves under /data.
+        if find_session_dir(config.data_root, str(mr.sorted_recording)) is None:
+            continue
+        key = (mr.recording_id, mr.ephys_collection)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(_ephys_config_item(mr))
+
+    config.results_root.mkdir(parents=True, exist_ok=True)
+    written = write_stream_configs(
+        items,
+        results_dir=config.results_root,
+        schema_marker=EPHYS_STREAM_MARKER,
+        name_key="name",
+    )
+    logger.info("[ephys-launch] wrote %d fan-out config(s) for the mounted sort", len(written))
+    return written
+
+
+def stage_ephys_collect(config: PipelineConfig, *, merge_from: Path | None = None) -> None:
+    """Union one sort's fanned-out ephys ALF into ``/results`` (per-sort collector).
+
+    The ephys pipeline's Collect node. Each :func:`stage_ephys` worker wrote a
+    disjoint ``<unit>/<mouse_id>/`` subtree; this union-merges every ``<mouse_id>/``
+    tree found under ``merge_from`` (default ``config.data_root``) into
+    ``config.results_root/<mouse_id>/`` for capture as this sort's ephys
+    intermediate asset. No datapackage is built -- that is the mouse-level
+    :func:`stage_pack`.
+
+    Parameters
+    ----------
+    config : PipelineConfig
+        Resolved configuration. ``manifest_csv`` supplies the mouse id.
+    merge_from : Path or None
+        Mount holding the fanned-out worker outputs (default ``config.data_root``).
+    """
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import merge_pipeline_outputs
+
+    source = merge_from if merge_from is not None else config.data_root
+    manifest_df = pd.read_csv(config.manifest_csv)
+    mouse_id = str(manifest_df["mouseid"].astype("string").iat[0])
+    merge_pipeline_outputs(source, config.results_root, mouse_id)
+    logger.info("[ephys-collect] merged ephys outputs for mouse %s", mouse_id)
 
 
 def stage_pack(

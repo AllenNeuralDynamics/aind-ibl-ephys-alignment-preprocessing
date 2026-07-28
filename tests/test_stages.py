@@ -53,8 +53,15 @@ def all_viable(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_public_stage_functions_exist() -> None:
-    """The four pipeline stages are importable from the module."""
-    for name in ("stage_discover", "stage_histology", "stage_ephys", "stage_pack"):
+    """Every pipeline stage entry point is importable from the module."""
+    for name in (
+        "stage_discover",
+        "stage_histology",
+        "stage_ephys_launch",
+        "stage_ephys",
+        "stage_ephys_collect",
+        "stage_pack",
+    ):
         assert callable(getattr(stages, name))
 
 
@@ -374,3 +381,61 @@ def test_stage_ephys_namespaces_output_by_unit(tmp_path: Path, monkeypatch: pyte
     merged = merge_pipeline_outputs(config.results_root, tmp_path / "packed", "791094")
     assert (merged / "rec1" / "ProbeA" / "spikes.times.npy").is_file()
     assert (merged / "rec1" / "ProbeB" / "spikes.times.npy").is_file()
+
+
+# ------------------------------------------------------- stage_ephys_launch --
+
+
+def test_stage_ephys_launch_scopes_to_the_mounted_sort(tmp_path: Path) -> None:
+    """ephys-launch emits configs only for the sort whose sorted asset is mounted."""
+    config = _config(tmp_path)
+    _write_manifest(
+        config.manifest_csv,
+        [
+            "786867,ecephys_A_sorted_x,ng,T1,ProbeA,",
+            "786867,ecephys_A_sorted_x,ng,T2,ProbeB,",
+            "786867,ecephys_B_sorted_y,ng,T3,ProbeA,",
+        ],
+    )
+    # Only recording A's sorted asset is mounted under /data.
+    (config.data_root / "ecephys_A_sorted_x").mkdir(parents=True)
+
+    written = stages.stage_ephys_launch(config)
+
+    # A's two collections emit; recording B (not mounted) is excluded.
+    assert len(written) == 2
+    for path in written:
+        assert json.loads(path.read_text())["sorted_recording"] == "ecephys_A_sorted_x"
+
+
+def test_stage_ephys_launch_emits_nothing_when_sort_absent(tmp_path: Path) -> None:
+    """No configs when the manifest's sorted assets are not mounted here."""
+    config = _config(tmp_path)
+    _write_manifest(config.manifest_csv, ["786867,ecephys_A_sorted_x,ng,T1,ProbeA,"])
+    config.data_root.mkdir(parents=True)  # empty /data
+
+    assert stages.stage_ephys_launch(config) == []
+
+
+# ------------------------------------------------------ stage_ephys_collect --
+
+
+def test_stage_ephys_collect_merges_from_data_using_manifest_mouse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ephys-collect merges the /data trees into /results using the manifest's mouse id."""
+    config = _config(tmp_path)
+    _write_manifest(config.manifest_csv, ["786867,ecephys_A_sorted_x,ng,T1,ProbeA,"])
+
+    calls: dict[str, object] = {}
+    import aind_ibl_ephys_alignment_preprocessing.datapackage as dp
+
+    monkeypatch.setattr(
+        dp,
+        "merge_pipeline_outputs",
+        lambda src, dst, mouse: calls.update(src=src, dst=dst, mouse=mouse),
+    )
+
+    stages.stage_ephys_collect(config, merge_from=config.data_root)
+
+    assert calls == {"src": config.data_root, "dst": config.results_root, "mouse": "786867"}
