@@ -305,7 +305,7 @@ def run_ephys_for_recording(
             session_folder=session_folder,
         )
 
-    extract_spikes(recording_folder, results_folder)
+    extract_spikes(recording_folder, results_folder, session_folder=session_folder)
 
 
 def run_ephys_for_stream(
@@ -403,7 +403,12 @@ def run_ephys_for_stream(
             )
 
     def _spikes() -> None:
-        extract_spikes(recording_folder, results_folder, stream_to_use=ephys_collection)
+        extract_spikes(
+            recording_folder,
+            results_folder,
+            stream_to_use=ephys_collection,
+            session_folder=session_folder,
+        )
 
     # Overlap the two independent extractions. Threads suffice -- the heavy
     # numeric work in each releases the GIL, and each already parallelizes
