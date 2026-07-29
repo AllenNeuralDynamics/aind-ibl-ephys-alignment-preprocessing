@@ -4,15 +4,36 @@ from pathlib import Path
 
 import pytest
 
+import json
+
 from aind_ibl_ephys_alignment_preprocessing.ephys import (
+    find_raw_session_dir,
     find_session_dir,
+    find_sorted_session_dir,
     has_sorting_output,
+    read_sorted_input_recording,
     resolve_surface_finding,
 )
 
 
 def _mkdir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
+
+
+def _mount_sorted(root: Path, *, input_recording: str | None) -> Path:
+    """Create a spike-sorted asset mount (spikesorted/ marker + data_description)."""
+    _mkdir(root / "spikesorted")
+    payload = {} if input_recording is None else {"input_data_name": input_recording}
+    (root / "data_description.json").write_text(json.dumps(payload))
+    return root
+
+
+def _mount_raw(root: Path, *, name: str | None = None) -> Path:
+    """Create a raw ecephys asset mount (ecephys_compressed/ marker + data_description)."""
+    _mkdir(root / "ecephys_compressed")
+    if name is not None:
+        (root / "data_description.json").write_text(json.dumps({"name": name}))
+    return root
 
 
 def test_no_postprocessed_dir_returns_false(tmp_path):
@@ -134,3 +155,71 @@ def test_resolve_surface_finding_missing_returns_direct_join(tmp_path):
     # Neither resolves: return the direct join so the caller/converter reports the
     # missing input, not this helper.
     assert resolve_surface_finding(tmp_path, _SURFACE) == tmp_path / _SURFACE
+
+
+# ------------------------------------------ content-based resolution (fixed slots) --
+# Code Ocean pipeline nodes mount inputs under fixed slot names, not the asset name,
+# so the sorted/raw sessions are found by structure, not by matching the asset name.
+
+
+def test_find_sorted_session_dir_by_marker_under_fixed_slot(tmp_path):
+    # Mount name "sorted" != asset name; resolution is by the spikesorted/ child.
+    _mount_sorted(tmp_path / "sorted", input_recording="ecephys_A")
+    assert find_sorted_session_dir(tmp_path) == tmp_path / "sorted"
+
+
+def test_find_sorted_session_dir_ignores_non_sorted_mounts(tmp_path):
+    # discover + raw mounts have no spikesorted/ child and must be ignored.
+    _mkdir(tmp_path / "discover")
+    (tmp_path / "discover" / "manifest.csv").write_text("x")
+    _mount_raw(tmp_path / "raw")
+    _mount_sorted(tmp_path / "sorted", input_recording="ecephys_A")
+    assert find_sorted_session_dir(tmp_path) == tmp_path / "sorted"
+
+
+def test_find_sorted_session_dir_none_when_absent(tmp_path):
+    _mkdir(tmp_path / "discover")
+    assert find_sorted_session_dir(tmp_path) is None
+
+
+def test_find_sorted_session_dir_ambiguous_raises(tmp_path):
+    _mount_sorted(tmp_path / "sorted_a", input_recording="ecephys_A")
+    _mount_sorted(tmp_path / "sorted_b", input_recording="ecephys_B")
+    with pytest.raises(ValueError, match="ambiguous spike-sorted"):
+        find_sorted_session_dir(tmp_path)
+
+
+def test_read_sorted_input_recording(tmp_path):
+    root = _mount_sorted(tmp_path / "sorted", input_recording="ecephys_786867_x")
+    assert read_sorted_input_recording(root) == "ecephys_786867_x"
+
+
+def test_read_sorted_input_recording_missing_field_returns_none(tmp_path):
+    root = _mount_sorted(tmp_path / "sorted", input_recording=None)
+    assert read_sorted_input_recording(root) is None
+
+
+def test_find_raw_session_dir_single(tmp_path):
+    _mount_raw(tmp_path / "raw")
+    assert find_raw_session_dir(tmp_path) == tmp_path / "raw"
+
+
+def test_find_raw_session_dir_none_when_absent(tmp_path):
+    _mount_sorted(tmp_path / "sorted", input_recording="ecephys_A")
+    assert find_raw_session_dir(tmp_path) is None
+
+
+def test_find_raw_session_dir_disambiguates_surface_by_recording_id(tmp_path):
+    # Main raw + a surface-finding raw both carry ecephys_compressed/; the one whose
+    # data_description name matches recording_id is the main raw.
+    _mount_raw(tmp_path / "raw", name="ecephys_786867_main")
+    _mount_raw(tmp_path / "surface_0", name="ecephys_786867_surface")
+    got = find_raw_session_dir(tmp_path, recording_id="ecephys_786867_main")
+    assert got == tmp_path / "raw"
+
+
+def test_find_raw_session_dir_ambiguous_without_match_raises(tmp_path):
+    _mount_raw(tmp_path / "raw", name="ecephys_786867_main")
+    _mount_raw(tmp_path / "surface_0", name="ecephys_786867_surface")
+    with pytest.raises(ValueError, match="ambiguous raw ecephys"):
+        find_raw_session_dir(tmp_path, recording_id="ecephys_does_not_match")

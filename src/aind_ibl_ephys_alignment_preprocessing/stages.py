@@ -56,7 +56,13 @@ from aind_code_ocean_pipeline_utils.role_dispatch import (
 )
 
 from aind_ibl_ephys_alignment_preprocessing.discovery import prepare_result_dirs
-from aind_ibl_ephys_alignment_preprocessing.ephys import find_session_dir, has_sorting_output, run_ephys_for_stream
+from aind_ibl_ephys_alignment_preprocessing.ephys import (
+    find_session_dir,
+    find_sorted_session_dir,
+    has_sorting_output,
+    read_sorted_input_recording,
+    run_ephys_for_stream,
+)
 from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow, PipelineConfig, ProcessResult
 
 logger = logging.getLogger(__name__)
@@ -505,15 +511,29 @@ def stage_ephys_launch(config: PipelineConfig) -> list[Path]:
     manifest_df = pd.read_csv(config.manifest_csv)
     rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
 
+    # Scope to the sort mounted here. A per-sort ephys pipeline runs as pipeline
+    # *nodes* (fixed slots: /data/sorted), so the asset name -- and thus the
+    # manifest's ``sorted_recording`` -- is not in the mount path and cannot be
+    # matched by directory basename. Identify the mounted sort by content instead:
+    # its ``data_description.json`` ``input_data_name`` equals ``recording_id``.
+    sorted_dir = find_sorted_session_dir(config.data_root)
+    if sorted_dir is None:
+        raise FileNotFoundError(f"[ephys-launch] no spike-sorted asset (spikesorted/) mounted under {config.data_root}")
+    mounted_recording_id = read_sorted_input_recording(sorted_dir)
+    if mounted_recording_id is None:
+        raise ValueError(f"[ephys-launch] could not read input_data_name from {sorted_dir}/data_description.json")
+
+    scoped = [mr for mr in rows if mr.ephys_collection is not None and mr.recording_id == mounted_recording_id]
+    distinct_sorts = {str(mr.sorted_recording) for mr in scoped}
+    if len(distinct_sorts) > 1:
+        raise ValueError(
+            f"[ephys-launch] recording_id {mounted_recording_id!r} maps to multiple sorts "
+            f"{sorted(distinct_sorts)}; cannot tell which is mounted from asset content alone"
+        )
+
     seen: set[tuple[str, str | None]] = set()
     items: list[dict[str, object]] = []
-    for mr in rows:
-        if mr.ephys_collection is None:
-            continue
-        # Scope to the sort mounted here: a per-sort ephys pipeline mounts one
-        # sorted asset, so only that recording's sorted dir resolves under /data.
-        if find_session_dir(config.data_root, str(mr.sorted_recording)) is None:
-            continue
+    for mr in scoped:
         key = (mr.recording_id, mr.ephys_collection)
         if key in seen:
             continue
@@ -527,7 +547,16 @@ def stage_ephys_launch(config: PipelineConfig) -> list[Path]:
         schema_marker=EPHYS_STREAM_MARKER,
         name_key="name",
     )
-    logger.info("[ephys-launch] wrote %d fan-out config(s) for the mounted sort", len(written))
+    if not written:
+        raise RuntimeError(
+            f"[ephys-launch] wrote 0 fan-out configs for mounted sort {mounted_recording_id!r}; "
+            f"manifest recording_ids present: {sorted({mr.recording_id for mr in rows})}"
+        )
+    logger.info(
+        "[ephys-launch] wrote %d fan-out config(s) for mounted sort %s",
+        len(written),
+        mounted_recording_id,
+    )
     return written
 
 

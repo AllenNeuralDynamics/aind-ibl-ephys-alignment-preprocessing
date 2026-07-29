@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -62,6 +63,119 @@ def find_session_dir(data_root: Path, name: str, *, max_depth: int = 4) -> Path 
         found = sorted(str(p) for p in matches.values())
         raise ValueError(f"ambiguous session dir {name!r} under {base}: {found}")
     return next(iter(matches.values()))
+
+
+def _find_marked_dirs(data_root: Path, markers: tuple[str, ...], *, max_depth: int = 4) -> dict[str, Path]:
+    """Return session dirs identified by a child marker directory (realpath-deduped).
+
+    Code Ocean *pipelines* mount inputs under fixed slot names (``/data/sorted``,
+    ``/data/raw``) rather than the asset's own name, so a session cannot be found
+    by matching its asset name against a directory basename (see
+    :func:`find_session_dir`, which the capsule stages still use). Instead, locate
+    it structurally: a directory holding one of ``markers`` as a child (e.g.
+    ``spikesorted`` for a sorted asset, ``ecephys_compressed`` for a raw one). A
+    matched directory is not descended into and the walk is depth-bounded, matching
+    :func:`find_session_dir`'s traversal discipline.
+    """
+    base = Path(data_root)
+    matches: dict[str, Path] = {}
+    for dirpath, dirnames, _filenames in os.walk(base, followlinks=True):
+        here = Path(dirpath)
+        try:
+            depth = len(here.relative_to(base).parts)
+        except ValueError:
+            depth = 0
+        if any((here / m).is_dir() for m in markers):
+            matches.setdefault(os.path.realpath(dirpath), here)
+            dirnames[:] = []  # never descend into the (huge) session tree
+            continue
+        if depth >= max_depth:
+            dirnames[:] = []
+    return matches
+
+
+def _read_data_description_name(session_dir: Path) -> str | None:
+    """Return the AIND ``data_description.json`` ``name`` for a session dir, or None."""
+    dd = Path(session_dir) / "data_description.json"
+    try:
+        payload = json.loads(dd.read_text())
+    except (OSError, ValueError):
+        return None
+    name = payload.get("name") if isinstance(payload, dict) else None
+    return str(name) if name else None
+
+
+def find_sorted_session_dir(data_root: Path, *, max_depth: int = 4) -> Path | None:
+    """Locate the one spike-sorted session dir mounted under ``data_root`` by content.
+
+    Identifies the sorted asset by its ``spikesorted`` child rather than its asset
+    name, so it resolves under a fixed pipeline slot (``/data/sorted``). A per-sort
+    ephys pipeline mounts exactly one sorted asset; ``discover`` and raw mounts have
+    no ``spikesorted`` child and are ignored.
+
+    Returns
+    -------
+    Path or None
+        The sorted session directory, or ``None`` if none is mounted.
+
+    Raises
+    ------
+    ValueError
+        If two distinct sorted assets are mounted (not a per-sort fan-out layout).
+    """
+    matches = _find_marked_dirs(data_root, ("spikesorted",), max_depth=max_depth)
+    if len(matches) > 1:
+        found = sorted(str(p) for p in matches.values())
+        raise ValueError(f"ambiguous spike-sorted session under {data_root}: {found}")
+    return next(iter(matches.values()), None)
+
+
+def find_raw_session_dir(data_root: Path, *, recording_id: str | None = None, max_depth: int = 4) -> Path | None:
+    """Locate the raw ecephys session dir mounted under ``data_root`` by content.
+
+    Identifies a raw asset by an ``ecephys_compressed`` / ``ecephys`` child, so it
+    resolves under a fixed pipeline slot (``/data/raw``). When ``recording_id`` is
+    given and more than one raw asset is mounted (e.g. a surface-finding recording
+    alongside the main one), the raw whose ``data_description.json`` ``name`` equals
+    ``recording_id`` is selected; this is how the main raw is told apart from a
+    surface raw. ``None`` is returned when no raw asset is mounted, letting the
+    converter fall back to its legacy sibling-of-sorted lookup for the monolith/RR
+    path.
+
+    Raises
+    ------
+    ValueError
+        If several raw assets are mounted and none (or more than one) matches
+        ``recording_id`` -- the main raw cannot be disambiguated.
+    """
+    matches = _find_marked_dirs(data_root, ("ecephys_compressed", "ecephys"), max_depth=max_depth)
+    if len(matches) <= 1:
+        return next(iter(matches.values()), None)
+    if recording_id is not None:
+        named = [p for p in matches.values() if _read_data_description_name(p) == recording_id]
+        if len(named) == 1:
+            return named[0]
+    found = sorted(str(p) for p in matches.values())
+    raise ValueError(f"ambiguous raw ecephys session under {data_root} (recording_id={recording_id!r}): {found}")
+
+
+def read_sorted_input_recording(sorted_dir: Path) -> str | None:
+    """Return a sorted asset's raw input recording name (``recording_id``).
+
+    Reads ``input_data_name`` from the sorted asset's ``data_description.json`` --
+    the raw recording the sorting was derived from, which equals ``ManifestRow``'s
+    ``recording_id``. Under a fixed pipeline slot the asset name (and thus the
+    manifest's ``sorted_recording``) is not recoverable from the mount path, so this
+    is how the launcher tells *which* sort is mounted. Returns ``None`` if the field
+    is missing or the file is unreadable.
+    """
+    dd = Path(sorted_dir) / "data_description.json"
+    try:
+        payload = json.loads(dd.read_text())
+    except (OSError, ValueError):
+        return None
+    name = payload.get("input_data_name") if isinstance(payload, dict) else None
+    return str(name) if name else None
 
 
 def resolve_surface_finding(data_root: Path, surface_finding: Path | str) -> Path:
@@ -251,12 +365,23 @@ def run_ephys_for_stream(
     results_folder = mouse_root / recording_id
     results_folder.mkdir(parents=True, exist_ok=True)
 
-    recording_folder = find_session_dir(data_root, sorted_recording)
+    # This is the pipeline fan-out worker: exactly one sorted + one raw asset are
+    # mounted under fixed slots (/data/sorted, /data/raw), so resolve by content
+    # (spikesorted/ marker) -- the asset name, and thus ``sorted_recording``, is not
+    # in the mount path. Fall back to name-matching for the monolith/RR path, where
+    # assets mount under their own names.
+    recording_folder = find_sorted_session_dir(data_root)
     if recording_folder is None:
-        raise FileNotFoundError(f"sorted recording {sorted_recording!r} not found under {data_root}")
-    # Raw session resolved by name, independent of the sorted folder's parent, so
-    # combined/role-split asset layouts work. None -> converter sibling-split.
-    session_folder = find_session_dir(data_root, recording_id)
+        recording_folder = find_session_dir(data_root, sorted_recording)
+    if recording_folder is None:
+        raise FileNotFoundError(
+            f"no spike-sorted session (spikesorted/) or {sorted_recording!r} found under {data_root}"
+        )
+    # Raw session resolved by content too (ecephys_compressed/ marker), told apart
+    # from a surface-finding raw by recording_id. None -> converter sibling-split.
+    session_folder = find_raw_session_dir(data_root, recording_id=recording_id)
+    if session_folder is None:
+        session_folder = find_session_dir(data_root, recording_id)
 
     def _continuous() -> None:
         if surface_finding is not None:

@@ -386,8 +386,24 @@ def test_stage_ephys_namespaces_output_by_unit(tmp_path: Path, monkeypatch: pyte
 # ------------------------------------------------------- stage_ephys_launch --
 
 
+def _mount_sorted(data_root: Path, input_recording: str, *, mount_name: str = "sorted") -> None:
+    """Mount a sorted asset under a fixed pipeline slot (name != asset name).
+
+    The launcher must resolve it by content: a ``spikesorted`` child marks it as a
+    sorted asset, and ``data_description.json``'s ``input_data_name`` identifies the
+    raw recording it derives from (== ManifestRow.recording_id).
+    """
+    root = data_root / mount_name
+    (root / "spikesorted").mkdir(parents=True)
+    (root / "data_description.json").write_text(json.dumps({"input_data_name": input_recording}))
+
+
 def test_stage_ephys_launch_scopes_to_the_mounted_sort(tmp_path: Path) -> None:
-    """ephys-launch emits configs only for the sort whose sorted asset is mounted."""
+    """ephys-launch emits configs only for the sort whose sorted asset is mounted.
+
+    The asset mounts under a fixed slot (``/data/sorted``), so scoping is by content
+    (``input_data_name`` == recording_id), not by matching the asset name.
+    """
     config = _config(tmp_path)
     _write_manifest(
         config.manifest_csv,
@@ -397,24 +413,38 @@ def test_stage_ephys_launch_scopes_to_the_mounted_sort(tmp_path: Path) -> None:
             "786867,ecephys_B_sorted_y,ng,T3,ProbeA,",
         ],
     )
-    # Only recording A's sorted asset is mounted under /data.
-    (config.data_root / "ecephys_A_sorted_x").mkdir(parents=True)
+    # Recording A's sorted asset is mounted under the fixed slot /data/sorted.
+    _mount_sorted(config.data_root, "ecephys_A")
 
     written = stages.stage_ephys_launch(config)
 
     # A's two collections emit; recording B (not mounted) is excluded.
     assert len(written) == 2
     for path in written:
-        assert json.loads(path.read_text())["sorted_recording"] == "ecephys_A_sorted_x"
+        cfg = json.loads(path.read_text())
+        assert cfg["recording_id"] == "ecephys_A"
+        assert cfg["sorted_recording"] == "ecephys_A_sorted_x"
 
 
-def test_stage_ephys_launch_emits_nothing_when_sort_absent(tmp_path: Path) -> None:
-    """No configs when the manifest's sorted assets are not mounted here."""
+def test_stage_ephys_launch_raises_when_no_sorted_mounted(tmp_path: Path) -> None:
+    """A missing sorted asset is a loud failure, not a silent empty fan-out."""
     config = _config(tmp_path)
     _write_manifest(config.manifest_csv, ["786867,ecephys_A_sorted_x,ng,T1,ProbeA,"])
-    config.data_root.mkdir(parents=True)  # empty /data
+    config.data_root.mkdir(parents=True)  # empty /data -- no spikesorted/ marker
 
-    assert stages.stage_ephys_launch(config) == []
+    with pytest.raises(FileNotFoundError, match="spikesorted"):
+        stages.stage_ephys_launch(config)
+
+
+def test_stage_ephys_launch_raises_when_mounted_sort_absent_from_manifest(tmp_path: Path) -> None:
+    """A mounted sort with no matching manifest rows fails loudly (0 configs)."""
+    config = _config(tmp_path)
+    _write_manifest(config.manifest_csv, ["786867,ecephys_A_sorted_x,ng,T1,ProbeA,"])
+    # The mounted sort derives from a raw the (filtered) manifest never mentions.
+    _mount_sorted(config.data_root, "ecephys_ZZZ")
+
+    with pytest.raises(RuntimeError, match="0 fan-out configs"):
+        stages.stage_ephys_launch(config)
 
 
 # ------------------------------------------------------ stage_ephys_collect --
