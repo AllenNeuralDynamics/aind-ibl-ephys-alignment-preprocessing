@@ -79,7 +79,18 @@ class PipelineConfig(BaseModel, frozen=True):
 
     # Processing options
     skip_ephys: bool = False
-    desired_voxel_size_um: float = 25.0
+    # Selects the multiscale level via `determine_desired_level`, which returns
+    # the COARSEST level still at least as fine as this — i.e. it rounds toward
+    # higher resolution, never below it. A 25.0 target (the atlas resolution)
+    # therefore landed on SmartSPIM's 14.4 µm level, not its 28.8 µm one: 8x the
+    # voxels, and that 8x multiplies through every volume the histology stage
+    # touches (channel reads, both CCF warps, all six compressed NRRD writes,
+    # and the peak memory holding them). 35.0 selects the ~30 µm tier on both
+    # SmartSPIM base resolutions in use — 28.8 µm on a 1.8 µm base, 32 µm on a
+    # 2.0 µm base — where 30.0 would fall back to 16 µm on the latter.
+    # This is a display-resolution knob only: probe coordinates come from the
+    # header-only anatomical stubs, which never read a multiscale level.
+    desired_voxel_size_um: float = 35.0
     num_parallel_jobs: int = 4
     # QC/diagnostic outputs that the alignment GUI never reads: the Slicer FCSVs
     # (spim/template/ccf), the CCF/bregma xyz_picks, and the CCF-space histology
