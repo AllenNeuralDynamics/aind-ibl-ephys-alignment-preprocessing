@@ -29,13 +29,24 @@ def _volume():
 
 
 def _rebuild(payload) -> sitk.Image:
-    """Reconstruct a geometry-only image the way a consumer would."""
+    """Rehydrate the way a consumer should: a 1x1x1 stub, not the real grid.
+
+    The transform is arithmetic on origin/spacing/direction with no bounds check,
+    so the stub answers for any index and costs one voxel instead of the tens of
+    megabytes the full grid would.
+    """
+    from aind_anatomical_utils.anatomical_volume import AnatomicalHeader
+
     h = payload["header"]
-    img = sitk.Image(*h["size_ijk"], sitk.sitkUInt8)
-    img.SetSpacing(tuple(h["spacing"]))
-    img.SetOrigin(tuple(h["origin"]))
-    img.SetDirection(tuple(h["direction"]))
-    return img
+    header = AnatomicalHeader(
+        origin=tuple(h["origin"]),
+        spacing=tuple(h["spacing"]),
+        direction=np.array(h["direction"]).reshape(3, 3),
+        size_ijk=tuple(h["size_ijk"]),
+    )
+    stub = header.as_sitk_stub()
+    assert stub.GetSize() == (1, 1, 1)
+    return stub
 
 
 def test_size_is_index_order_not_array_shape():

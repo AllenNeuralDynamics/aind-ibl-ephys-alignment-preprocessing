@@ -312,6 +312,22 @@ def resample_to_isotropic(img: sitk.Image, target_um: float, label: str) -> sitk
     grid, so they are resampled once, by a label-aware interpolator, rather than
     twice.
 
+    Notes
+    -----
+    ``ants.resample_image`` covers the grid arithmetic, but the volumes are
+    SimpleITK at this point and a round trip through ANTs invites the axis-order
+    and interop hazards that conversion is known for; it also does no low-pass,
+    which is the part that actually matters here.
+
+    The origin is kept, so output voxel ``(0, 0, 0)`` keeps the input's first
+    voxel centre. The alternative is anchoring the outer corner, for which
+    ``aind_anatomical_utils.anatomical_volume.fix_corner_compute_origin`` exists.
+    The two differ by half the spacing change -- sub-micrometre here -- and
+    either is physically consistent, because ``sitk.Resample`` places content by
+    physical point regardless. It matters not at all for the CCF template and
+    labels, which are warped onto *this* grid and so inherit whichever choice is
+    made.
+
     Parameters
     ----------
     img : sitk.Image
