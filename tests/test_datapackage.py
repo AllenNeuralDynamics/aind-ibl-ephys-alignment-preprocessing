@@ -39,9 +39,13 @@ def _external(asset: str, path: str) -> PathReference:
     return PathReference(asset=asset, path=path)
 
 
-def test_schema_version_is_3_1_0():
-    """Schema is 3.1.0 — 3.1 made QC-only refs (ccf picks) optional; GUI needs 3.x."""
-    assert SCHEMA_VERSION == "3.1.0"
+def test_schema_version_is_3_2_0():
+    """Schema is 3.2.0 — 3.2 added the pipeline-image geometry sidecar; GUI needs 3.x.
+
+    Additive, so the GUI's ``major == 3`` gate keeps passing and packages stay
+    readable while consumers migrate off the redundant volume.
+    """
+    assert SCHEMA_VERSION == "3.2.0"
 
 
 def test_transforms_are_external_asset_references(tmp_path):

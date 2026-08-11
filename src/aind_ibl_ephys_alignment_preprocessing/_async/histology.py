@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -59,13 +60,46 @@ async def compress_reorient_nrrd_file_async(
     await io_to_thread_on(limits, str(output_path), temp_output_path.replace, output_path)
 
 
+def image_geometry(img: sitk.Image) -> dict[str, list[float] | list[int]]:
+    """Return the grid geometry needed to map voxel indices to physical points.
+
+    Everything ``TransformContinuousIndexToPhysicalPoint`` uses, and nothing
+    else -- so a consumer that only needs the mapping can be handed this instead
+    of a whole volume.
+
+    Parameters
+    ----------
+    img : sitk.Image
+        Image whose geometry to capture. Must be the image *as written*: the
+        orientation conversion changes origin and direction, so geometry taken
+        before it describes a grid that does not exist on disk.
+
+    Returns
+    -------
+    dict
+        ``size`` / ``spacing`` / ``origin`` / ``direction`` (row-major 3x3).
+    """
+    return {
+        "size": list(img.GetSize()),
+        "spacing": list(img.GetSpacing()),
+        "origin": list(img.GetOrigin()),
+        "direction": list(img.GetDirection()),
+    }
+
+
 async def convert_img_to_direction_and_write_async(
     img: sitk.Image,
     dst_path: Path | str,
     limits: Limits,
     direction: str = _BLESSED_DIRECTION,
-) -> None:
-    """Async convert image orientation and write to disk."""
+) -> dict[str, list[float] | list[int]]:
+    """Async convert image orientation and write to disk.
+
+    Returns
+    -------
+    dict
+        The written image's geometry, per :func:`image_geometry`.
+    """
     name = Path(dst_path).name
     logger.info("[Histology] Converting image for %s to %s orientation", dst_path, direction)
     with timed("histology.reorient", volume=name):
@@ -75,6 +109,7 @@ async def convert_img_to_direction_and_write_async(
         await io_to_thread_on(limits, str(dst_path), sitk.WriteImage, img_oriented, str(dst_path), useCompression=True)
         record["mvox"] = int(np.prod(img_oriented.GetSize()) // 10**6)
     logger.info("[Histology] Done writing image for %s to disk", dst_path)
+    return image_geometry(img_oriented)
 
 
 async def copy_registration_channel_ccf_reorient_async(
@@ -146,10 +181,17 @@ async def write_registration_channel_images_async(
             convert_img_to_direction_and_write_async(raw_img, raw_img_dst, limits),
             name="write-registration-raw",
         )
-        tg.create_task(
+        pipeline_task = tg.create_task(
             convert_img_to_direction_and_write_async(pipeline_raw_img, bugged_img_dst, limits),
             name="write-registration-pipeline",
         )
+    # The pipeline volume's pixels are never read -- it is voxel-identical to the
+    # raw one and differs only in origin, and its only consumer maps indices to
+    # physical points. Emit that geometry as a sidecar so the volume itself can
+    # be retired once consumers read this instead.
+    geometry_dst = bugged_img_dst.with_suffix(".json")
+    geometry_dst.write_text(json.dumps(pipeline_task.result(), indent=2))
+    logger.info("[Histology] Wrote pipeline-image geometry sidecar: %s", geometry_dst.name)
     return raw_img_dst, bugged_img_dst
 
 

@@ -78,7 +78,7 @@ def test_bundled_schema_is_valid_json():
 
 
 def test_datapackage_rejects_unsupported_schema_version():
-    """The Pydantic contract now matches the schema's exact 3.1.0 version."""
+    """The Pydantic contract now matches the schema's exact 3.2.0 version."""
     with pytest.raises(ValidationError):
         DataPackage.model_validate(
             {
