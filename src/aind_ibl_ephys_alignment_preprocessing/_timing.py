@@ -5,8 +5,21 @@ long it took, which leaves voxel counts as the only basis for deciding where a
 run's time goes -- an inference that has been wrong in both directions.
 
 Each timed step emits one line carrying a machine-readable ``step=<name>
-seconds=<elapsed>``, so a run's steps can be summed and ranked with ``grep``
-rather than eyeballed, and later folded into a datapackage's cost profile.
+seconds=<elapsed> t0=<start> t1=<end>``, where ``t0``/``t1`` are seconds since
+this module was imported.
+
+**The spans overlap, so do not sum them.** The stage runs channel reads, both
+CCF warps and several writes concurrently, and a step's elapsed time is the
+wall-clock span of a coroutine that was suspended across an ``await`` -- it
+includes whatever else the loop and the thread pool were doing meanwhile. Two
+concurrent 1-second writes each report ~1 s while together taking ~1 s. That is
+why ``t0``/``t1`` are emitted: they let a timeline be reconstructed, overlap be
+seen, and the critical path be found. Summing ``seconds`` gives a number with no
+physical meaning.
+
+What the records are good for: ranking steps within a run, comparing the same
+step across runs (level 3 vs level 4 on the same volume), and spotting a step
+whose span dwarfs everything else.
 
 Deliberately dependency-free and cheap: a ``perf_counter`` pair around work that
 takes seconds to minutes costs nothing measurable, so timing is always on and
@@ -25,6 +38,9 @@ logger = logging.getLogger(__name__)
 
 #: Marker that makes timing lines greppable and parseable out of a mixed log.
 _PREFIX = "[timing]"
+
+#: Reference point for ``t0``/``t1``, so offsets are comparable within a run.
+_ORIGIN = time.perf_counter()
 
 
 def format_timing(step: str, seconds: float, **fields: Any) -> str:
@@ -86,8 +102,12 @@ def timed(step: str, **fields: Any) -> Iterator[dict[str, Any]]:
         ok = False
         raise
     finally:
-        elapsed = time.perf_counter() - start
+        end = time.perf_counter()
         merged = {**fields, **collected}
         if not ok:
             merged["ok"] = 0
-        logger.info(format_timing(step, elapsed, **merged))
+        # Offsets, not just duration: concurrent steps overlap, so a timeline is
+        # the only way to tell a slow step from a step that merely spanned one.
+        merged["t0"] = f"{start - _ORIGIN:.3f}"
+        merged["t1"] = f"{end - _ORIGIN:.3f}"
+        logger.info(format_timing(step, end - start, **merged))
