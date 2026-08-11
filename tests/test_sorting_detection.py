@@ -1,10 +1,9 @@
 """Tests for the postprocessed-sorting detection predicate and session lookup."""
 
+import json
 from pathlib import Path
 
 import pytest
-
-import json
 
 from aind_ibl_ephys_alignment_preprocessing.ephys import (
     find_raw_session_dir,
@@ -223,3 +222,33 @@ def test_find_raw_session_dir_ambiguous_without_match_raises(tmp_path):
     _mount_raw(tmp_path / "surface_0", name="ecephys_786867_surface")
     with pytest.raises(ValueError, match="ambiguous raw ecephys"):
         find_raw_session_dir(tmp_path, recording_id="ecephys_does_not_match")
+
+
+def _mount_nwb_output(sorted_root, recording_name="ecephys_771432_2025-03-07_18-22-06"):
+    """Add zarr-backed NWB output to a sorted asset, as the 2026-07 sorts do.
+
+    An NWB file is a *directory* when zarr-backed, and its processing module is
+    literally named ``ecephys`` -- which is one of the raw-session markers.
+    """
+    for experiment in (1, 2, 3):
+        nwb = sorted_root / "nwb" / f"{recording_name}_experiment{experiment}_recording1.nwb"
+        (nwb / "processing" / "ecephys").mkdir(parents=True)
+
+
+def test_nwb_internals_are_not_mistaken_for_raw_sessions(tmp_path):
+    """771432: three NWB files inside the sorted asset made the raw lookup ambiguous."""
+    _mount_raw(tmp_path / "raw", name="ecephys_771432_2025-05-07_18-22-06")
+    sorted_root = _mount_sorted(tmp_path / "sorted", input_recording="ecephys_771432_2025-05-07_18-22-06")
+    _mount_nwb_output(sorted_root)
+
+    # Must resolve even without recording_id: only one real raw is mounted, so
+    # there is nothing to disambiguate once the NWB internals stop matching.
+    assert find_raw_session_dir(tmp_path) == tmp_path / "raw"
+
+
+def test_nwb_internals_do_not_shadow_the_sorted_session(tmp_path):
+    """The same pruning must not cost us the sorted asset it lives inside."""
+    sorted_root = _mount_sorted(tmp_path / "sorted", input_recording="ecephys_A")
+    _mount_nwb_output(sorted_root)
+
+    assert find_sorted_session_dir(tmp_path) == sorted_root

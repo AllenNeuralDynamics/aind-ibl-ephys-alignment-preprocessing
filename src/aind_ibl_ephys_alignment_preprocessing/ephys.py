@@ -65,6 +65,18 @@ def find_session_dir(data_root: Path, name: str, *, max_depth: int = 4) -> Path 
     return next(iter(matches.values()))
 
 
+#: Directory suffixes whose contents are an opaque container, never a session.
+#:
+#: A zarr-backed NWB file is a *directory*, and its internals mimic the structure
+#: this search looks for: an NWB processing module is literally named ``ecephys``,
+#: so ``<x>.nwb/processing`` satisfies the raw-session marker. A sorted asset
+#: carrying three NWB files therefore contributed three phantom "raw sessions"
+#: alongside the real one and made the lookup ambiguous (771432, 2026-08-11).
+#: Structural search has to skip containers whose insides are not a filesystem
+#: layout we own.
+_OPAQUE_DIR_SUFFIXES = (".nwb",)
+
+
 def _find_marked_dirs(data_root: Path, markers: tuple[str, ...], *, max_depth: int = 4) -> dict[str, Path]:
     """Return session dirs identified by a child marker directory (realpath-deduped).
 
@@ -76,6 +88,9 @@ def _find_marked_dirs(data_root: Path, markers: tuple[str, ...], *, max_depth: i
     ``spikesorted`` for a sorted asset, ``ecephys_compressed`` for a raw one). A
     matched directory is not descended into and the walk is depth-bounded, matching
     :func:`find_session_dir`'s traversal discipline.
+
+    Directories named ``*.nwb`` are not descended into either -- see
+    :data:`_OPAQUE_DIR_SUFFIXES`.
     """
     base = Path(data_root)
     matches: dict[str, Path] = {}
@@ -85,6 +100,9 @@ def _find_marked_dirs(data_root: Path, markers: tuple[str, ...], *, max_depth: i
             depth = len(here.relative_to(base).parts)
         except ValueError:
             depth = 0
+        # Prune opaque containers before anything else, so neither the marker test
+        # nor the depth budget is ever spent inside one.
+        dirnames[:] = [d for d in dirnames if not d.endswith(_OPAQUE_DIR_SUFFIXES)]
         if any((here / m).is_dir() for m in markers):
             matches.setdefault(os.path.realpath(dirpath), here)
             dirnames[:] = []  # never descend into the (huge) session tree
