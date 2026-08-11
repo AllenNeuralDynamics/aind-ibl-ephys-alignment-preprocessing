@@ -39,13 +39,13 @@ def _external(asset: str, path: str) -> PathReference:
     return PathReference(asset=asset, path=path)
 
 
-def test_schema_version_is_3_2_0():
+def test_schema_version_is_4_0_0():
     """Schema is 3.2.0 — 3.2 added the pipeline-image geometry sidecar; GUI needs 3.x.
 
     Additive, so the GUI's ``major == 3`` gate keeps passing and packages stay
     readable while consumers migrate off the redundant volume.
     """
-    assert SCHEMA_VERSION == "3.2.0"
+    assert SCHEMA_VERSION == "4.0.0"
 
 
 def test_transforms_are_external_asset_references(tmp_path):
@@ -148,7 +148,7 @@ def test_datapackage_round_trip(tmp_path):
         histology=HistologyPaths(
             image_space=ImageSpaceHistology(
                 registration=_local("image_space_histology/histology_registration.nrrd"),
-                registration_pipeline=_local("image_space_histology/histology_registration_pipeline.nrrd"),
+                registration_pipeline_geometry=_local("image_space_histology/histology_registration_pipeline.json"),
                 ccf_template=_local("image_space_histology/ccf_in_mouse.nrrd"),
                 labels=_local("image_space_histology/labels_in_mouse.nrrd"),
             ),
@@ -481,7 +481,7 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
 
     for rel in [
         "image_space_histology/histology_registration.nrrd",
-        "image_space_histology/histology_registration_pipeline.nrrd",
+        "image_space_histology/histology_registration_pipeline.json",
         "image_space_histology/ccf_in_mouse.nrrd",
         "image_space_histology/labels_in_mouse.nrrd",
         "ccf_space_histology/histology_registration.nrrd",
@@ -511,7 +511,7 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
         histology=HistologyPaths(
             image_space=ImageSpaceHistology(
                 registration=_local("image_space_histology/histology_registration.nrrd"),
-                registration_pipeline=_local("image_space_histology/histology_registration_pipeline.nrrd"),
+                registration_pipeline_geometry=_local("image_space_histology/histology_registration_pipeline.json"),
                 ccf_template=_local("image_space_histology/ccf_in_mouse.nrrd"),
                 labels=_local("image_space_histology/labels_in_mouse.nrrd"),
             ),

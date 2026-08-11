@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import ants
 import numpy as np
@@ -160,7 +160,7 @@ def _mirror_pipeline_grid(pipeline: sitk.Image, base_before: sitk.Image, base_af
         origin=pipeline.GetOrigin(),
         spacing=tuple(s * f for s, f in zip(pipeline.GetSpacing(), factor, strict=True)),
         direction=np.array(pipeline.GetDirection()).reshape(3, 3),
-        size_ijk=base_after.GetSize(),
+        size_ijk=cast("tuple[int, int, int]", tuple(base_after.GetSize())),
     )
     logger.info(
         "[registration-pipeline] grid mirrored from the base resample: %s @ %s mm (factor %s)",
@@ -195,7 +195,7 @@ def _blessed_header(header: AnatomicalHeader, label: str) -> AnatomicalHeader:
             origin=oriented.GetOrigin(),
             spacing=oriented.GetSpacing(),
             direction=np.array(oriented.GetDirection()).reshape(3, 3),
-            size_ijk=tuple(int(n) for n in oriented.GetSize()),
+            size_ijk=cast("tuple[int, int, int]", tuple(int(n) for n in oriented.GetSize())),
         )
 
 

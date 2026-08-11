@@ -21,8 +21,8 @@ from aind_ibl_ephys_alignment_preprocessing.types import (
 
 logger = logging.getLogger(__name__)
 
-SchemaVersion = Literal["3.2.0"]
-SCHEMA_VERSION: SchemaVersion = "3.2.0"
+SchemaVersion = Literal["4.0.0"]
+SCHEMA_VERSION: SchemaVersion = "4.0.0"
 # Why 3.0.0: 2.x stored filesystem locations as strings. 3.0.0 changes every
 # datapackage path into a reference object ``{asset, path}``, where
 # ``asset=None`` means datapackage-local and external assets are resolved via
@@ -65,14 +65,23 @@ class ImageSpaceHistology(BaseModel, frozen=True):
     """References to image-space histology volumes."""
 
     registration: PathReference
-    #: Voxel-identical to ``registration``, differing only in origin. Its pixels
-    #: are never read -- the sole consumer maps voxel indices to physical points
-    #: -- so ``registration_pipeline_geometry`` carries everything needed and the
-    #: volume is scheduled for removal once consumers read the sidecar instead.
-    registration_pipeline: PathReference
-    #: Grid geometry (size/spacing/origin/direction) of the volume above, as
-    #: written. Prefer this over opening ``registration_pipeline``.
-    registration_pipeline_geometry: PathReference | None = None
+    #: Grid geometry of the *pipeline* domain -- the frame the stored ANTs
+    #: transforms were trained in -- as a JSON sidecar rather than a volume.
+    #:
+    #: Through 3.2.0 this shipped as ``histology_registration_pipeline.nrrd``
+    #: alongside the sidecar. That volume was voxel-identical to ``registration``
+    #: and differed only in origin, and no consumer ever read its pixels: the one
+    #: use maps voxel indices to physical points, which needs only the header.
+    #: 4.0.0 drops it. The bump is major because the GUI gates on the major
+    #: version, so an older reader refuses the package outright instead of
+    #: failing to find a file it was told to open.
+    #:
+    #: Rehydrate as a 1x1x1 stub -- ``TransformContinuousIndexToPhysicalPoint``
+    #: is arithmetic with no bounds check, so a stub answers for any index while
+    #: the full grid would cost tens of megabytes for nothing. ``size_ijk`` is
+    #: what verifies the base/pipeline pairing: it must equal the ``registration``
+    #: volume's size, because an index is handed between the two frames.
+    registration_pipeline_geometry: PathReference
     ccf_template: PathReference
     labels: PathReference
     additional_channels: list[PathReference] = []
@@ -212,12 +221,7 @@ class DataPackage(BaseModel, frozen=True):
             self.transforms.template_to_ccf_affine,
             self.transforms.template_to_ccf_warp,
             self.histology.image_space.registration,
-            self.histology.image_space.registration_pipeline,
-            *(
-                [self.histology.image_space.registration_pipeline_geometry]
-                if self.histology.image_space.registration_pipeline_geometry is not None
-                else []
-            ),
+            self.histology.image_space.registration_pipeline_geometry,
             self.histology.image_space.ccf_template,
             self.histology.image_space.labels,
             *self.histology.image_space.additional_channels,
@@ -459,7 +463,6 @@ def _build_histology(outputs: OutputDirs, manifest_root: Path, config: PipelineC
     return HistologyPaths(
         image_space=ImageSpaceHistology(
             registration=_local_ref(img_dir / "histology_registration.nrrd", manifest_root),
-            registration_pipeline=_local_ref(img_dir / "histology_registration_pipeline.nrrd", manifest_root),
             registration_pipeline_geometry=_local_ref(img_dir / "histology_registration_pipeline.json", manifest_root),
             ccf_template=_local_ref(img_dir / "ccf_in_mouse.nrrd", manifest_root),
             labels=_local_ref(img_dir / "labels_in_mouse.nrrd", manifest_root),
