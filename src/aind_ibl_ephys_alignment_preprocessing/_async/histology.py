@@ -215,8 +215,9 @@ async def write_registration_channel_images_async(
         record["mvox"] = int(np.prod(raw_img.GetSize()) // 10**6)
     logger.info("[Histology] Registration channel loaded: raw + pipeline-transformed images")
     with timed("histology.resample", volume=zarr_name):
-        raw_img = resample_to_isotropic(raw_img, output_voxel_size_um, "registration")
-        pipeline_raw_img = resample_to_isotropic(pipeline_raw_img, output_voxel_size_um, "registration-pipeline")
+        resampled = resample_to_isotropic(raw_img, output_voxel_size_um, "registration")
+        pipeline_raw_img = _mirror_pipeline_grid(pipeline_raw_img, raw_img, resampled)
+        raw_img = resampled
     raw_img_dst = outputs.histology_img / "histology_registration.nrrd"
     bugged_img_dst = outputs.histology_img / "histology_registration_pipeline.nrrd"
     logger.info("[Histology] Registration channel conversion to %s + write started", _BLESSED_DIRECTION)
@@ -281,6 +282,60 @@ _UM_PER_MM = 1000.0
 #: mistaken for the wrong unit is off by 1000x and silently collapses a volume to
 #: a single voxel rather than failing, so it is checked instead of trusted.
 _MIN_RESAMPLED_EXTENT = 8
+
+
+def _mirror_pipeline_grid(pipeline: sitk.Image, base_before: sitk.Image, base_after: sitk.Image) -> sitk.Image:
+    """Carry the pipeline image through the base image's resample, in index space.
+
+    ``base`` and ``pipeline`` are the *same voxels* under two headers: the base
+    header comes from the Zarr scales, the pipeline header is the domain
+    ``aind_zarr_utils`` reconstructs so the stored ANTs transforms apply in the
+    frame they were trained in. Two things depend on that pairing staying exact:
+    the CCF template and labels are warped onto the *pipeline* grid and then
+    stamped with the *base* header, which is only meaningful when both grids have
+    the same size; and the GUI overlays the results on the base volume voxel for
+    voxel.
+
+    Resampling the two independently breaks it. Their spacings need not be
+    identical -- the pipeline's is the corrected level-0 spacing scaled by
+    ``2**level``, the base's comes from the Zarr metadata -- so each computes a
+    different output size from the same target, and nothing downstream notices.
+
+    So the resample is done once, on the base, and the pipeline image inherits
+    the result: the same voxels, with its header rescaled by the same per-axis
+    factor. Origin is kept, which is the convention ``apply_pipeline_overlays``
+    itself uses across levels (it scales spacing by ``2**level`` and passes the
+    level-0 origin through unchanged), so index ``i`` of the resampled pipeline
+    image lands where index ``i * factor`` of the original did.
+
+    Parameters
+    ----------
+    pipeline : sitk.Image
+        Pipeline-domain image, before resampling.
+    base_before, base_after : sitk.Image
+        The base image either side of the resample; their spacing ratio is the
+        index-space factor to apply.
+
+    Returns
+    -------
+    sitk.Image
+        The resampled voxels carrying the rescaled pipeline header.
+    """
+    if base_after is base_before:
+        return pipeline
+
+    factor = [after / before for before, after in zip(base_before.GetSpacing(), base_after.GetSpacing(), strict=True)]
+    out = sitk.Image(base_after)
+    out.SetSpacing(tuple(s * f for s, f in zip(pipeline.GetSpacing(), factor, strict=True)))
+    out.SetOrigin(pipeline.GetOrigin())
+    out.SetDirection(pipeline.GetDirection())
+    logger.info(
+        "[registration-pipeline] grid mirrored from the base resample: %s @ %s mm (factor %s)",
+        out.GetSize(),
+        tuple(round(s, 6) for s in out.GetSpacing()),
+        tuple(round(f, 4) for f in factor),
+    )
+    return out
 
 
 def resample_to_isotropic(img: sitk.Image, target_um: float, label: str) -> sitk.Image:

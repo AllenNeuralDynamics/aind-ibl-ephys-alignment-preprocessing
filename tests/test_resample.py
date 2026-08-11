@@ -112,3 +112,140 @@ def test_real_volume_keeps_its_extent():
         before = img.GetSize()[axis] * img.GetSpacing()[axis]
         after = out.GetSize()[axis] * out.GetSpacing()[axis]
         assert after == pytest.approx(before, rel=0.02)
+
+
+# --- base and pipeline images must stay one voxel grid ----------------------
+
+
+def _pair():
+    """A base/pipeline pair: same voxels, two headers, slightly different spacing.
+
+    The pipeline spacing is the corrected level-0 spacing scaled by 2**level and
+    need not equal the base's, which comes straight from the Zarr scales.
+    """
+    arr = np.zeros((60, 80, 100), dtype=np.uint16)
+    base = sitk.GetImageFromArray(arr)
+    base.SetSpacing((28.8 * UM, 28.8 * UM, 32.0 * UM))
+    base.SetOrigin((11.82, -1.5, 1.5))
+    pipeline = sitk.GetImageFromArray(arr)
+    pipeline.SetSpacing((29.1 * UM, 29.1 * UM, 32.3 * UM))
+    pipeline.SetOrigin((11.90, -1.6, 1.4))
+    return base, pipeline
+
+
+def test_pipeline_grid_stays_the_same_size_as_the_base():
+    """The CCF warp lands on the pipeline grid and is stamped with the base header."""
+    from aind_ibl_ephys_alignment_preprocessing._async.histology import (
+        _mirror_pipeline_grid,
+    )
+
+    base, pipeline = _pair()
+    assert base.GetSize() == pipeline.GetSize()
+
+    resampled_base = resample_to_isotropic(base, 30.0, "base")
+    resampled_pipeline = _mirror_pipeline_grid(pipeline, base, resampled_base)
+
+    assert resampled_pipeline.GetSize() == resampled_base.GetSize()
+
+
+def test_pipeline_header_arithmetic_is_self_consistent():
+    """Index i after sits where index i*factor sat before, in the pipeline frame.
+
+    Weak by construction: the assertion is algebraically what
+    ``_mirror_pipeline_grid`` sets, so it catches a typo and nothing more. The
+    real check is
+    :func:`test_mirrored_pixels_equal_resampling_the_pipeline_image_directly`.
+    """
+    from aind_ibl_ephys_alignment_preprocessing._async.histology import (
+        _mirror_pipeline_grid,
+    )
+
+    base, pipeline = _pair()
+    resampled_base = resample_to_isotropic(base, 30.0, "base")
+    out = _mirror_pipeline_grid(pipeline, base, resampled_base)
+
+    factor = [a / b for b, a in zip(base.GetSpacing(), resampled_base.GetSpacing(), strict=True)]
+    for index in [(0, 0, 0), (10, 20, 5), (37.5, 12.25, 8.0)]:
+        equivalent = [i * f for i, f in zip(index, factor, strict=True)]
+        assert out.TransformContinuousIndexToPhysicalPoint(index) == pytest.approx(
+            pipeline.TransformContinuousIndexToPhysicalPoint(equivalent)
+        )
+
+
+def test_an_untouched_base_leaves_the_pipeline_image_alone():
+    """Nothing to mirror when the base was already coarse enough."""
+    from aind_ibl_ephys_alignment_preprocessing._async.histology import (
+        _mirror_pipeline_grid,
+    )
+
+    base, pipeline = _pair()
+    base.SetSpacing((50.0 * UM,) * 3)
+
+    unchanged = resample_to_isotropic(base, 30.0, "base")
+    assert unchanged is base
+    assert _mirror_pipeline_grid(pipeline, base, unchanged) is pipeline
+
+
+def test_mirrored_pixels_equal_resampling_the_pipeline_image_directly():
+    """Copying the base's resampled voxels must equal resampling the pipeline image.
+
+    The independent check: rather than asserting the header arithmetic against
+    itself, resample the *pipeline* image in its own physical frame onto the
+    mirrored grid and require the pixels to match. If the index correspondence
+    were off by any amount, distinctive content would disagree.
+
+    Two things have to be matched for the comparison to mean anything, and
+    getting either wrong produces a large, convincing, wrong answer:
+
+    - the **anti-alias filter**. Its sigma is physical, so the same filter on the
+      same voxel array needs rescaling by the spacing ratio between the frames.
+      Omitting it compares smoothed against unsmoothed.
+    - the **output dtype**. The mirrored image is cast back to uint16; leaving
+      the comparison in float shows a uniform sub-1 difference that is just
+      rounding.
+
+    That the filter must be rescaled is itself the argument for doing the
+    resample once: the filter's job is to remove content above the *output*
+    Nyquist, which the resample factor sets, and that factor is identical for
+    both frames. Filtering per-frame in physical units would apply two slightly
+    different filters to one array.
+    """
+    from aind_ibl_ephys_alignment_preprocessing._async.histology import (
+        _mirror_pipeline_grid,
+    )
+
+    rng = np.random.default_rng(0)
+    arr = rng.integers(0, 4000, (60, 80, 100)).astype(np.uint16)
+    direction = (0.0, 0.0, 1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0)
+
+    base = sitk.GetImageFromArray(arr)
+    base.SetSpacing((28.8 * UM, 28.8 * UM, 32.0 * UM))
+    base.SetOrigin((11.82, -1.5, 1.5))
+    base.SetDirection(direction)
+    pipeline = sitk.GetImageFromArray(arr)
+    pipeline.SetSpacing((29.1 * UM, 29.1 * UM, 32.3 * UM))
+    pipeline.SetOrigin((11.90, -1.6, 1.4))
+    pipeline.SetDirection(direction)
+
+    mirrored = _mirror_pipeline_grid(pipeline, base, resample_to_isotropic(base, 30.0, "base"))
+
+    target_mm = 30.0 * UM
+    work = sitk.Cast(pipeline, sitk.sitkFloat32)
+    for axis, (base_sp, pipe_sp) in enumerate(zip(base.GetSpacing(), pipeline.GetSpacing(), strict=True)):
+        if target_mm > base_sp:  # the axes the base's filter touched
+            work = sitk.RecursiveGaussian(work, sigma=((target_mm / 2.0) / base_sp) * pipe_sp, direction=axis)
+    direct = sitk.Resample(
+        work,
+        mirrored.GetSize(),
+        sitk.Transform(),
+        sitk.sitkLinear,
+        mirrored.GetOrigin(),
+        mirrored.GetSpacing(),
+        mirrored.GetDirection(),
+        0.0,
+        sitk.sitkFloat32,
+    )
+
+    got = sitk.GetArrayFromImage(mirrored).astype(np.int64)
+    want = sitk.GetArrayFromImage(sitk.Cast(direct, sitk.sitkUInt16)).astype(np.int64)
+    assert np.array_equal(got, want)
