@@ -19,6 +19,7 @@ from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     to_thread_logged,
 )
 from aind_ibl_ephys_alignment_preprocessing._constants import _BLESSED_DIRECTION
+from aind_ibl_ephys_alignment_preprocessing._timing import timed
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     OutputDirs,
@@ -65,10 +66,14 @@ async def convert_img_to_direction_and_write_async(
     direction: str = _BLESSED_DIRECTION,
 ) -> None:
     """Async convert image orientation and write to disk."""
+    name = Path(dst_path).name
     logger.info("[Histology] Converting image for %s to %s orientation", dst_path, direction)
-    img_oriented = await to_thread_logged(sitk.DICOMOrient, img, direction)
+    with timed("histology.reorient", volume=name):
+        img_oriented = await to_thread_logged(sitk.DICOMOrient, img, direction)
     logger.info("[Histology] Writing image for %s to disk", dst_path)
-    await io_to_thread_on(limits, str(dst_path), sitk.WriteImage, img_oriented, str(dst_path), useCompression=True)
+    with timed("histology.write", volume=name) as record:
+        await io_to_thread_on(limits, str(dst_path), sitk.WriteImage, img_oriented, str(dst_path), useCompression=True)
+        record["mvox"] = int(np.prod(img_oriented.GetSize()) // 10**6)
     logger.info("[Histology] Done writing image for %s to disk", dst_path)
 
 
@@ -111,20 +116,23 @@ async def write_registration_channel_images_async(
     zarr_name = Path(reg_zarr).stem
     logger.info("[Histology] Reading registration channel from zarr: %s at level %d", zarr_name, level)
     if opened_zarr is None:
-        zarr_node, zarr_metadata = await to_thread_logged(_open_zarr, reg_zarr)
+        with timed("histology.zarr_open", volume=zarr_name):
+            zarr_node, zarr_metadata = await to_thread_logged(_open_zarr, reg_zarr)
     else:
         zarr_node, zarr_metadata = opened_zarr
 
     metadata = asset_info.zarr_volumes.metadata
     processing = asset_info.zarr_volumes.processing
-    raw_img, pipeline_raw_img = await to_thread_logged(
-        base_and_pipeline_zarr_to_sitk,
-        reg_zarr,
-        metadata,
-        processing,
-        level=level,
-        opened_zarr=(zarr_node, zarr_metadata),
-    )
+    with timed("histology.zarr_read", volume=zarr_name, level=level) as record:
+        raw_img, pipeline_raw_img = await to_thread_logged(
+            base_and_pipeline_zarr_to_sitk,
+            reg_zarr,
+            metadata,
+            processing,
+            level=level,
+            opened_zarr=(zarr_node, zarr_metadata),
+        )
+        record["mvox"] = int(np.prod(raw_img.GetSize()) // 10**6)
     logger.info("[Histology] Registration channel loaded: raw + pipeline-transformed images")
     raw_img_dst = outputs.histology_img / "histology_registration.nrrd"
     bugged_img_dst = outputs.histology_img / "histology_registration_pipeline.nrrd"
@@ -152,19 +160,93 @@ async def apply_ccf_inverse_tx_then_fix_domain_async(
     """Async version of CCF inverse transform with domain repair."""
     pt_tx_str = asset_info.pipeline_registration_chains.pt_tx_str
     pt_tx_inverted = asset_info.pipeline_registration_chains.pt_tx_inverted
+    interpolator = str(kwargs.get("interpolator", "linear"))
+    # ``timed`` is a *sync* context manager, so it cannot share the ``async
+    # with``. Nesting it inside the semaphore is also what we want: it then
+    # measures the warp rather than the wait for a registration slot.
     async with limits.registration:
-        ccf_img_in_hist_space: ANTsImage = await to_thread_logged(
-            ants.apply_transforms,
-            fixed=pipeline_space_fixed_img,
-            moving=ccf_space_img_moving,
-            transformlist=pt_tx_str,
-            whichtoinvert=pt_tx_inverted,
-            **kwargs,
-        )
+        with timed("histology.warp", interpolator=interpolator):
+            ccf_img_in_hist_space: ANTsImage = await to_thread_logged(
+                ants.apply_transforms,
+                fixed=pipeline_space_fixed_img,
+                moving=ccf_space_img_moving,
+                transformlist=pt_tx_str,
+                whichtoinvert=pt_tx_inverted,
+                **kwargs,
+            )
     ccf_img_in_hist_space.set_spacing(correct_hist_domain_img.spacing)
     ccf_img_in_hist_space.set_origin(correct_hist_domain_img.origin)
     ccf_img_in_hist_space.set_direction(correct_hist_domain_img.direction)
     return ccf_img_in_hist_space
+
+
+#: Bounds of the signed/unsigned integer pixel types we narrow to, so a cast is
+#: only made when it provably cannot alter a voxel.
+_DTYPE_RANGE: dict[int, tuple[int, int]] = {
+    sitk.sitkUInt8: (0, 2**8 - 1),
+    sitk.sitkInt16: (-(2**15), 2**15 - 1),
+    sitk.sitkUInt16: (0, 2**16 - 1),
+    sitk.sitkInt32: (-(2**31), 2**31 - 1),
+    sitk.sitkUInt32: (0, 2**32 - 1),
+}
+
+
+def _narrow_dtype(img: sitk.Image, pixel_type: int, label: str) -> sitk.Image:
+    """Cast *img* to *pixel_type* when its values fit, else leave it alone.
+
+    Two of the written volumes carry a dtype inherited from how they were built
+    rather than from what they hold: the expanded label image takes int64 from
+    the LUT array it is indexed out of, and the CCF template arrives as uint32
+    holding a 10-bit intensity scale. Each is a straight doubling of the bytes
+    pushed through the warp, the reorientation and the write.
+
+    The cast is guarded rather than assumed, because a silent overflow here would
+    corrupt structure ids into other valid structure ids -- wrong in a way that
+    still looks like a brain. If the range does not fit, the image is returned
+    unchanged and the reason logged.
+
+    Note this is deliberately not applied to the fluorescence channels: they use
+    their full uint16 depth, and the GUI windows contrast from the source values
+    rather than from a pre-quantized image.
+
+    Parameters
+    ----------
+    img : sitk.Image
+        Image to narrow.
+    pixel_type : int
+        Target SimpleITK pixel type.
+    label : str
+        Volume name, for the log line.
+
+    Returns
+    -------
+    sitk.Image
+        The narrowed image, or *img* unchanged when the values do not fit.
+    """
+    low, high = _DTYPE_RANGE[pixel_type]
+    stats = sitk.MinimumMaximumImageFilter()
+    stats.Execute(img)
+    actual_low, actual_high = stats.GetMinimum(), stats.GetMaximum()
+    if actual_low < low or actual_high > high:
+        logger.warning(
+            "[%s] leaving dtype as %s: values [%s, %s] do not fit %s",
+            label,
+            img.GetPixelIDTypeAsString(),
+            actual_low,
+            actual_high,
+            sitk.GetPixelIDValueAsString(pixel_type),
+        )
+        return img
+    logger.info(
+        "[%s] narrowing %s -> %s (values [%s, %s])",
+        label,
+        img.GetPixelIDTypeAsString(),
+        sitk.GetPixelIDValueAsString(pixel_type),
+        actual_low,
+        actual_high,
+    )
+    narrowed: sitk.Image = sitk.Cast(img, pixel_type)
+    return narrowed
 
 
 async def transform_ccf_to_image_space_async(
@@ -187,6 +269,7 @@ async def transform_ccf_to_image_space_async(
     ccf_in_hist_img_path = outputs.histology_img / "ccf_in_mouse.nrrd"
     ccf_in_hist_sitk = await to_thread_logged(to_sitk, ccf_in_hist_img)
     del ccf_in_hist_img
+    ccf_in_hist_sitk = _narrow_dtype(ccf_in_hist_sitk, sitk.sitkUInt16, "ccf_in_mouse")
     await convert_img_to_direction_and_write_async(ccf_in_hist_sitk, ccf_in_hist_img_path, limits)
     logger.info("[CCF Transform] Completed: %s", ccf_in_hist_img_path.name)
 
@@ -219,6 +302,7 @@ async def transform_ccf_labels_to_image_space_async(
     ccf_labels_sitk = await to_thread_logged(to_sitk, ccf_labels_in_hist_img)
     del ccf_labels_in_hist_img
     ccf_labels_expanded = expand_compacted_image(ccf_labels_sitk, unq_vals)
+    ccf_labels_expanded = _narrow_dtype(ccf_labels_expanded, sitk.sitkInt32, "labels_in_mouse")
     ccf_labels_in_hist_img_path = outputs.histology_img / "labels_in_mouse.nrrd"
     await convert_img_to_direction_and_write_async(ccf_labels_expanded, ccf_labels_in_hist_img_path, limits)
     logger.info("[CCF Labels] Completed: %s", ccf_labels_in_hist_img_path.name)
@@ -245,7 +329,9 @@ async def process_additional_channel_pipeline_async(
 
     ch_str = Path(zarr_path).stem
     logger.info("[Channel %s] Starting processing", ch_str)
-    img_raw = await to_thread_logged(zarr_to_sitk, zarr_path, asset_info.zarr_volumes.metadata, level=level)
+    with timed("histology.zarr_read", volume=ch_str, level=level) as record:
+        img_raw = await to_thread_logged(zarr_to_sitk, zarr_path, asset_info.zarr_volumes.metadata, level=level)
+        record["mvox"] = int(np.prod(img_raw.GetSize()) // 10**6)
     logger.info("[Channel %s] read from zarr complete", ch_str)
     channel_dst = outputs.histology_img / f"{ch_str}.nrrd"
     await convert_img_to_direction_and_write_async(img_raw, channel_dst, limits)

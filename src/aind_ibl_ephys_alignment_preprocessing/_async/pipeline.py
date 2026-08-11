@@ -58,7 +58,7 @@ async def _create_volumes_async(
     zarr_metadata: dict[str, Any],
     limits: Limits,
     scratch_root: Path,
-    desired_voxel_size_um: float = 25.0,
+    desired_voxel_size_um: float,
     *,
     emit_qc: bool = False,
 ) -> None:

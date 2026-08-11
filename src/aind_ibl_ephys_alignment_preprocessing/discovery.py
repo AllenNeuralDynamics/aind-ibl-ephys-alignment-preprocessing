@@ -146,7 +146,7 @@ def prepare_result_dirs(mouse_id: str, results_root: Path) -> OutputDirs:
     return OutputDirs(histology_ccf, histology_img, tracks_root, spim, template, ccf, bregma)
 
 
-def determine_desired_level(zarr_metadata: dict, desired_voxel_size_um: float = 25.0) -> int:  # type: ignore[type-arg]
+def determine_desired_level(zarr_metadata: dict, desired_voxel_size_um: float) -> int:  # type: ignore[type-arg]
     """Select the highest-resolution multiscale level not exceeding *desired_voxel_size_um*.
 
     Parameters
@@ -154,12 +154,23 @@ def determine_desired_level(zarr_metadata: dict, desired_voxel_size_um: float = 
     zarr_metadata : dict
         OME-Zarr metadata containing ``coordinateTransformations``.
     desired_voxel_size_um : float
-        Target voxel size in micrometers.
+        Target voxel size in micrometers. Required rather than defaulted: the one
+        value that governs a run lives on
+        :attr:`~aind_ibl_ephys_alignment_preprocessing.types.PipelineConfig.desired_voxel_size_um`,
+        and a second default here would be dead code that still reads like the
+        answer.
 
     Returns
     -------
     int
         Zero-based multiscale level index.
+
+    Notes
+    -----
+    The comparison is against ``min(z, y, x)`` of each level, so on an
+    anisotropic pyramid the target acts as a floor on the *finest* axis rather
+    than a target for the grid: a volume whose z is finer than its xy is selected
+    on z and processed with xy coarser than asked for.
     """
     scales = np.array([np.array(x[0]["scale"][2:]).min() for x in zarr_metadata["coordinateTransformations"]])
     level: int = int(
