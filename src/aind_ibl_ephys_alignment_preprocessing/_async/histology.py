@@ -60,30 +60,74 @@ async def compress_reorient_nrrd_file_async(
     await io_to_thread_on(limits, str(output_path), temp_output_path.replace, output_path)
 
 
-def image_geometry(img: sitk.Image) -> dict[str, list[float] | list[int]]:
-    """Return the grid geometry needed to map voxel indices to physical points.
+#: Identifies the sidecar's shape, so a reader can tell what it is holding.
+_GEOMETRY_SCHEMA = "anatomical-header/1"
 
-    Everything ``TransformContinuousIndexToPhysicalPoint`` uses, and nothing
-    else -- so a consumer that only needs the mapping can be handed this instead
-    of a whole volume.
+#: Physical frame of ``origin`` and the direction columns. Fixed by ITK, stated
+#: because a consumer reaching for nibabel would otherwise assume RAS.
+_GEOMETRY_SPACE = "left-posterior-superior"
+
+#: ITK is unit-agnostic, so the numbers alone cannot say. These volumes inherit
+#: micrometres from the OME-Zarr scales, which matters because
+#: ``AnatomicalHeader`` documents millimetres: same class, different unit, and
+#: nothing raises if they are mixed.
+_GEOMETRY_UNITS = "micrometer"
+
+
+def image_geometry(img: sitk.Image) -> dict[str, Any]:
+    """Serialize a grid's geometry: everything index -> physical needs, nothing more.
+
+    Built from :class:`aind_anatomical_utils.anatomical_volume.AnatomicalHeader`
+    so the payload is exactly that class's constructor arguments, and a consumer
+    reconstructs with
+
+    .. code-block:: python
+
+        header = AnatomicalHeader(
+            origin=tuple(h["origin"]),
+            spacing=tuple(h["spacing"]),
+            direction=np.array(h["direction"]).reshape(3, 3),
+            size_ijk=tuple(h["size_ijk"]),
+        )
+
+    rather than re-deriving a convention from loose numbers.
+
+    The field names carry the convention because getting it wrong is silent:
+
+    - ``size_ijk`` and ``spacing`` are per **index axis** ``(i, j, k)``, which is
+      SimpleITK's ``GetSize()`` order and therefore the **reverse** of the numpy
+      ``array.shape``. Read as a shape, it transposes the volume.
+    - ``origin`` and the direction's **columns** are physical LPS.
+    - ``direction`` is the 3x3 flattened **row-major**, ready for
+      ``SetDirection``; its columns are the index axes' LPS unit vectors.
+
+    Together: ``physical = origin + direction @ (spacing * index)``.
 
     Parameters
     ----------
     img : sitk.Image
         Image whose geometry to capture. Must be the image *as written*: the
         orientation conversion changes origin and direction, so geometry taken
-        before it describes a grid that does not exist on disk.
+        beforehand describes a grid that does not exist on disk.
 
     Returns
     -------
     dict
-        ``size`` / ``spacing`` / ``origin`` / ``direction`` (row-major 3x3).
+        Self-describing payload; the constructor arguments live under ``header``.
     """
+    from aind_anatomical_utils.anatomical_volume import AnatomicalHeader
+
+    header = AnatomicalHeader.from_sitk(img)
     return {
-        "size": list(img.GetSize()),
-        "spacing": list(img.GetSpacing()),
-        "origin": list(img.GetOrigin()),
-        "direction": list(img.GetDirection()),
+        "schema": _GEOMETRY_SCHEMA,
+        "space": _GEOMETRY_SPACE,
+        "units": _GEOMETRY_UNITS,
+        "header": {
+            "origin": [float(v) for v in header.origin],
+            "spacing": [float(v) for v in header.spacing],
+            "direction": [float(v) for v in header.direction_tuple()],
+            "size_ijk": [int(v) for v in header.size_ijk],
+        },
     }
 
 
@@ -92,7 +136,7 @@ async def convert_img_to_direction_and_write_async(
     dst_path: Path | str,
     limits: Limits,
     direction: str = _BLESSED_DIRECTION,
-) -> dict[str, list[float] | list[int]]:
+) -> dict[str, Any]:
     """Async convert image orientation and write to disk.
 
     Returns
