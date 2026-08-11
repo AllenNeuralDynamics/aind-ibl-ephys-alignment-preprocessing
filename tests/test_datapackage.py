@@ -422,6 +422,20 @@ def test_infer_process_results_from_existing_outputs(tmp_path):
     ]
 
 
+def test_infer_process_results_without_qc_needs_only_image_space(tmp_path):
+    """With QC off the CCF pick is never written, so requiring it empties `probes`."""
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import infer_process_results_from_outputs
+
+    outputs = _fake_outputs(tmp_path)
+    row = _fake_row(probe_id="pid-1", probe_name="probeA", recording_id="rec1")
+    # Exactly what a qc=0 run leaves behind: image-space pick only.
+    _touch(row.gui_folder(outputs) / "xyz_picks_image_space.json")
+
+    assert [r.wrote_files for r in infer_process_results_from_outputs([row], outputs, emit_qc=False)] == [True]
+    # QC on: the CCF pick is expected, and its absence is a genuine failure.
+    assert [r.wrote_files for r in infer_process_results_from_outputs([row], outputs, emit_qc=True)] == [False]
+
+
 def _touch(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("x")

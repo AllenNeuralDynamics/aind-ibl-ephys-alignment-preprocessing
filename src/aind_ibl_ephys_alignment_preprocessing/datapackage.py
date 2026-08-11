@@ -602,12 +602,37 @@ def _xyz_pick_names(
     return f"xyz_picks_shank{shank_id}.json", f"xyz_picks_shank{shank_id}_image_space.json", shank
 
 
-def infer_process_results_from_outputs(manifest_rows: list[ManifestRow], outputs: OutputDirs) -> list[ProcessResult]:
+def infer_process_results_from_outputs(
+    manifest_rows: list[ManifestRow], outputs: OutputDirs, *, emit_qc: bool = True
+) -> list[ProcessResult]:
     """Infer per-row success from existing xyz-pick outputs.
 
     This is intentionally lightweight: it does not rerun histology or ephys
     work. It is used to regenerate ``datapackage.json`` after schema/contract
     changes when the expensive preprocessing outputs already exist.
+
+    The **image-space** pick is what the GUI reads and is written on every run;
+    the CCF pick is QC output and is not written when ``emit_qc`` is off. So the
+    CCF file may only be required when QC was requested -- demanding it
+    unconditionally marks every row unsuccessful on a ``qc=0`` run, which empties
+    ``successful`` in :func:`_build_probes` and ships a datapackage with no
+    probes at all despite every stream having been processed.
+
+    Parameters
+    ----------
+    manifest_rows : list[ManifestRow]
+        Rows to infer results for.
+    outputs : OutputDirs
+        Output directory tree holding the existing picks.
+    emit_qc : bool, default True
+        Whether the run that produced *outputs* emitted QC files. When False the
+        CCF pick is not expected. Defaults to True so a caller that has no
+        config still gets the strict, historical check.
+
+    Returns
+    -------
+    list[ProcessResult]
+        One result per row, in input order.
     """
     results: list[ProcessResult] = []
     for row in manifest_rows:
@@ -616,7 +641,7 @@ def infer_process_results_from_outputs(manifest_rows: list[ManifestRow], outputs
             histology_shank=_row_histology_shank(row),
             ephys_shank=_row_ephys_shank(row),
         )
-        wrote_files = (gui_folder / ccf_name).is_file() and (gui_folder / img_name).is_file()
+        wrote_files = (gui_folder / img_name).is_file() and (not emit_qc or (gui_folder / ccf_name).is_file())
         results.append(
             ProcessResult(
                 probe_id=_row_histology_track_id(row),

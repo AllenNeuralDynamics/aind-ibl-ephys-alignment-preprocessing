@@ -192,7 +192,7 @@ def regenerate_datapackage(
     out = prepare_result_dirs(mouse_id, config.results_root)
     asset_info = find_asset_info(config)
     manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
-    processed_results = infer_process_results_from_outputs(manifest_rows, out)
+    processed_results = infer_process_results_from_outputs(manifest_rows, out, emit_qc=config.emit_qc)
     dp = build_datapackage(mouse_id, manifest_rows, processed_results, asset_info, out, config)
     dp_path = write_datapackage(
         dp,
