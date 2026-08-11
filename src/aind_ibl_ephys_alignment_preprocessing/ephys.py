@@ -68,12 +68,9 @@ def find_session_dir(data_root: Path, name: str, *, max_depth: int = 4) -> Path 
 #: Directory suffixes whose contents are an opaque container, never a session.
 #:
 #: A zarr-backed NWB file is a *directory*, and its internals mimic the structure
-#: this search looks for: an NWB processing module is literally named ``ecephys``,
-#: so ``<x>.nwb/processing`` satisfies the raw-session marker. A sorted asset
-#: carrying three NWB files therefore contributed three phantom "raw sessions"
-#: alongside the real one and made the lookup ambiguous (771432, 2026-08-11).
-#: Structural search has to skip containers whose insides are not a filesystem
-#: layout we own.
+#: this search looks for: an NWB processing module is named ``ecephys``, so
+#: ``<x>.nwb/processing`` satisfies the raw-session marker. Structural search has
+#: to skip containers whose insides are not a filesystem layout we own.
 _OPAQUE_DIR_SUFFIXES = (".nwb",)
 
 
@@ -160,17 +157,15 @@ def find_raw_session_dir(data_root: Path, *, recording_id: str | None = None, ma
     converter fall back to its legacy sibling-of-sorted lookup for the monolith/RR
     path.
 
-    Two identifiers are tried, in that order. ``data_description`` is preferred
-    because it travels with the data. The **mount directory name** is the
-    fallback, for sessions whose asset name and internal metadata disagree:
-    771432's "05-07" session is really 2025-03-07 by its own ``settings.xml``,
-    ``session.json`` and ``data_description.json``, but the asset -- and so the
-    mount, and so the pin that resolves it -- is named ``..._2025-05-07_...``.
-    A manifest can satisfy the sorting resolver (which matches asset names) or
-    this one (which matched metadata only), never both, and all ten "05-07"
-    streams died here. Trying both costs nothing when they agree and unblocks the
-    mouse when they do not. Renaming the asset and its S3 prefix to the true date
-    remains the real fix; this only stops the disagreement being fatal.
+    Two identifiers are tried, in that order: the ``data_description`` name,
+    preferred because it travels with the data, then the **mount directory
+    name**. The fallback matters because an asset's name and its own metadata can
+    disagree about which session it holds, and the pipeline's two resolvers trust
+    different ones -- sortings are matched by asset name, raws were matched by
+    metadata -- so no single pin value satisfies both. Trying both costs nothing
+    when they agree. A disagreement is a defect in the asset, not something to
+    paper over: it is logged, and renaming the asset to match its metadata is the
+    real fix.
 
     Raises
     ------
@@ -189,7 +184,7 @@ def find_raw_session_dir(data_root: Path, *, recording_id: str | None = None, ma
             logger.warning(
                 "raw session %r resolved by mount name: no mounted raw's data_description "
                 "carries that name, so the asset name and the data's own metadata disagree. "
-                "Proceeding with %s -- the asset should be renamed to its true session date.",
+                "Proceeding with %s -- the asset should be renamed to match its metadata.",
                 recording_id,
                 by_mount[0],
             )

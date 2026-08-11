@@ -230,10 +230,9 @@ def _with_sibling_captures(hits: list[CandidateAsset], pool: list[CandidateAsset
     Matching on the pinned name alone can therefore only ever find the
     unpublished copy, and "prefer external" then has nothing external to prefer.
 
-    Widening first makes the published sibling a candidate. The captures are the
-    same spikes: two verified pairs differed only by the AIND ingestion pass
-    (``metadata.nd.json`` + ``original_metadata/*.json``), 8 objects out of
-    ~107,700.
+    Widening first makes the published sibling a candidate. Captures of one
+    computation are the same spikes -- a published copy differs only by the AIND
+    ingestion pass (``metadata.nd.json`` + ``original_metadata/``).
 
     Parameters
     ----------
