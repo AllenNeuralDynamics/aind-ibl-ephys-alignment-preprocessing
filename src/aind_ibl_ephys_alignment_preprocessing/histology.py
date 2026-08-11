@@ -6,6 +6,7 @@ transforms, and CCF-to-image-space inverse transforms.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -32,11 +33,331 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+#: Identifies the sidecar's shape, so a reader can tell what it is holding.
+_GEOMETRY_SCHEMA = "anatomical-header/1"
+#: Physical frame of ``origin`` and the direction columns. Fixed by ITK, stated
+#: because a consumer reaching for nibabel would otherwise assume RAS.
+_GEOMETRY_SPACE = "left-posterior-superior"
+#: ITK is unit-agnostic, so the numbers alone cannot say. ``aind_zarr_utils``
+#: reads OME-Zarr with ``scale_unit="millimeter"``, so the pyramid's micrometre
+#: scales arrive converted and every world coordinate here -- including the
+#: stored ANTs warps -- is in millimetres.
+_GEOMETRY_UNITS = "millimeter"
+
+
+def image_geometry(img: sitk.Image) -> dict[str, Any]:
+    """Serialize a grid's geometry: everything index -> physical needs, nothing more.
+
+    Built from :class:`aind_anatomical_utils.anatomical_volume.AnatomicalHeader`
+    so the payload is exactly that class's constructor arguments, and a consumer
+    reconstructs with
+
+    .. code-block:: python
+
+        header = AnatomicalHeader(
+            origin=tuple(h["origin"]),
+            spacing=tuple(h["spacing"]),
+            direction=np.array(h["direction"]).reshape(3, 3),
+            size_ijk=tuple(h["size_ijk"]),
+        )
+
+    rather than re-deriving a convention from loose numbers.
+
+    The field names carry the convention because getting it wrong is silent:
+
+    - ``size_ijk`` and ``spacing`` are per **index axis** ``(i, j, k)``, which is
+      SimpleITK's ``GetSize()`` order and therefore the **reverse** of the numpy
+      ``array.shape``. Read as a shape, it transposes the volume.
+    - ``origin`` and the direction's **columns** are physical LPS.
+    - ``direction`` is the 3x3 flattened **row-major**, ready for
+      ``SetDirection``; its columns are the index axes' LPS unit vectors.
+
+    Together: ``physical = origin + direction @ (spacing * index)``.
+
+    Parameters
+    ----------
+    img : sitk.Image
+        Image whose geometry to capture. Must be the image *as written*: the
+        orientation conversion changes origin and direction, so geometry taken
+        beforehand describes a grid that does not exist on disk.
+
+    Returns
+    -------
+    dict
+        Self-describing payload; the constructor arguments live under ``header``.
+    """
+    from aind_anatomical_utils.anatomical_volume import AnatomicalHeader
+
+    header = AnatomicalHeader.from_sitk(img)
+    return {
+        "schema": _GEOMETRY_SCHEMA,
+        "space": _GEOMETRY_SPACE,
+        "units": _GEOMETRY_UNITS,
+        "header": {
+            "origin": [float(v) for v in header.origin],
+            "spacing": [float(v) for v in header.spacing],
+            "direction": [float(v) for v in header.direction_tuple()],
+            "size_ijk": [int(v) for v in header.size_ijk],
+        },
+    }
+
+
+#: Image spacing throughout this pipeline is **millimetres**: ``aind_zarr_utils``
+#: reads OME-Zarr with ``scale_unit="millimeter"``, so the micrometre scales in
+#: the pyramid metadata arrive already converted, and the stored ANTs warps are
+#: in the same frame. Targets are expressed in micrometres because that is the
+#: natural unit for talking about these volumes, so they convert here -- once.
+_UM_PER_MM = 1000.0
+#: Smallest sane extent, in voxels, along any axis after resampling. A target
+#: mistaken for the wrong unit is off by 1000x and silently collapses a volume to
+#: a single voxel rather than failing, so it is checked instead of trusted.
+_MIN_RESAMPLED_EXTENT = 8
+
+
+def _mirror_pipeline_grid(pipeline: sitk.Image, base_before: sitk.Image, base_after: sitk.Image) -> sitk.Image:
+    """Carry the pipeline image through the base image's resample, in index space.
+
+    ``base`` and ``pipeline`` are the *same voxels* under two headers: the base
+    header comes from the Zarr scales, the pipeline header is the domain
+    ``aind_zarr_utils`` reconstructs so the stored ANTs transforms apply in the
+    frame they were trained in. Two things depend on that pairing staying exact:
+    the CCF template and labels are warped onto the *pipeline* grid and then
+    stamped with the *base* header, which is only meaningful when both grids have
+    the same size; and the GUI overlays the results on the base volume voxel for
+    voxel.
+
+    Resampling the two independently breaks it. Their spacings need not be
+    identical -- the pipeline's is the corrected level-0 spacing scaled by
+    ``2**level``, the base's comes from the Zarr metadata -- so each computes a
+    different output size from the same target, and nothing downstream notices.
+
+    So the resample is done once, on the base, and the pipeline image inherits
+    the result: the same voxels, with its header rescaled by the same per-axis
+    factor. Origin is kept, which is the convention ``apply_pipeline_overlays``
+    itself uses across levels (it scales spacing by ``2**level`` and passes the
+    level-0 origin through unchanged), so index ``i`` of the resampled pipeline
+    image lands where index ``i * factor`` of the original did.
+
+    Parameters
+    ----------
+    pipeline : sitk.Image
+        Pipeline-domain image, before resampling.
+    base_before, base_after : sitk.Image
+        The base image either side of the resample; their spacing ratio is the
+        index-space factor to apply.
+
+    Returns
+    -------
+    sitk.Image
+        The resampled voxels carrying the rescaled pipeline header.
+    """
+    if base_after is base_before:
+        return pipeline
+
+    factor = [after / before for before, after in zip(base_before.GetSpacing(), base_after.GetSpacing(), strict=True)]
+    out = sitk.Image(base_after)
+    out.SetSpacing(tuple(s * f for s, f in zip(pipeline.GetSpacing(), factor, strict=True)))
+    out.SetOrigin(pipeline.GetOrigin())
+    out.SetDirection(pipeline.GetDirection())
+    logger.info(
+        "[registration-pipeline] grid mirrored from the base resample: %s @ %s mm (factor %s)",
+        out.GetSize(),
+        tuple(round(s, 6) for s in out.GetSpacing()),
+        tuple(round(f, 4) for f in factor),
+    )
+    return out
+
+
+def resample_to_isotropic(img: sitk.Image, target_um: float, label: str) -> sitk.Image:
+    """Resample an intensity volume onto an isotropic *target_um* grid.
+
+    Reading a multiscale level does not give a predictable grid: whether a volume
+    has a level near the target depends on when it was stitched, so without this
+    each mouse lands on whatever its pyramid happened to offer and cross-animal
+    comparisons are differently sampled. Resampling puts every mouse on one grid.
+
+    Two properties this must preserve, both of which are easy to lose:
+
+    - **Anti-aliasing.** ``sitk.Resample`` point-samples; it applies no low-pass.
+      Going 14.4 -> 30 µm without smoothing aliases the fluorescence. A Gaussian
+      with physical sigma of half the target spacing is applied first, per axis
+      and only where that axis is actually being coarsened.
+    - **Dtype.** Smoothing needs floats, so the image round-trips through float32
+      and is cast back. The channels use their full uint16 depth and must not
+      silently become float on disk.
+
+    A volume already at or coarser than the target on every axis is returned
+    unchanged -- the target never manufactures resolution. Reaching a *common*
+    isotropic grid can still interpolate up on one axis when that axis alone is
+    coarser than the target; that is deliberate, and small for the volumes in
+    hand.
+
+    Labels are deliberately not routed through here. They reach image space via
+    the ANTs warp with ``genericLabel``, whose fixed image is already on this
+    grid, so they are resampled once, by a label-aware interpolator, rather than
+    twice.
+
+    Notes
+    -----
+    ``ants.resample_image`` covers the grid arithmetic, but the volumes are
+    SimpleITK at this point and a round trip through ANTs invites the axis-order
+    and interop hazards that conversion is known for; it also does no low-pass,
+    which is the part that actually matters here.
+
+    The origin is kept, so output voxel ``(0, 0, 0)`` keeps the input's first
+    voxel centre. The alternative is anchoring the outer corner, for which
+    ``aind_anatomical_utils.anatomical_volume.fix_corner_compute_origin`` exists.
+    The two differ by half the spacing change -- sub-micrometre here -- and
+    either is physically consistent, because ``sitk.Resample`` places content by
+    physical point regardless. It matters not at all for the CCF template and
+    labels, which are warped onto *this* grid and so inherit whichever choice is
+    made.
+
+    Parameters
+    ----------
+    img : sitk.Image
+        Intensity volume to resample.
+    target_um : float
+        Isotropic target spacing, micrometres.
+    label : str
+        Volume name, for the log line.
+
+    Returns
+    -------
+    sitk.Image
+        The resampled volume, or *img* unchanged when it is already coarser.
+    """
+    spacing = img.GetSpacing()
+    target_mm = target_um / _UM_PER_MM
+    if min(spacing) >= target_mm:
+        logger.info(
+            "[%s] already coarser than %.1f um (spacing %s mm); not resampling",
+            label,
+            target_um,
+            tuple(round(s, 5) for s in spacing),
+        )
+        return img
+
+    size = img.GetSize()
+    target = (target_mm,) * img.GetDimension()
+    new_size = [max(1, int(round(n * s / t))) for n, s, t in zip(size, spacing, target, strict=True)]
+    if min(new_size) < _MIN_RESAMPLED_EXTENT:
+        raise ValueError(
+            f"[{label}] resampling to {target_um} um would give {tuple(new_size)} voxels from "
+            f"{tuple(size)} at spacing {tuple(spacing)}. Spacing in this pipeline is in "
+            f"millimetres, so a target that collapses the volume almost certainly means the "
+            f"target and the image are in different units."
+        )
+
+    # Low-pass only the axes being coarsened; sigma = half the new spacing is the
+    # usual cutoff at the new Nyquist frequency. Applied one axis at a time
+    # because a mixed grid (some axes coarsening, some not) is normal here, and
+    # SmoothingRecursiveGaussian rejects a zero sigma on any axis rather than
+    # treating it as "leave this one alone".
+    pixel_id = img.GetPixelID()
+    work = sitk.Cast(img, sitk.sitkFloat32)
+    for axis, (source, want) in enumerate(zip(spacing, target, strict=True)):
+        if want > source:
+            work = sitk.RecursiveGaussian(work, sigma=target_mm / 2.0, direction=axis)
+
+    resampled = sitk.Resample(
+        work,
+        new_size,
+        sitk.Transform(),
+        sitk.sitkLinear,
+        img.GetOrigin(),
+        target,
+        img.GetDirection(),
+        0.0,
+        sitk.sitkFloat32,
+    )
+    logger.info(
+        "[%s] resampled %s @ %s mm -> %s @ %.1f um (%.5f mm) isotropic",
+        label,
+        tuple(size),
+        tuple(round(s, 5) for s in spacing),
+        tuple(new_size),
+        target_um,
+        target_mm,
+    )
+    out: sitk.Image = sitk.Cast(resampled, pixel_id)
+    return out
+
+
+#: Bounds of the signed/unsigned integer pixel types we narrow to, so a cast is
+#: only made when it provably cannot alter a voxel.
+_DTYPE_RANGE: dict[int, tuple[int, int]] = {
+    sitk.sitkUInt8: (0, 2**8 - 1),
+    sitk.sitkInt16: (-(2**15), 2**15 - 1),
+    sitk.sitkUInt16: (0, 2**16 - 1),
+    sitk.sitkInt32: (-(2**31), 2**31 - 1),
+    sitk.sitkUInt32: (0, 2**32 - 1),
+}
+
+
+def _narrow_dtype(img: sitk.Image, pixel_type: int, label: str) -> sitk.Image:
+    """Cast *img* to *pixel_type* when its values fit, else leave it alone.
+
+    Two of the written volumes carry a dtype inherited from how they were built
+    rather than from what they hold: the expanded label image takes int64 from
+    the LUT array it is indexed out of, and the CCF template arrives as uint32
+    holding a 10-bit intensity scale. Each is a straight doubling of the bytes
+    pushed through the warp, the reorientation and the write.
+
+    The cast is guarded rather than assumed, because a silent overflow here would
+    corrupt structure ids into other valid structure ids -- wrong in a way that
+    still looks like a brain. If the range does not fit, the image is returned
+    unchanged and the reason logged.
+
+    Note this is deliberately not applied to the fluorescence channels: they use
+    their full uint16 depth, and the GUI windows contrast from the source values
+    rather than from a pre-quantized image.
+
+    Parameters
+    ----------
+    img : sitk.Image
+        Image to narrow.
+    pixel_type : int
+        Target SimpleITK pixel type.
+    label : str
+        Volume name, for the log line.
+
+    Returns
+    -------
+    sitk.Image
+        The narrowed image, or *img* unchanged when the values do not fit.
+    """
+    low, high = _DTYPE_RANGE[pixel_type]
+    stats = sitk.MinimumMaximumImageFilter()
+    stats.Execute(img)
+    actual_low, actual_high = stats.GetMinimum(), stats.GetMaximum()
+    if actual_low < low or actual_high > high:
+        logger.warning(
+            "[%s] leaving dtype as %s: values [%s, %s] do not fit %s",
+            label,
+            img.GetPixelIDTypeAsString(),
+            actual_low,
+            actual_high,
+            sitk.GetPixelIDValueAsString(pixel_type),
+        )
+        return img
+    logger.info(
+        "[%s] narrowing %s -> %s (values [%s, %s])",
+        label,
+        img.GetPixelIDTypeAsString(),
+        sitk.GetPixelIDValueAsString(pixel_type),
+        actual_low,
+        actual_high,
+    )
+    narrowed: sitk.Image = sitk.Cast(img, pixel_type)
+    return narrowed
+
+
 def convert_img_direction_and_write(
     img: sitk.Image,
     output_path: Path,
     direction: str = _BLESSED_DIRECTION,
-) -> None:
+) -> dict[str, Any]:
     """Convert an image to the specified DICOM orientation and write as compressed NRRD.
 
     Parameters
@@ -50,6 +371,7 @@ def convert_img_direction_and_write(
     """
     img_oriented = sitk.DICOMOrient(img, direction)
     sitk.WriteImage(img_oriented, str(output_path), useCompression=True)
+    return image_geometry(img_oriented)
 
 
 def copy_registration_channel_ccf_reorient(
@@ -79,6 +401,7 @@ def write_registration_channel_images(
     outputs: OutputDirs,
     *,
     level: int = 3,
+    output_voxel_size_um: float,
     opened_zarr: tuple[Any, dict[str, Any]] | None = None,
 ) -> tuple[Path, Path]:
     """Write registration-channel outputs to CCF and image space.
@@ -117,11 +440,15 @@ def write_registration_channel_images(
         level=level,
         opened_zarr=(zarr_node, zarr_metadata),
     )
+    resampled = resample_to_isotropic(raw_img, output_voxel_size_um, "registration")
+    pipeline_raw_img = _mirror_pipeline_grid(pipeline_raw_img, raw_img, resampled)
+    raw_img = resampled
     raw_img_dst = outputs.histology_img / "histology_registration.nrrd"
     convert_img_direction_and_write(raw_img, raw_img_dst)
     del raw_img
     bugged_img_dst = outputs.histology_img / "histology_registration_pipeline.nrrd"
-    convert_img_direction_and_write(pipeline_raw_img, bugged_img_dst)
+    geometry = convert_img_direction_and_write(pipeline_raw_img, bugged_img_dst)
+    bugged_img_dst.with_suffix(".json").write_text(json.dumps(geometry, indent=2))
     return raw_img_dst, bugged_img_dst
 
 
@@ -133,6 +460,7 @@ def process_additional_channels_pipeline(
     scratch_root: Path,
     level: int = 3,
     *,
+    output_voxel_size_um: float,
     emit_qc: bool = False,
 ) -> None:
     """Process non-alignment OME-Zarr channels into image space (+ CCF for QC).
@@ -163,6 +491,7 @@ def process_additional_channels_pipeline(
     for zarr_path in asset_info.zarr_volumes.additional:
         ch_str = Path(zarr_path).stem
         img_raw = zarr_to_sitk(zarr_path, asset_info.zarr_volumes.metadata, level=level)
+        img_raw = resample_to_isotropic(img_raw, output_voxel_size_um, Path(zarr_path).stem)
         channel_dst = outputs.histology_img / f"{ch_str}.nrrd"
         convert_img_direction_and_write(img_raw, channel_dst)
         del img_raw
@@ -294,6 +623,7 @@ def transform_ccf_to_image_space(
     ccf_in_hist_img_path = outputs.histology_img / "ccf_in_mouse.nrrd"
     ccf_in_hist_sitk = to_sitk(ccf_in_hist_img)
     del ccf_in_hist_img
+    ccf_in_hist_sitk = _narrow_dtype(ccf_in_hist_sitk, sitk.sitkUInt16, "ccf_in_mouse")
     convert_img_direction_and_write(ccf_in_hist_sitk, ccf_in_hist_img_path)
 
 
@@ -335,5 +665,6 @@ def transform_ccf_labels_to_image_space(
     ccf_labels_sitk = to_sitk(ccf_labels_in_hist_img)
     del ccf_labels_in_hist_img
     ccf_labels_expanded = expand_compacted_image(ccf_labels_sitk, unq_vals)
+    ccf_labels_expanded = _narrow_dtype(ccf_labels_expanded, sitk.sitkInt32, "labels_in_mouse")
     ccf_labels_in_hist_img_path = outputs.histology_img / "labels_in_mouse.nrrd"
     convert_img_direction_and_write(ccf_labels_expanded, ccf_labels_in_hist_img_path)

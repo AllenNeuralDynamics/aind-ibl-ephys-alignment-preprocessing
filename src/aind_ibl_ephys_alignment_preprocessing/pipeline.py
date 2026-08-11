@@ -79,7 +79,11 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     if config.emit_qc:  # CCF-space registration volume is GUI-unused QC
         copy_registration_channel_ccf_reorient(asset_info, out)
     raw_img_path, pipeline_img_path = write_registration_channel_images(
-        asset_info, out, level=level, opened_zarr=(node, zarr_metadata)
+        asset_info,
+        out,
+        level=level,
+        output_voxel_size_um=config.output_voxel_size_um,
+        opened_zarr=(node, zarr_metadata),
     )
     pipeline_img_ants = ants.image_read(str(pipeline_img_path), pixeltype=None)
     raw_img_ants = ants.image_read(str(raw_img_path), pixeltype=None)
@@ -94,6 +98,7 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
         out,
         scratch_root=scratch_root,
         level=level,
+        output_voxel_size_um=config.output_voxel_size_um,
         emit_qc=config.emit_qc,
     )
     transform_ccf_to_image_space(asset_info, ref_imgs, raw_img_ants, pipeline_img_ants, out)
