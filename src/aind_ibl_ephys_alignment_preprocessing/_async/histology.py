@@ -67,11 +67,11 @@ _GEOMETRY_SCHEMA = "anatomical-header/1"
 #: because a consumer reaching for nibabel would otherwise assume RAS.
 _GEOMETRY_SPACE = "left-posterior-superior"
 
-#: ITK is unit-agnostic, so the numbers alone cannot say. These volumes inherit
-#: micrometres from the OME-Zarr scales, which matters because
-#: ``AnatomicalHeader`` documents millimetres: same class, different unit, and
-#: nothing raises if they are mixed.
-_GEOMETRY_UNITS = "micrometer"
+#: ITK is unit-agnostic, so the numbers alone cannot say. ``aind_zarr_utils``
+#: reads OME-Zarr with ``scale_unit="millimeter"``, so the pyramid's micrometre
+#: scales arrive converted and every world coordinate here -- including the
+#: stored ANTs warps -- is in millimetres.
+_GEOMETRY_UNITS = "millimeter"
 
 
 def image_geometry(img: sitk.Image) -> dict[str, Any]:
@@ -270,6 +270,19 @@ async def apply_ccf_inverse_tx_then_fix_domain_async(
     return ccf_img_in_hist_space
 
 
+#: Image spacing throughout this pipeline is **millimetres**: ``aind_zarr_utils``
+#: reads OME-Zarr with ``scale_unit="millimeter"``, so the micrometre scales in
+#: the pyramid metadata arrive already converted, and the stored ANTs warps are
+#: in the same frame. Targets are expressed in micrometres because that is the
+#: natural unit for talking about these volumes, so they convert here -- once.
+_UM_PER_MM = 1000.0
+
+#: Smallest sane extent, in voxels, along any axis after resampling. A target
+#: mistaken for the wrong unit is off by 1000x and silently collapses a volume to
+#: a single voxel rather than failing, so it is checked instead of trusted.
+_MIN_RESAMPLED_EXTENT = 8
+
+
 def resample_to_isotropic(img: sitk.Image, target_um: float, label: str) -> sitk.Image:
     """Resample an intensity volume onto an isotropic *target_um* grid.
 
@@ -314,18 +327,26 @@ def resample_to_isotropic(img: sitk.Image, target_um: float, label: str) -> sitk
         The resampled volume, or *img* unchanged when it is already coarser.
     """
     spacing = img.GetSpacing()
-    if min(spacing) >= target_um:
+    target_mm = target_um / _UM_PER_MM
+    if min(spacing) >= target_mm:
         logger.info(
-            "[%s] already coarser than %.1f um (spacing %s); not resampling",
+            "[%s] already coarser than %.1f um (spacing %s mm); not resampling",
             label,
             target_um,
-            tuple(round(s, 2) for s in spacing),
+            tuple(round(s, 5) for s in spacing),
         )
         return img
 
     size = img.GetSize()
-    target = (target_um,) * img.GetDimension()
+    target = (target_mm,) * img.GetDimension()
     new_size = [max(1, int(round(n * s / t))) for n, s, t in zip(size, spacing, target, strict=True)]
+    if min(new_size) < _MIN_RESAMPLED_EXTENT:
+        raise ValueError(
+            f"[{label}] resampling to {target_um} um would give {tuple(new_size)} voxels from "
+            f"{tuple(size)} at spacing {tuple(spacing)}. Spacing in this pipeline is in "
+            f"millimetres, so a target that collapses the volume almost certainly means the "
+            f"target and the image are in different units."
+        )
 
     # Low-pass only the axes being coarsened; sigma = half the new spacing is the
     # usual cutoff at the new Nyquist frequency. Applied one axis at a time
@@ -336,7 +357,7 @@ def resample_to_isotropic(img: sitk.Image, target_um: float, label: str) -> sitk
     work = sitk.Cast(img, sitk.sitkFloat32)
     for axis, (source, want) in enumerate(zip(spacing, target, strict=True)):
         if want > source:
-            work = sitk.RecursiveGaussian(work, sigma=target_um / 2.0, direction=axis)
+            work = sitk.RecursiveGaussian(work, sigma=target_mm / 2.0, direction=axis)
 
     resampled = sitk.Resample(
         work,
@@ -350,12 +371,13 @@ def resample_to_isotropic(img: sitk.Image, target_um: float, label: str) -> sitk
         sitk.sitkFloat32,
     )
     logger.info(
-        "[%s] resampled %s @ %s -> %s @ %.1f um isotropic",
+        "[%s] resampled %s @ %s mm -> %s @ %.1f um (%.5f mm) isotropic",
         label,
         tuple(size),
-        tuple(round(s, 2) for s in spacing),
+        tuple(round(s, 5) for s in spacing),
         tuple(new_size),
         target_um,
+        target_mm,
     )
     out: sitk.Image = sitk.Cast(resampled, pixel_id)
     return out

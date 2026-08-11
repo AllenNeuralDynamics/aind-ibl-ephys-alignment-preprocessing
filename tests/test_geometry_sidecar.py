@@ -22,7 +22,7 @@ IRP_DIRECTION = (0.0, 0.0, 1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0)
 
 def _volume():
     img = sitk.GetImageFromArray(np.zeros((7, 9, 11), dtype=np.uint16))
-    img.SetSpacing((30.0, 30.0, 30.0))
+    img.SetSpacing((0.030, 0.030, 0.030))
     img.SetOrigin((11.82, -1.5, 1.5))
     img.SetDirection(IRP_DIRECTION)
     return img
@@ -92,9 +92,14 @@ def test_sidecar_describes_the_file_as_written_not_as_held(tmp_path):
 
 
 def test_payload_declares_its_conventions():
-    """Numbers alone cannot say LPS or micrometres; ITK is unit-agnostic."""
+    """Numbers alone cannot say LPS or millimetres; ITK is unit-agnostic.
+
+    Millimetres, not micrometres: ``aind_zarr_utils`` reads OME-Zarr with
+    ``scale_unit="millimeter"``, so the pyramid's micrometre scales arrive
+    converted and the stored ANTs warps share that frame.
+    """
     payload = image_geometry(_volume())
 
     assert payload["space"] == "left-posterior-superior"
-    assert payload["units"] == "micrometer"
+    assert payload["units"] == "millimeter"
     assert payload["schema"].startswith("anatomical-header/")

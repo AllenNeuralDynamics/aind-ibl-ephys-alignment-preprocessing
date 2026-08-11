@@ -100,6 +100,14 @@ class PipelineConfig(BaseModel, frozen=True):
     # — cross-animal comparisons end up differently sampled purely by stitching
     # vintage — and resampling is what removes it.
     #
+    # Quoted in micrometres because that is the natural unit for these volumes,
+    # but image spacing throughout the pipeline is MILLIMETRES: aind_zarr_utils
+    # reads OME-Zarr with scale_unit="millimeter", so the pyramid's micrometre
+    # scales arrive converted and the stored ANTs warps share that frame. The
+    # conversion happens once, in resample_to_isotropic. Note the contrast with
+    # `desired_voxel_size_um` above, which is compared against the raw OME-Zarr
+    # metadata and so really is in micrometres — two knobs, two frames.
+    #
     # A volume already coarser than this on every axis is left untouched; the
     # target is never used to manufacture resolution. Reaching a *common*
     # isotropic grid does mean interpolating up on a single axis for volumes
