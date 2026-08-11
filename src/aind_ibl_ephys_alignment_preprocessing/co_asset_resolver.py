@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 # NOTE: models live here (not in types.py) on purpose. types.py imports ants/pandas
 # eagerly; keeping these local lets a lightweight consumer (e.g. the trigger capsule)
@@ -56,6 +57,10 @@ class CandidateAsset:
     external : bool
         ``source_bucket.external`` -- True for the published (e.g.
         ``aind-open-data``) capture, False for an internal Code Ocean result.
+    created : int
+        Asset creation time (epoch seconds), used only to order competing
+        computations. 0 when unknown, which degrades the ordering to the id
+        tiebreak rather than making it arbitrary.
     """
 
     id: str
@@ -63,6 +68,7 @@ class CandidateAsset:
     tags: tuple[str, ...] = ()
     computation: str | None = None
     external: bool = False
+    created: int = 0
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,12 @@ class AssetResolution:
         Chosen sorting asset per recording key.
     warnings : tuple[str, ...]
         Human-readable warnings/notes accumulated during resolution.
+    unresolved : tuple[str, ...]
+        Pinned ``sorted_recording`` names that produced no sorting -- malformed,
+        or matching nothing. Structured rather than left to warning-string
+        matching, because the caller has to *decide* on them: a pin that resolves
+        to nothing silently removes a whole session from the run, and the run
+        still succeeds. See :meth:`shrunk_by`.
     """
 
     mouseid: str
@@ -89,6 +101,23 @@ class AssetResolution:
     raw: dict[str, CandidateAsset]
     sortings: dict[str, CandidateAsset]
     warnings: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def shrunk_by(self) -> list[str]:
+        """Return every reason this resolution covers less than was asked for.
+
+        Empty means the run will process exactly what the manifest pinned.
+
+        Returns
+        -------
+        list[str]
+            One human-readable line per dropped pin or missing raw recording.
+        """
+        reasons = [f"pinned sorting {pin!r} did not resolve" for pin in self.unresolved]
+        reasons += [
+            f"recording {key} has a sorting but no raw asset" for key in sorted(set(self.sortings) - set(self.raw))
+        ]
+        return reasons
 
     def data_assets(self) -> list[tuple[str, str]]:
         """Return ``(asset_id, mount)`` pairs for ``RunParams.data_assets``.
@@ -141,7 +170,7 @@ def _acquisition_from_uri(uri: str | None) -> str | None:
     return match.group(1) if match else None
 
 
-def smartspim_acquisition_from_ng(ng_data: dict) -> str | None:  # type: ignore[type-arg]
+def smartspim_acquisition_from_ng(ng_data: dict[str, Any]) -> str | None:
     """Extract the SmartSPIM acquisition name from Neuroglancer image layers.
 
     Uses :func:`aind_zarr_utils.neuroglancer.get_image_sources` (the same parser
@@ -166,7 +195,7 @@ def smartspim_acquisition_from_ng(ng_data: dict) -> str | None:  # type: ignore[
     acquisitions = {a for a in (_acquisition_from_uri(u) for u in sources.values()) if a}
     if not acquisitions:
         return None
-    return sorted(acquisitions)[0]
+    return min(acquisitions)
 
 
 def parse_pinned(sorted_recording: str) -> tuple[str, str] | None:
@@ -189,7 +218,69 @@ def parse_pinned(sorted_recording: str) -> tuple[str, str] | None:
 
 def _prefer_external(assets: list[CandidateAsset]) -> CandidateAsset:
     """Pick the published (external) capture; deterministic tiebreak on id."""
-    return sorted(assets, key=lambda a: (not a.external, a.id))[0]
+    return min(assets, key=lambda a: (not a.external, a.id))
+
+
+def _with_sibling_captures(hits: list[CandidateAsset], pool: list[CandidateAsset]) -> list[CandidateAsset]:
+    """Widen *hits* to every capture of the same computation found in *pool*.
+
+    A pin names one capture, but Code Ocean often captures a single computation
+    twice under *different* timestamps, and the published copy can carry the
+    **older** name -- sometimes with the recording time dropped from it entirely.
+    Matching on the pinned name alone can therefore only ever find the
+    unpublished copy, and "prefer external" then has nothing external to prefer.
+
+    Widening first makes the published sibling a candidate. The captures are the
+    same spikes: two verified pairs differed only by the AIND ingestion pass
+    (``metadata.nd.json`` + ``original_metadata/*.json``), 8 objects out of
+    ~107,700.
+
+    Parameters
+    ----------
+    hits : list[CandidateAsset]
+        Assets matching the pinned name.
+    pool : list[CandidateAsset]
+        Assets to scan for siblings (the ``tag:<mouseid>`` pool).
+
+    Returns
+    -------
+    list[CandidateAsset]
+        *hits* plus every same-computation sibling, de-duplicated by id.
+    """
+    computations = {a.computation for a in hits if a.computation}
+    if not computations:
+        return list(hits)
+    widened = {a.id: a for a in hits}
+    for asset in pool:
+        if asset.computation in computations:
+            widened.setdefault(asset.id, asset)
+    return list(widened.values())
+
+
+def _newest_computation_group(assets: list[CandidateAsset]) -> list[CandidateAsset]:
+    """Return the candidates belonging to the most recently created computation.
+
+    Used only to break a genuinely ambiguous match (one pin, several distinct
+    computations). Ordering by asset creation time rather than by the timestamp
+    in the name, because that timestamp is exactly what proved unreliable.
+
+    Parameters
+    ----------
+    assets : list[CandidateAsset]
+        Candidates spanning one or more computations.
+
+    Returns
+    -------
+    list[CandidateAsset]
+        The group sharing the newest computation.
+    """
+    groups: dict[str | None, list[CandidateAsset]] = {}
+    for asset in assets:
+        groups.setdefault(asset.computation, []).append(asset)
+    return max(
+        groups.values(),
+        key=lambda g: (max(a.created for a in g), min(a.id for a in g)),
+    )
 
 
 def sibling_captures(asset: CandidateAsset, pool: list[CandidateAsset]) -> list[CandidateAsset]:
@@ -256,14 +347,24 @@ def _resolve_pinned_sortings(
     mouseid: str,
     pinned: list[str],
     tagged_all: list[CandidateAsset],
-) -> tuple[dict[str, CandidateAsset], list[str]]:
-    """Resolve each pinned ``sorted_recording`` to an asset via fuzzy match."""
+) -> tuple[dict[str, CandidateAsset], list[str], list[str]]:
+    """Resolve each pinned ``sorted_recording`` to an asset via fuzzy match.
+
+    Returns
+    -------
+    tuple[dict[str, CandidateAsset], list[str], list[str]]
+        ``(sortings_by_recording_key, warnings, unresolved_pins)``. A pin in
+        *unresolved_pins* removed a whole session from the run; the caller
+        decides whether that is fatal.
+    """
     sortings: dict[str, CandidateAsset] = {}
     warnings: list[str] = []
+    unresolved: list[str] = []
     for pin in dict.fromkeys(pinned):  # dedupe, preserve order
         parsed = parse_pinned(pin)
         if parsed is None:
             warnings.append(f"pinned sorted_recording {pin!r} is not a well-formed name; skipped")
+            unresolved.append(pin)
             continue
         key, sort_ts = parsed
         date = key.split("_", 1)[1].rsplit("_", 1)[0]  # <mouseid>_<date>_<time> -> <date>
@@ -275,23 +376,34 @@ def _resolve_pinned_sortings(
         hits = [a for a in tagged_all if fuzzy.match(a.name)]
         if not hits:
             warnings.append(f"{key}: pinned sorting (sort_ts {sort_ts}) not found among tag:{mouseid} assets")
+            unresolved.append(pin)
             continue
-        computations = {a.computation for a in hits if a.computation}
+        # The pinned name may only match the unpublished capture, so widen to
+        # every capture of the same computation before choosing.
+        candidates = _with_sibling_captures(hits, tagged_all)
+        computations = {a.computation for a in candidates if a.computation}
         if len(computations) > 1:
+            candidates = _newest_computation_group(candidates)
             warnings.append(
                 f"{key}: AMBIGUOUS -- {len(hits)} matches from {len(computations)} different "
-                f"computations {sorted(computations)}; picking external/first, disambiguate the pin"
+                f"computations {sorted(computations)}; taking the newest "
+                f"({candidates[0].computation}), disambiguate the pin"
             )
-        elif len(hits) > 1:
+        elif len(candidates) > 1:
             warnings.append(
-                f"{key}: {len(hits)} captures of one computation "
+                f"{key}: {len(candidates)} captures of one computation "
                 f"({next(iter(computations), '?')}); picking the external/published capture (same spikes)"
             )
-        chosen = _prefer_external(hits)
+        chosen = _prefer_external(candidates)
         sortings[key] = chosen
-        if chosen.name != pin:
+        if all(chosen.id != a.id for a in hits):
+            warnings.append(
+                f"{key}: pinned name matched {hits[0].name!r} ({hits[0].id}) but attaching "
+                f"the published capture of the same computation: {chosen.name!r} ({chosen.id})"
+            )
+        elif chosen.name != pin:
             warnings.append(f"{key}: pinned name {pin!r} matched asset {chosen.name!r} (fuzzy: name inconsistency)")
-    return sortings, warnings
+    return sortings, warnings, unresolved
 
 
 def resolve(
@@ -326,7 +438,7 @@ def resolve(
     AssetResolution
         Resolved SmartSPIM, raw, and sorting assets plus warnings/notes.
     """
-    sortings, warn_sort = _resolve_pinned_sortings(mouseid, pinned_sortings, tagged_all)
+    sortings, warn_sort, unresolved = _resolve_pinned_sortings(mouseid, pinned_sortings, tagged_all)
     recording_keys = {parsed[0] for pin in pinned_sortings if (parsed := parse_pinned(pin)) is not None}
     raw, warn_raw = _resolve_raw(mouseid, recording_keys, raw_candidates)
     smartspim, warn_spim = _resolve_smartspim(ng_smartspim_acquisition, smartspim_candidates)
@@ -346,4 +458,5 @@ def resolve(
         raw=raw,
         sortings=sortings,
         warnings=tuple(warnings),
+        unresolved=tuple(unresolved),
     )
