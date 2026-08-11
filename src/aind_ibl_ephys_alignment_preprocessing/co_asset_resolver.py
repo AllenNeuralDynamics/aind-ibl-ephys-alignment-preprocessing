@@ -8,9 +8,10 @@ SmartSPIM acquisition, and the sorted-recording assets.
 
 Design (verified live against 791094 and 781370 on 2026-07-09):
 
-* **Raw recordings** -- derived from each pinned sorting's recording name; the
-  raw asset is found with a ``name:ecephys_<mouseid>`` search filtered to
-  ``tag:raw``.
+* **Raw recordings** -- taken from the chosen sorting's ``provenance.data_assets``,
+  which names the recording it was produced from. Falls back to a
+  ``name:ecephys_<mouseid>`` search filtered to ``tag:raw`` when a sorting
+  carries no usable provenance, and warns when it does.
 * **SmartSPIM** -- taken from the Neuroglancer image-layer source, which *is* the
   acquisition the tracks were drawn on (unambiguous even when a mouse was imaged
   twice, or two Code Ocean assets share a stitched name).
@@ -61,6 +62,10 @@ class CandidateAsset:
         Asset creation time (epoch seconds), used only to order competing
         computations. 0 when unknown, which degrades the ordering to the id
         tiebreak rather than making it arbitrary.
+    source_assets : tuple[str, ...]
+        ``provenance.data_assets`` -- the ids this asset was produced from. For
+        a sorting this names its raw recording outright, which is the only
+        authoritative way to find it; see :func:`_resolve_raw`.
     """
 
     id: str
@@ -69,6 +74,7 @@ class CandidateAsset:
     computation: str | None = None
     external: bool = False
     created: int = 0
+    source_assets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,8 +146,13 @@ class AssetResolution:
         return pairs
 
 
-# recording key: "<mouseid>_<date>_<time>" (the identity after the "ecephys_" prefix)
-_RAW_RE = re.compile(r"^ecephys_(?P<key>\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$")
+# recording key: "<mouseid>_<date>_<time>" (the identity after the "ecephys_" prefix).
+# The suffix is optional because a re-uploaded raw keeps the key and adds to it
+# (`..._corrected`); anchoring the pattern hid those completely.
+_RAW_RE = re.compile(r"^ecephys_(?P<key>\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?P<suffix>_.+)?$")
+# Suffixes that mark a *derived* product rather than another upload of the raw.
+# Without this the relaxed pattern above would also accept `..._sorted_<ts>`.
+_DERIVED_SUFFIX_RE = re.compile(r"(?:^|_)(sorted|preprocessed|curated|nwb|oversplit|ccg)(?:[_-]|$)", re.IGNORECASE)
 # a well-formed pinned sorted_recording: ecephys_<key>_sorted_<sort_ts>
 _PINNED_RE = re.compile(
     r"^ecephys_(?P<key>\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_sorted_"
@@ -302,24 +313,131 @@ def sibling_captures(asset: CandidateAsset, pool: list[CandidateAsset]) -> list[
     return [a for a in pool if a.id != asset.id and a.computation == asset.computation]
 
 
+def raw_key_of(name: str) -> str | None:
+    """Return the recording key an asset name denotes, if it names a raw upload.
+
+    ``None`` for anything that is not an ``ecephys_<key>`` asset, and for the
+    derived products that share the prefix (``..._sorted_<ts>`` and friends),
+    which the relaxed :data:`_RAW_RE` would otherwise accept.
+
+    Parameters
+    ----------
+    name : str
+        Data asset name.
+
+    Returns
+    -------
+    str | None
+        ``<mouseid>_<date>_<time>``, or None.
+    """
+    match = _RAW_RE.match(name)
+    if match is None:
+        return None
+    suffix = match.group("suffix")
+    if suffix and _DERIVED_SUFFIX_RE.search(suffix):
+        return None
+    return match.group("key")
+
+
 def _resolve_raw(
     mouseid: str,
     recording_keys: set[str],
     raw_candidates: list[CandidateAsset],
+    sortings: dict[str, CandidateAsset],
+    pool: list[CandidateAsset],
 ) -> tuple[dict[str, CandidateAsset], list[str]]:
-    """Match raw ecephys recording assets to the required recording keys."""
-    by_key: dict[str, CandidateAsset] = {}
+    """Match raw ecephys recording assets to the required recording keys.
+
+    **Provenance first.** A sorting records the assets it was produced from, so
+    the raw is named outright rather than guessed. Reconstructing it from the
+    sorting's *name* instead was wrong in two ways that both fail quietly:
+
+    - a re-uploaded raw carries a suffix (``..._corrected``) the old anchored
+      pattern could never match, and
+    - two assets can share one name, in which case the last one seen won.
+
+    750107's 2025-01-28 session is both at once: two same-named uncorrected
+    assets plus a ``_corrected`` one, and the pinned sorting was produced from
+    the corrected raw. The resolver mounted an uncorrected one -- a *different
+    recording of the same session* -- which happened to fail loudly in neo only
+    because the stream layouts differed. Matching layouts would have extracted
+    continuous data from the wrong recording with nothing to show for it.
+
+    The corrected asset is also ``type=result``, so it is absent from the
+    ``type=Dataset`` raw search entirely; provenance ids are therefore looked up
+    in the *combined* pool, not just *raw_candidates*.
+
+    Name matching stays as the fallback for sortings with no usable provenance,
+    and says so in the warnings.
+
+    Parameters
+    ----------
+    mouseid : str
+        Mouse identifier, for warning text.
+    recording_keys : set[str]
+        Recording keys the run needs a raw asset for.
+    raw_candidates : list[CandidateAsset]
+        Result of the ``name:ecephys_<mouseid>`` search -- the fallback pool.
+    sortings : dict[str, CandidateAsset]
+        Resolved sortings, keyed by recording key; the provenance source.
+    pool : list[CandidateAsset]
+        Every candidate seen, searched by id when following provenance.
+
+    Returns
+    -------
+    tuple[dict[str, CandidateAsset], list[str]]
+        ``(raw_by_recording_key, warnings)``.
+    """
+    by_id = {asset.id: asset for asset in pool}
+    by_name_key: dict[str, list[CandidateAsset]] = {}
     for asset in raw_candidates:
-        match = _RAW_RE.match(asset.name)
-        if match and "raw" in asset.tags:
-            by_key[match.group("key")] = asset
+        key = raw_key_of(asset.name)
+        if key is not None and "raw" in asset.tags:
+            by_name_key.setdefault(key, []).append(asset)
+
     raw: dict[str, CandidateAsset] = {}
     warnings: list[str] = []
     for key in recording_keys:
-        if key in by_key:
-            raw[key] = by_key[key]
-        else:
+        sorting = sortings.get(key)
+        # Only accept a parent that actually names this recording: a sorting's
+        # provenance can also list configs, and a re-sorting lists its
+        # predecessor sorting (excluded by raw_key_of).
+        parents = [
+            by_id[aid]
+            for aid in (sorting.source_assets if sorting else ())
+            if aid in by_id and raw_key_of(by_id[aid].name) == key
+        ]
+        if len(parents) == 1:
+            raw[key] = parents[0]
+            continue
+        if len(parents) > 1:
+            chosen = _prefer_external(parents)
+            warnings.append(
+                f"{key}: sorting provenance names {len(parents)} raw assets "
+                f"({', '.join(p.id for p in parents)}); attaching {chosen.name!r} ({chosen.id})"
+            )
+            raw[key] = chosen
+            continue
+
+        hits = by_name_key.get(key, [])
+        if not hits:
             warnings.append(f"{key}: no raw recording asset found (name:ecephys_{mouseid})")
+            continue
+        chosen = _prefer_external(hits)
+        if sorting is not None and sorting.source_assets:
+            warnings.append(
+                f"{key}: sorting {sorting.id} records provenance {list(sorting.source_assets)} but none of it "
+                f"is a raw asset for this recording; FELL BACK to the name search and attached "
+                f"{chosen.name!r} ({chosen.id}) -- verify this is the recording the sorting came from"
+            )
+        else:
+            warnings.append(f"{key}: sorting has no provenance; raw resolved by name to {chosen.name!r} ({chosen.id})")
+        if len(hits) > 1:
+            warnings.append(
+                f"{key}: AMBIGUOUS -- {len(hits)} raw assets share this recording key "
+                f"({', '.join(f'{h.name!r} ({h.id})' for h in hits)}); attached {chosen.id}"
+            )
+        raw[key] = chosen
     return raw, warnings
 
 
@@ -439,7 +557,10 @@ def resolve(
     """
     sortings, warn_sort, unresolved = _resolve_pinned_sortings(mouseid, pinned_sortings, tagged_all)
     recording_keys = {parsed[0] for pin in pinned_sortings if (parsed := parse_pinned(pin)) is not None}
-    raw, warn_raw = _resolve_raw(mouseid, recording_keys, raw_candidates)
+    # Provenance ids are followed against every candidate seen: a corrected raw
+    # can be type=result and so absent from the type=Dataset raw search.
+    pool = list({a.id: a for a in [*raw_candidates, *tagged_all, *smartspim_candidates]}.values())
+    raw, warn_raw = _resolve_raw(mouseid, recording_keys, raw_candidates, sortings, pool)
     smartspim, warn_spim = _resolve_smartspim(ng_smartspim_acquisition, smartspim_candidates)
 
     warnings = [*warn_sort, *warn_raw, *warn_spim]

@@ -9,6 +9,7 @@ from aind_ibl_ephys_alignment_preprocessing.co_asset_resolver import (
     CandidateAsset,
     _acquisition_from_uri,
     parse_pinned,
+    raw_key_of,
     resolve,
     sibling_captures,
     smartspim_acquisition_from_ng,
@@ -165,6 +166,98 @@ def test_781370_duplicate_named_smartspim_warns_and_picks_one():
     assert res.smartspim is not None
     assert res.smartspim.id in {"49c166a5", "51f3beb4"}
     assert any("SmartSPIM" in w and "match" in w for w in res.warnings)
+
+
+# --- 750107 real data: corrected raw + duplicate names ----------------------
+#
+# Pulled 2026-08-11. The pinned sorting was produced from the *corrected* raw;
+# two same-named uncorrected assets also exist. Name reconstruction attached an
+# uncorrected one -- a different recording of the same session.
+
+PINNED_750107 = ["ecephys_750107_2025-01-28_13-49-03_sorted_2026-07-30_11-52-00"]
+NG_ACQ_750107 = "SmartSPIM_750107_2025-02-19_12-00-00"
+KEY_750107 = "750107_2025-01-28_13-49-03"
+
+# type=result, so absent from the type=Dataset raw search -- only reachable via tag:<mouseid>
+CORRECTED_750107 = A("a31874d6", "ecephys_750107_2025-01-28_13-49-03_corrected", ("ecephys", "raw", "750107"))
+# the two uncorrected assets share a name exactly
+RAW_750107 = [
+    A("d13f992d", "ecephys_750107_2025-01-28_13-49-03", ("750107", "ecephys", "raw")),
+    A("3a13749e", "ecephys_750107_2025-01-28_13-49-03", ("750107", "ecephys", "raw")),
+]
+SORTING_750107 = A(
+    "1b4f68df",
+    "ecephys_750107_2025-01-28_13-49-03_sorted_2026-07-30_11-52-00",
+    ("derived", "750107", "ecephys"),
+    computation="741d3f21",
+    external=True,
+    source_assets=("a31874d6",),
+)
+SPIM_750107 = [A("aaaaaaaa", NG_ACQ_750107, ("750107", "SmartSPIM", "raw"))]
+TAGGED_750107 = [SORTING_750107, CORRECTED_750107]
+
+
+def _resolve_750107(raw=None, tagged=None):
+    return resolve(
+        "750107",
+        PINNED_750107,
+        RAW_750107 if raw is None else raw,
+        SPIM_750107,
+        TAGGED_750107 if tagged is None else tagged,
+        NG_ACQ_750107,
+    )
+
+
+def test_750107_raw_follows_sorting_provenance_not_name():
+    # The whole bug: the corrected raw is what the sorting was produced from.
+    res = _resolve_750107()
+    assert res.raw[KEY_750107].id == "a31874d6"
+    assert res.raw[KEY_750107].name.endswith("_corrected")
+
+
+def test_750107_corrected_raw_is_attached_though_absent_from_raw_search():
+    # a31874d6 is type=result and appears only in the tag:<mouseid> pool.
+    res = _resolve_750107()
+    assert "a31874d6" in {aid for aid, _ in res.data_assets()}
+    assert not any(a.id == "a31874d6" for a in RAW_750107)
+
+
+def test_750107_uncorrected_duplicates_are_not_attached():
+    res = _resolve_750107()
+    ids = {aid for aid, _ in res.data_assets()}
+    assert "d13f992d" not in ids
+    assert "3a13749e" not in ids
+
+
+def test_750107_provenance_path_is_silent():
+    # Following provenance is the designed path, so it must not add noise.
+    res = _resolve_750107()
+    assert not any(KEY_750107 in w and "raw" in w.lower() for w in res.warnings)
+
+
+def test_750107_name_fallback_warns_and_flags_ambiguity():
+    # Strip the provenance: the resolver must fall back, say so, and report that
+    # two assets share the key rather than silently letting the last one win.
+    no_prov = SORTING_750107.__class__(
+        id=SORTING_750107.id,
+        name=SORTING_750107.name,
+        tags=SORTING_750107.tags,
+        computation=SORTING_750107.computation,
+        external=SORTING_750107.external,
+    )
+    res = _resolve_750107(tagged=[no_prov, CORRECTED_750107])
+    assert res.raw[KEY_750107].id in {"d13f992d", "3a13749e"}
+    assert any("no provenance" in w for w in res.warnings)
+    assert any("AMBIGUOUS" in w and "share this recording key" in w for w in res.warnings)
+
+
+def test_raw_key_of_accepts_suffixed_upload_and_rejects_derived():
+    assert raw_key_of("ecephys_750107_2025-01-28_13-49-03") == KEY_750107
+    assert raw_key_of("ecephys_750107_2025-01-28_13-49-03_corrected") == KEY_750107
+    assert raw_key_of("ecephys_750107_2025-01-28_13-49-03_sorted_2026-07-30_11-52-00") is None
+    assert raw_key_of("ecephys_781370_2025-05-30_15-52-48_sorted-curation-sprint_2026-05-13_02-43-03") is None
+    assert raw_key_of("ecephys_781370_2025-05-30_15-52-48_preprocessed_2026-04-26_12-26-00") is None
+    assert raw_key_of("SmartSPIM_750107_2025-02-19_12-00-00") is None
 
 
 # --- unit tests on helpers --------------------------------------------------
