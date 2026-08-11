@@ -160,11 +160,22 @@ def find_raw_session_dir(data_root: Path, *, recording_id: str | None = None, ma
     converter fall back to its legacy sibling-of-sorted lookup for the monolith/RR
     path.
 
+    Two identifiers are tried, in that order. ``data_description`` is preferred
+    because it travels with the data. The **mount directory name** is the
+    fallback, for sessions whose asset name and internal metadata disagree:
+    771432's "05-07" session is really 2025-03-07 by its own ``settings.xml``,
+    ``session.json`` and ``data_description.json``, but the asset -- and so the
+    mount, and so the pin that resolves it -- is named ``..._2025-05-07_...``.
+    A manifest can satisfy the sorting resolver (which matches asset names) or
+    this one (which matched metadata only), never both, and all ten "05-07"
+    streams died here. Trying both costs nothing when they agree and unblocks the
+    mouse when they do not. Renaming the asset and its S3 prefix to the true date
+    remains the real fix; this only stops the disagreement being fatal.
+
     Raises
     ------
     ValueError
-        If several raw assets are mounted and none (or more than one) matches
-        ``recording_id`` -- the main raw cannot be disambiguated.
+        If several raw assets are mounted and neither identifier singles one out.
     """
     matches = _find_marked_dirs(data_root, ("ecephys_compressed", "ecephys"), max_depth=max_depth)
     if len(matches) <= 1:
@@ -173,8 +184,21 @@ def find_raw_session_dir(data_root: Path, *, recording_id: str | None = None, ma
         named = [p for p in matches.values() if _read_data_description_name(p) == recording_id]
         if len(named) == 1:
             return named[0]
+        by_mount = [p for p in matches.values() if p.name == recording_id]
+        if len(by_mount) == 1:
+            logger.warning(
+                "raw session %r resolved by mount name: no mounted raw's data_description "
+                "carries that name, so the asset name and the data's own metadata disagree. "
+                "Proceeding with %s -- the asset should be renamed to its true session date.",
+                recording_id,
+                by_mount[0],
+            )
+            return by_mount[0]
     found = sorted(str(p) for p in matches.values())
-    raise ValueError(f"ambiguous raw ecephys session under {data_root} (recording_id={recording_id!r}): {found}")
+    raise ValueError(
+        f"ambiguous raw ecephys session under {data_root} (recording_id={recording_id!r}): {found}. "
+        "Neither the data_description name nor the mount directory name singled one out."
+    )
 
 
 def read_sorted_input_recording(sorted_dir: Path) -> str | None:

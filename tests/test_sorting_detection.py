@@ -252,3 +252,37 @@ def test_nwb_internals_do_not_shadow_the_sorted_session(tmp_path):
     _mount_nwb_output(sorted_root)
 
     assert find_sorted_session_dir(tmp_path) == sorted_root
+
+
+def test_raw_resolves_by_mount_name_when_metadata_disagrees(tmp_path):
+    """771432: the asset is named 05-07, its own metadata says 03-07."""
+    # The mount carries the asset's (wrong) name; the data_description carries the
+    # true session date. The pin can only ever match the asset name.
+    raw = tmp_path / "ecephys_771432_2025-05-07_18-22-06"
+    _mount_raw(raw, name="ecephys_771432_2025-03-07_18-22-06")
+    sorted_root = tmp_path / "ecephys_771432_2025-05-07_18-22-06_sorted_2026-07-30_11-52-00"
+    _mount_sorted(sorted_root, input_recording="ecephys_771432_2025-03-07_18-22-06")
+    _mkdir(sorted_root / "ecephys")  # what makes the sorted asset a raw candidate
+
+    got = find_raw_session_dir(tmp_path, recording_id="ecephys_771432_2025-05-07_18-22-06")
+
+    assert got == raw
+
+
+def test_data_description_still_wins_when_it_matches(tmp_path):
+    """The mount-name fallback must not override a correct metadata match."""
+    _mount_raw(tmp_path / "slot_a", name="ecephys_786867_main")
+    _mount_raw(tmp_path / "ecephys_786867_main", name="ecephys_786867_surface")
+
+    got = find_raw_session_dir(tmp_path, recording_id="ecephys_786867_main")
+
+    assert got == tmp_path / "slot_a"
+
+
+def test_neither_identifier_matching_still_raises(tmp_path):
+    """Two genuine raws and no way to tell them apart must stay fatal."""
+    _mount_raw(tmp_path / "raw_a", name="ecephys_A")
+    _mount_raw(tmp_path / "raw_b", name="ecephys_B")
+
+    with pytest.raises(ValueError, match="Neither the data_description name"):
+        find_raw_session_dir(tmp_path, recording_id="ecephys_C")
