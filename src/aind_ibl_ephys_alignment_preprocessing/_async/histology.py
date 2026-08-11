@@ -10,9 +10,11 @@ from typing import Any
 
 import ants
 import SimpleITK as sitk
+from aind_anatomical_utils.anatomical_volume import AnatomicalHeader
 from aind_registration_utils.annotations import expand_compacted_image
 from ants.core import ANTsImage
 from ants.utils import to_sitk
+from numpy.typing import DTypeLike
 
 from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     Limits,
@@ -22,6 +24,7 @@ from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
 from aind_ibl_ephys_alignment_preprocessing._constants import _BLESSED_DIRECTION
 from aind_ibl_ephys_alignment_preprocessing._timing import timed
 from aind_ibl_ephys_alignment_preprocessing.histology import (
+    _blessed_header,
     _mirror_pipeline_grid,
     _narrow_dtype,
     image_geometry,
@@ -122,8 +125,11 @@ async def write_registration_channel_images_async(
     level: int = 3,
     output_voxel_size_um: float,
     opened_zarr: tuple[Any, dict[str, Any]] | None = None,
-) -> tuple[Path, Path]:
-    """Async write registration-channel outputs to CCF and image space."""
+) -> tuple[Path, AnatomicalHeader, AnatomicalHeader, DTypeLike]:
+    """Async write the registration channel; return the grids the warps need.
+
+    See :func:`aind_ibl_ephys_alignment_preprocessing.histology.write_registration_channel_images`.
+    """
     from aind_zarr_utils.pipeline_transformed import base_and_pipeline_zarr_to_sitk
     from aind_zarr_utils.zarr import _open_zarr
 
@@ -151,28 +157,24 @@ async def write_registration_channel_images_async(
     logger.info("[Histology] Registration channel loaded: raw + pipeline-transformed images")
     with timed("histology.resample", volume=zarr_name):
         resampled = resample_to_isotropic(raw_img, output_voxel_size_um, "registration")
-        pipeline_raw_img = _mirror_pipeline_grid(pipeline_raw_img, raw_img, resampled)
+        pipeline_header = _mirror_pipeline_grid(pipeline_raw_img, raw_img, resampled)
+        base_header = AnatomicalHeader.from_sitk(resampled)
+        warp_dtype = sitk.GetArrayViewFromImage(resampled).dtype
+        del pipeline_raw_img, raw_img
         raw_img = resampled
     raw_img_dst = outputs.histology_img / "histology_registration.nrrd"
-    bugged_img_dst = outputs.histology_img / "histology_registration_pipeline.nrrd"
     logger.info("[Histology] Registration channel conversion to %s + write started", _BLESSED_DIRECTION)
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(
-            convert_img_to_direction_and_write_async(raw_img, raw_img_dst, limits),
-            name="write-registration-raw",
-        )
-        pipeline_task = tg.create_task(
-            convert_img_to_direction_and_write_async(pipeline_raw_img, bugged_img_dst, limits),
-            name="write-registration-pipeline",
-        )
-    # The pipeline volume's pixels are never read -- it is voxel-identical to the
-    # raw one and differs only in origin, and its only consumer maps indices to
-    # physical points. Emit that geometry as a sidecar so the volume itself can
-    # be retired once consumers read this instead.
-    geometry_dst = bugged_img_dst.with_suffix(".json")
-    geometry_dst.write_text(json.dumps(pipeline_task.result(), indent=2))
+    await convert_img_to_direction_and_write_async(raw_img, raw_img_dst, limits)
+    del raw_img
+    # The pipeline volume is not written: nothing reads its pixels, and the only
+    # consumer of its geometry maps indices to physical points. The sidecar
+    # carries that, and the warps take their domain from the header directly.
+    geometry_dst = outputs.histology_img / "histology_registration_pipeline.json"
+    geometry_dst.write_text(
+        json.dumps(image_geometry(_blessed_header(pipeline_header, "registration-pipeline")), indent=2)
+    )
     logger.info("[Histology] Wrote pipeline-image geometry sidecar: %s", geometry_dst.name)
-    return raw_img_dst, bugged_img_dst
+    return raw_img_dst, base_header, pipeline_header, warp_dtype
 
 
 async def apply_ccf_inverse_tx_then_fix_domain_async(

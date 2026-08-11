@@ -10,11 +10,10 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-import ants
 import pandas as pd
 from aind_zarr_utils.zarr import _open_zarr
 
-from aind_ibl_ephys_alignment_preprocessing._async.concurrency import Limits, io_to_thread_on, to_thread_logged
+from aind_ibl_ephys_alignment_preprocessing._async.concurrency import Limits, to_thread_logged
 from aind_ibl_ephys_alignment_preprocessing._async.ephys import (
     _asyncio_exception_handler,
     run_manifest_subprocess_sync,
@@ -26,6 +25,7 @@ from aind_ibl_ephys_alignment_preprocessing._async.histology import (
     transform_ccf_to_image_space_async,
     write_registration_channel_images_async,
 )
+from aind_ibl_ephys_alignment_preprocessing._timing import timed
 from aind_ibl_ephys_alignment_preprocessing.datapackage import (
     build_datapackage,
     producer_asset_overrides,
@@ -35,6 +35,10 @@ from aind_ibl_ephys_alignment_preprocessing.discovery import (
     determine_desired_level,
     find_asset_info,
     prepare_result_dirs,
+)
+from aind_ibl_ephys_alignment_preprocessing.histology import (
+    ants_domain_stub,
+    ants_warp_domain,
 )
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
@@ -76,7 +80,7 @@ async def _create_volumes_async(
     logger.info(
         "[Histology] Processing registration channel (level %d) + %d additional channel(s)", level, num_additional
     )
-    raw_img_path, pipeline_img_path = await write_registration_channel_images_async(
+    raw_img_path, base_header, pipeline_header, warp_dtype = await write_registration_channel_images_async(
         asset_info,
         out,
         limits,
@@ -84,22 +88,14 @@ async def _create_volumes_async(
         output_voxel_size_um=output_voxel_size_um,
         opened_zarr=(node, zarr_metadata),
     )
-    logger.info(
-        "[Histology] Registration channel export complete: raw=%s, pipeline=%s",
-        raw_img_path.name,
-        pipeline_img_path.name,
-    )
-    async with asyncio.TaskGroup() as tg:
-        pipeline_img_ants_task = tg.create_task(
-            io_to_thread_on(limits, str(pipeline_img_path), ants.image_read, str(pipeline_img_path), pixeltype=None),
-            name="load-ants-pipeline-img",
-        )
-        raw_img_ants_task = tg.create_task(
-            io_to_thread_on(limits, str(raw_img_path), ants.image_read, str(raw_img_path), pixeltype=None),
-            name="load-ants-raw-img",
-        )
-    pipeline_img_ants = pipeline_img_ants_task.result()
-    raw_img_ants = raw_img_ants_task.result()
+    logger.info("[Histology] Registration channel export complete: raw=%s", raw_img_path.name)
+    # Both ANTs images are geometry carriers. `fixed` sets the warp's output grid
+    # *and* its pixel type, so it is built at full extent with the volume's own
+    # dtype; the domain-repair image is read only for spacing/origin/direction, so
+    # one voxel suffices. Neither is read back from disk.
+    with timed("histology.ants_domain"):
+        pipeline_img_ants = ants_warp_domain(pipeline_header, "registration-pipeline", warp_dtype)
+        raw_img_ants = ants_domain_stub(base_header, "registration")
     logger.info(
         "[Histology] Starting parallel processing: %d additional channel(s), CCF template + labels transforms",
         num_additional,

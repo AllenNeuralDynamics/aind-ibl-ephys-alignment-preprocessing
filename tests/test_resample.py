@@ -143,9 +143,9 @@ def test_pipeline_grid_stays_the_same_size_as_the_base():
     assert base.GetSize() == pipeline.GetSize()
 
     resampled_base = resample_to_isotropic(base, 30.0, "base")
-    resampled_pipeline = _mirror_pipeline_grid(pipeline, base, resampled_base)
+    mirrored = _mirror_pipeline_grid(pipeline, base, resampled_base)
 
-    assert resampled_pipeline.GetSize() == resampled_base.GetSize()
+    assert tuple(mirrored.size_ijk) == resampled_base.GetSize()
 
 
 def test_pipeline_header_arithmetic_is_self_consistent():
@@ -162,7 +162,7 @@ def test_pipeline_header_arithmetic_is_self_consistent():
 
     base, pipeline = _pair()
     resampled_base = resample_to_isotropic(base, 30.0, "base")
-    out = _mirror_pipeline_grid(pipeline, base, resampled_base)
+    out = _mirror_pipeline_grid(pipeline, base, resampled_base).as_sitk_stub()
 
     factor = [a / b for b, a in zip(base.GetSpacing(), resampled_base.GetSpacing(), strict=True)]
     for index in [(0, 0, 0), (10, 20, 5), (37.5, 12.25, 8.0)]:
@@ -183,11 +183,15 @@ def test_an_untouched_base_leaves_the_pipeline_image_alone():
 
     unchanged = resample_to_isotropic(base, 30.0, "base")
     assert unchanged is base
-    assert _mirror_pipeline_grid(pipeline, base, unchanged) is pipeline
+
+    mirrored = _mirror_pipeline_grid(pipeline, base, unchanged)
+    assert tuple(mirrored.size_ijk) == pipeline.GetSize()
+    assert tuple(mirrored.spacing) == pytest.approx(pipeline.GetSpacing())
+    assert tuple(mirrored.origin) == pytest.approx(pipeline.GetOrigin())
 
 
 def test_mirrored_pixels_equal_resampling_the_pipeline_image_directly():
-    """Copying the base's resampled voxels must equal resampling the pipeline image.
+    """The base's resampled voxels must equal resampling the pipeline image on the mirrored grid.
 
     The independent check: rather than asserting the header arithmetic against
     itself, resample the *pipeline* image in its own physical frame onto the
@@ -227,7 +231,8 @@ def test_mirrored_pixels_equal_resampling_the_pipeline_image_directly():
     pipeline.SetOrigin((11.90, -1.6, 1.4))
     pipeline.SetDirection(direction)
 
-    mirrored = _mirror_pipeline_grid(pipeline, base, resample_to_isotropic(base, 30.0, "base"))
+    resampled_base = resample_to_isotropic(base, 30.0, "base")
+    mirrored = _mirror_pipeline_grid(pipeline, base, resampled_base)
 
     target_mm = 30.0 * UM
     work = sitk.Cast(pipeline, sitk.sitkFloat32)
@@ -236,16 +241,16 @@ def test_mirrored_pixels_equal_resampling_the_pipeline_image_directly():
             work = sitk.RecursiveGaussian(work, sigma=((target_mm / 2.0) / base_sp) * pipe_sp, direction=axis)
     direct = sitk.Resample(
         work,
-        mirrored.GetSize(),
+        tuple(int(n) for n in mirrored.size_ijk),
         sitk.Transform(),
         sitk.sitkLinear,
-        mirrored.GetOrigin(),
-        mirrored.GetSpacing(),
-        mirrored.GetDirection(),
+        tuple(mirrored.origin),
+        tuple(mirrored.spacing),
+        mirrored.direction_tuple(),
         0.0,
         sitk.sitkFloat32,
     )
 
-    got = sitk.GetArrayFromImage(mirrored).astype(np.int64)
+    got = sitk.GetArrayFromImage(resampled_base).astype(np.int64)
     want = sitk.GetArrayFromImage(sitk.Cast(direct, sitk.sitkUInt16)).astype(np.int64)
     assert np.array_equal(got, want)

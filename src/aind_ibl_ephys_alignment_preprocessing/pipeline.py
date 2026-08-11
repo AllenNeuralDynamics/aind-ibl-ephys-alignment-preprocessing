@@ -7,7 +7,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import ants
 import pandas as pd
 from aind_zarr_utils.pipeline_transformed import base_and_pipeline_anatomical_stub
 from aind_zarr_utils.zarr import _open_zarr
@@ -30,6 +29,8 @@ from aind_ibl_ephys_alignment_preprocessing.ephys import (
     run_ephys_for_recording,
 )
 from aind_ibl_ephys_alignment_preprocessing.histology import (
+    ants_domain_stub,
+    ants_warp_domain,
     copy_registration_channel_ccf_reorient,
     process_additional_channels_pipeline,
     transform_ccf_labels_to_image_space,
@@ -78,15 +79,17 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
 
     if config.emit_qc:  # CCF-space registration volume is GUI-unused QC
         copy_registration_channel_ccf_reorient(asset_info, out)
-    raw_img_path, pipeline_img_path = write_registration_channel_images(
+    raw_img_path, base_header, pipeline_header, warp_dtype = write_registration_channel_images(
         asset_info,
         out,
         level=level,
         output_voxel_size_um=config.output_voxel_size_um,
         opened_zarr=(node, zarr_metadata),
     )
-    pipeline_img_ants = ants.image_read(str(pipeline_img_path), pixeltype=None)
-    raw_img_ants = ants.image_read(str(raw_img_path), pixeltype=None)
+    # Geometry carriers only; see the async orchestrator for why each is sized as
+    # it is. Neither is read back from disk.
+    pipeline_img_ants = ants_warp_domain(pipeline_header, "registration-pipeline", warp_dtype)
+    raw_img_ants = ants_domain_stub(base_header, "registration")
 
     scratch_root = Path(config.scratch_root) if config.scratch_root is not None else Path(tempfile.mkdtemp())
     scratch_root.mkdir(parents=True, exist_ok=True)

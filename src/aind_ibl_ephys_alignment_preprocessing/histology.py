@@ -12,10 +12,13 @@ from pathlib import Path
 from typing import Any
 
 import ants
+import numpy as np
 import SimpleITK as sitk
+from aind_anatomical_utils.anatomical_volume import AnatomicalHeader
 from aind_registration_utils.annotations import expand_compacted_image
 from ants.core import ANTsImage
 from ants.utils import to_sitk
+from numpy.typing import DTypeLike
 
 from aind_ibl_ephys_alignment_preprocessing._constants import _BLESSED_DIRECTION
 from aind_ibl_ephys_alignment_preprocessing.types import (
@@ -45,7 +48,7 @@ _GEOMETRY_SPACE = "left-posterior-superior"
 _GEOMETRY_UNITS = "millimeter"
 
 
-def image_geometry(img: sitk.Image) -> dict[str, Any]:
+def image_geometry(img: sitk.Image | AnatomicalHeader) -> dict[str, Any]:
     """Serialize a grid's geometry: everything index -> physical needs, nothing more.
 
     Built from :class:`aind_anatomical_utils.anatomical_volume.AnatomicalHeader`
@@ -86,9 +89,7 @@ def image_geometry(img: sitk.Image) -> dict[str, Any]:
     dict
         Self-describing payload; the constructor arguments live under ``header``.
     """
-    from aind_anatomical_utils.anatomical_volume import AnatomicalHeader
-
-    header = AnatomicalHeader.from_sitk(img)
+    header = img if isinstance(img, AnatomicalHeader) else AnatomicalHeader.from_sitk(img)
     return {
         "schema": _GEOMETRY_SCHEMA,
         "space": _GEOMETRY_SPACE,
@@ -114,7 +115,7 @@ _UM_PER_MM = 1000.0
 _MIN_RESAMPLED_EXTENT = 8
 
 
-def _mirror_pipeline_grid(pipeline: sitk.Image, base_before: sitk.Image, base_after: sitk.Image) -> sitk.Image:
+def _mirror_pipeline_grid(pipeline: sitk.Image, base_before: sitk.Image, base_after: sitk.Image) -> AnatomicalHeader:
     """Carry the pipeline image through the base image's resample, in index space.
 
     ``base`` and ``pipeline`` are the *same voxels* under two headers: the base
@@ -152,20 +153,89 @@ def _mirror_pipeline_grid(pipeline: sitk.Image, base_before: sitk.Image, base_af
         The resampled voxels carrying the rescaled pipeline header.
     """
     if base_after is base_before:
-        return pipeline
+        return AnatomicalHeader.from_sitk(pipeline)
 
     factor = [after / before for before, after in zip(base_before.GetSpacing(), base_after.GetSpacing(), strict=True)]
-    out = sitk.Image(base_after)
-    out.SetSpacing(tuple(s * f for s, f in zip(pipeline.GetSpacing(), factor, strict=True)))
-    out.SetOrigin(pipeline.GetOrigin())
-    out.SetDirection(pipeline.GetDirection())
+    out = AnatomicalHeader(
+        origin=pipeline.GetOrigin(),
+        spacing=tuple(s * f for s, f in zip(pipeline.GetSpacing(), factor, strict=True)),
+        direction=np.array(pipeline.GetDirection()).reshape(3, 3),
+        size_ijk=base_after.GetSize(),
+    )
     logger.info(
         "[registration-pipeline] grid mirrored from the base resample: %s @ %s mm (factor %s)",
-        out.GetSize(),
-        tuple(round(s, 6) for s in out.GetSpacing()),
+        out.size_ijk,
+        tuple(round(s, 6) for s in out.spacing),
         tuple(round(f, 4) for f in factor),
     )
     return out
+
+
+def _blessed_header(header: AnatomicalHeader, label: str) -> AnatomicalHeader:
+    """Return *header* in :data:`_BLESSED_DIRECTION`, without touching any pixels.
+
+    The ANTs images this feeds were historically obtained by writing a volume and
+    reading it back, and the write reorients -- so their headers were the
+    *reoriented* ones. ``regrid_to`` reproduces that exactly (same permuted size,
+    same origin as ``sitk.DICOMOrient``) from headers alone.
+
+    It requires an axis-aligned header and raises otherwise, so a volume with an
+    oblique direction falls back to orienting a stub image, which costs one
+    voxel rather than the volume.
+    """
+    try:
+        return header.regrid_to(_BLESSED_DIRECTION)
+    except ValueError:
+        logger.warning(
+            "[%s] header is not axis-aligned; reorienting via a stub instead of regrid_to",
+            label,
+        )
+        oriented = sitk.DICOMOrient(header.as_sitk_stub(), _BLESSED_DIRECTION)
+        return AnatomicalHeader(
+            origin=oriented.GetOrigin(),
+            spacing=oriented.GetSpacing(),
+            direction=np.array(oriented.GetDirection()).reshape(3, 3),
+            size_ijk=tuple(int(n) for n in oriented.GetSize()),
+        )
+
+
+def ants_warp_domain(header: AnatomicalHeader, label: str, np_eltype: DTypeLike) -> ANTsImage:
+    """Build the full-size, zero-filled ANTs image a warp uses as its ``fixed``.
+
+    ``ants.apply_transforms`` reads ``fixed`` only for its *content*-free
+    properties -- a zero-filled domain gives byte-identical output to the real
+    volume -- but two of its properties are load-bearing and neither is
+    negotiable:
+
+    - **size**, which becomes the output size, so this must be full extent;
+    - **pixel type**, because the documentation is explicit that "the output
+      will have the same pixel type as this image". There is no separate
+      output-type argument. A domain narrower than the moving data clips it
+      silently: a ``uint8`` domain truncates the compacted label indices
+      (~1341 distinct) and the CCF template (0-516) to 255, destroying both
+      warped volumes without an error.
+
+    So *np_eltype* is required rather than defaulted -- pass the dtype of the
+    volume this domain replaces, which keeps the warp's output type exactly what
+    the previous write-and-read-back produced.
+    """
+    return _blessed_header(header, label).as_ants(np_eltype)
+
+
+def ants_domain_stub(header: AnatomicalHeader, label: str) -> ANTsImage:
+    """Build the 1x1x1 ANTs image used only for its spacing/origin/direction.
+
+    Pixel type is irrelevant here: this one is never a warp's ``fixed``, only the
+    source of a spacing/origin/direction stamp.
+    """
+    blessed = _blessed_header(header, label)
+    stub = AnatomicalHeader(
+        origin=blessed.origin,
+        spacing=blessed.spacing,
+        direction=blessed.direction,
+        size_ijk=(1, 1, 1),
+    )
+    return stub.as_ants()
 
 
 def resample_to_isotropic(img: sitk.Image, target_um: float, label: str) -> sitk.Image:
@@ -403,8 +473,19 @@ def write_registration_channel_images(
     level: int = 3,
     output_voxel_size_um: float,
     opened_zarr: tuple[Any, dict[str, Any]] | None = None,
-) -> tuple[Path, Path]:
-    """Write registration-channel outputs to CCF and image space.
+) -> tuple[Path, AnatomicalHeader, AnatomicalHeader, DTypeLike]:
+    """Write the registration channel and return the grids the warps need.
+
+    Returns the written volume's path, the *base* and *pipeline* headers on the
+    resampled grid, and the volume's dtype. The pipeline volume is not written:
+    nothing reads its pixels, and the warps need only its geometry, which the
+    sidecar carries.
+
+    The dtype comes back because a warp's ``fixed`` image dictates the output
+    pixel type. Returning the volume's own keeps the warps producing exactly
+    what the previous write-and-read-back produced; the binding constraint is
+    that it must hold the *moving* data's range, which uint16 does for both the
+    compacted label indices and the CCF template.
 
     Parameters
     ----------
@@ -441,15 +522,16 @@ def write_registration_channel_images(
         opened_zarr=(zarr_node, zarr_metadata),
     )
     resampled = resample_to_isotropic(raw_img, output_voxel_size_um, "registration")
-    pipeline_raw_img = _mirror_pipeline_grid(pipeline_raw_img, raw_img, resampled)
-    raw_img = resampled
+    pipeline_header = _mirror_pipeline_grid(pipeline_raw_img, raw_img, resampled)
+    del pipeline_raw_img
+    base_header = AnatomicalHeader.from_sitk(resampled)
+    warp_dtype = sitk.GetArrayViewFromImage(resampled).dtype
     raw_img_dst = outputs.histology_img / "histology_registration.nrrd"
-    convert_img_direction_and_write(raw_img, raw_img_dst)
-    del raw_img
-    bugged_img_dst = outputs.histology_img / "histology_registration_pipeline.nrrd"
-    geometry = convert_img_direction_and_write(pipeline_raw_img, bugged_img_dst)
-    bugged_img_dst.with_suffix(".json").write_text(json.dumps(geometry, indent=2))
-    return raw_img_dst, bugged_img_dst
+    convert_img_direction_and_write(resampled, raw_img_dst)
+    del resampled, raw_img
+    sidecar = outputs.histology_img / "histology_registration_pipeline.json"
+    sidecar.write_text(json.dumps(image_geometry(_blessed_header(pipeline_header, "registration-pipeline")), indent=2))
+    return raw_img_dst, base_header, pipeline_header, warp_dtype
 
 
 def process_additional_channels_pipeline(
