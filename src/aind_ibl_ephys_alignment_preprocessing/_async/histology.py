@@ -106,6 +106,7 @@ async def write_registration_channel_images_async(
     limits: Limits,
     *,
     level: int = 3,
+    output_voxel_size_um: float,
     opened_zarr: tuple[Any, dict[str, Any]] | None = None,
 ) -> tuple[Path, Path]:
     """Async write registration-channel outputs to CCF and image space."""
@@ -134,6 +135,9 @@ async def write_registration_channel_images_async(
         )
         record["mvox"] = int(np.prod(raw_img.GetSize()) // 10**6)
     logger.info("[Histology] Registration channel loaded: raw + pipeline-transformed images")
+    with timed("histology.resample", volume=zarr_name):
+        raw_img = resample_to_isotropic(raw_img, output_voxel_size_um, "registration")
+        pipeline_raw_img = resample_to_isotropic(pipeline_raw_img, output_voxel_size_um, "registration-pipeline")
     raw_img_dst = outputs.histology_img / "histology_registration.nrrd"
     bugged_img_dst = outputs.histology_img / "histology_registration_pipeline.nrrd"
     logger.info("[Histology] Registration channel conversion to %s + write started", _BLESSED_DIRECTION)
@@ -178,6 +182,97 @@ async def apply_ccf_inverse_tx_then_fix_domain_async(
     ccf_img_in_hist_space.set_origin(correct_hist_domain_img.origin)
     ccf_img_in_hist_space.set_direction(correct_hist_domain_img.direction)
     return ccf_img_in_hist_space
+
+
+def resample_to_isotropic(img: sitk.Image, target_um: float, label: str) -> sitk.Image:
+    """Resample an intensity volume onto an isotropic *target_um* grid.
+
+    Reading a multiscale level does not give a predictable grid: whether a volume
+    has a level near the target depends on when it was stitched, so without this
+    each mouse lands on whatever its pyramid happened to offer and cross-animal
+    comparisons are differently sampled. Resampling puts every mouse on one grid.
+
+    Two properties this must preserve, both of which are easy to lose:
+
+    - **Anti-aliasing.** ``sitk.Resample`` point-samples; it applies no low-pass.
+      Going 14.4 -> 30 µm without smoothing aliases the fluorescence. A Gaussian
+      with physical sigma of half the target spacing is applied first, per axis
+      and only where that axis is actually being coarsened.
+    - **Dtype.** Smoothing needs floats, so the image round-trips through float32
+      and is cast back. The channels use their full uint16 depth and must not
+      silently become float on disk.
+
+    A volume already at or coarser than the target on every axis is returned
+    unchanged -- the target never manufactures resolution. Reaching a *common*
+    isotropic grid can still interpolate up on one axis when that axis alone is
+    coarser than the target; that is deliberate, and small for the volumes in
+    hand.
+
+    Labels are deliberately not routed through here. They reach image space via
+    the ANTs warp with ``genericLabel``, whose fixed image is already on this
+    grid, so they are resampled once, by a label-aware interpolator, rather than
+    twice.
+
+    Parameters
+    ----------
+    img : sitk.Image
+        Intensity volume to resample.
+    target_um : float
+        Isotropic target spacing, micrometres.
+    label : str
+        Volume name, for the log line.
+
+    Returns
+    -------
+    sitk.Image
+        The resampled volume, or *img* unchanged when it is already coarser.
+    """
+    spacing = img.GetSpacing()
+    if min(spacing) >= target_um:
+        logger.info(
+            "[%s] already coarser than %.1f um (spacing %s); not resampling",
+            label,
+            target_um,
+            tuple(round(s, 2) for s in spacing),
+        )
+        return img
+
+    size = img.GetSize()
+    target = (target_um,) * img.GetDimension()
+    new_size = [max(1, int(round(n * s / t))) for n, s, t in zip(size, spacing, target, strict=True)]
+
+    # Low-pass only the axes being coarsened; sigma = half the new spacing is the
+    # usual cutoff at the new Nyquist frequency. Applied one axis at a time
+    # because a mixed grid (some axes coarsening, some not) is normal here, and
+    # SmoothingRecursiveGaussian rejects a zero sigma on any axis rather than
+    # treating it as "leave this one alone".
+    pixel_id = img.GetPixelID()
+    work = sitk.Cast(img, sitk.sitkFloat32)
+    for axis, (source, want) in enumerate(zip(spacing, target, strict=True)):
+        if want > source:
+            work = sitk.RecursiveGaussian(work, sigma=target_um / 2.0, direction=axis)
+
+    resampled = sitk.Resample(
+        work,
+        new_size,
+        sitk.Transform(),
+        sitk.sitkLinear,
+        img.GetOrigin(),
+        target,
+        img.GetDirection(),
+        0.0,
+        sitk.sitkFloat32,
+    )
+    logger.info(
+        "[%s] resampled %s @ %s -> %s @ %.1f um isotropic",
+        label,
+        tuple(size),
+        tuple(round(s, 2) for s in spacing),
+        tuple(new_size),
+        target_um,
+    )
+    out: sitk.Image = sitk.Cast(resampled, pixel_id)
+    return out
 
 
 #: Bounds of the signed/unsigned integer pixel types we narrow to, so a cast is
@@ -318,6 +413,7 @@ async def process_additional_channel_pipeline_async(
     scratch_root: Path,
     level: int = 3,
     *,
+    output_voxel_size_um: float,
     emit_qc: bool = False,
 ) -> None:
     """Async process a single additional OME-Zarr channel.
@@ -333,6 +429,8 @@ async def process_additional_channel_pipeline_async(
         img_raw = await to_thread_logged(zarr_to_sitk, zarr_path, asset_info.zarr_volumes.metadata, level=level)
         record["mvox"] = int(np.prod(img_raw.GetSize()) // 10**6)
     logger.info("[Channel %s] read from zarr complete", ch_str)
+    with timed("histology.resample", volume=ch_str):
+        img_raw = resample_to_isotropic(img_raw, output_voxel_size_um, ch_str)
     channel_dst = outputs.histology_img / f"{ch_str}.nrrd"
     await convert_img_to_direction_and_write_async(img_raw, channel_dst, limits)
     logger.info("[Channel %s] converted to %s and written to disk", ch_str, _BLESSED_DIRECTION)
@@ -378,6 +476,7 @@ async def process_additional_channels_pipeline_async(
     scratch_root: Path,
     level: int = 3,
     *,
+    output_voxel_size_um: float,
     emit_qc: bool = False,
 ) -> None:
     """Async dispatch all additional channels in parallel."""
@@ -394,6 +493,7 @@ async def process_additional_channels_pipeline_async(
                     limits,
                     scratch_root=scratch_root,
                     level=level,
+                    output_voxel_size_um=output_voxel_size_um,
                     emit_qc=emit_qc,
                 ),
                 name=f"channel-{ch_name}",

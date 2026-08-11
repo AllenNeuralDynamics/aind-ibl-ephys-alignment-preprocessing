@@ -59,10 +59,17 @@ async def _create_volumes_async(
     limits: Limits,
     scratch_root: Path,
     desired_voxel_size_um: float,
+    output_voxel_size_um: float,
     *,
     emit_qc: bool = False,
 ) -> None:
-    """Create all volume outputs (registration channel + additional + CCF transforms)."""
+    """Create all volume outputs (registration channel + additional + CCF transforms).
+
+    The volumes are resampled onto one isotropic ``output_voxel_size_um`` grid as
+    they are read, so the CCF template and label warps -- whose fixed image is the
+    registration channel -- inherit that grid rather than needing a second
+    resample of their own.
+    """
     logger.info("[Histology] Starting volume processing")
     level = determine_desired_level(zarr_metadata, desired_voxel_size_um=desired_voxel_size_um)
     num_additional = len(asset_info.zarr_volumes.additional)
@@ -70,7 +77,12 @@ async def _create_volumes_async(
         "[Histology] Processing registration channel (level %d) + %d additional channel(s)", level, num_additional
     )
     raw_img_path, pipeline_img_path = await write_registration_channel_images_async(
-        asset_info, out, limits, level=level, opened_zarr=(node, zarr_metadata)
+        asset_info,
+        out,
+        limits,
+        level=level,
+        output_voxel_size_um=output_voxel_size_um,
+        opened_zarr=(node, zarr_metadata),
     )
     logger.info(
         "[Histology] Registration channel export complete: raw=%s, pipeline=%s",
@@ -102,6 +114,7 @@ async def _create_volumes_async(
                 limits,
                 scratch_root=scratch_root,
                 level=level,
+                output_voxel_size_um=output_voxel_size_um,
                 emit_qc=emit_qc,
             ),
             name="process-additional-channels",
@@ -191,6 +204,7 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
                 limits,
                 scratch_root=scratch_root,
                 desired_voxel_size_um=config.desired_voxel_size_um,
+                output_voxel_size_um=config.output_voxel_size_um,
                 emit_qc=config.emit_qc,
             ),
             name=f"create-volumes-{mouse_id}",

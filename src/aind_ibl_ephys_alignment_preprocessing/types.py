@@ -91,6 +91,21 @@ class PipelineConfig(BaseModel, frozen=True):
     # This is a display-resolution knob only: probe coordinates come from the
     # header-only anatomical stubs, which never read a multiscale level.
     desired_voxel_size_um: float = 35.0
+    # Grid every image-space histology volume is resampled onto, isotropic, in µm.
+    # Distinct from `desired_voxel_size_um` above, which only picks which stored
+    # multiscale level to read: whether a volume *has* a level near the target is
+    # an accident of when it was stitched, so reading alone leaves each mouse on
+    # a different grid (14.4, 16/32 and 28.8/32 µm all occur across the current
+    # eleven). That is a consistency-of-analysis problem before it is a speed one
+    # — cross-animal comparisons end up differently sampled purely by stitching
+    # vintage — and resampling is what removes it.
+    #
+    # A volume already coarser than this on every axis is left untouched; the
+    # target is never used to manufacture resolution. Reaching a *common*
+    # isotropic grid does mean interpolating up on a single axis for volumes
+    # whose z is coarser than target (32 -> 30 is the worst case in hand, ~7%),
+    # which is the price of every mouse sharing one grid.
+    output_voxel_size_um: float = 30.0
     num_parallel_jobs: int = 4
     # QC/diagnostic outputs that the alignment GUI never reads: the Slicer FCSVs
     # (spim/template/ccf), the CCF/bregma xyz_picks, and the CCF-space histology

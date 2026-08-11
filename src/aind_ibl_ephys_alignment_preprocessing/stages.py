@@ -388,6 +388,7 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
                     limits,
                     scratch_root=scratch_root,
                     desired_voxel_size_um=config.desired_voxel_size_um,
+                    output_voxel_size_um=config.output_voxel_size_um,
                     emit_qc=config.emit_qc,
                 ),
                 name=f"histology-volumes-{mouse_id}",
