@@ -145,6 +145,65 @@ def find_sorted_session_dir(data_root: Path, *, max_depth: int = 4) -> Path | No
     return next(iter(matches.values()), None)
 
 
+def find_sorted_session_dirs(data_root: Path, *, max_depth: int = 4) -> dict[str, Path]:
+    """Map every mounted spike-sorted session to the recording it was derived from.
+
+    The plural counterpart to :func:`find_sorted_session_dir`, for the stages that
+    mount *several* sortings at once (``discover`` mounts one per session). Each
+    sorted asset is located structurally, by its ``spikesorted`` child, and then
+    keyed by the ``input_data_name`` in its own ``data_description.json`` -- the raw
+    recording it was sorted from, which is exactly ``ManifestRow.recording_id``.
+
+    Keying on content rather than on the directory name is the point. A sorted
+    asset mounts under its *asset* name, which is not required to equal the
+    manifest's ``sorted_recording`` pin: published captures have been observed with
+    the recording time dropped from the name entirely. Matching the mount path
+    against the pin therefore finds nothing and the session is judged unsorted --
+    which silently cost 791094 half its probes (all 10 of ``2025-10-09_14-26-31``)
+    in the 2026-08-11 run, while the run still exited 0. ``input_data_name`` is
+    written by the sorting pipeline and travels with the data, so it cannot drift
+    from the asset name because it never depended on it.
+
+    Sortings whose ``data_description.json`` is missing or unreadable are omitted;
+    callers should fall back to a name lookup so behaviour degrades rather than
+    breaks. If two mounted sortings claim the same input recording, the one whose
+    path sorts first is kept and the collision is logged -- picking deterministically
+    beats picking at random, but it does mean a duplicate mount goes unnoticed.
+
+    Parameters
+    ----------
+    data_root : Path
+        Root under which inputs are mounted (e.g. ``/data``).
+    max_depth : int, optional
+        Traversal bound, matching :func:`_find_marked_dirs`.
+
+    Returns
+    -------
+    dict[str, Path]
+        ``{recording_id: sorted session directory}``.
+    """
+    found: dict[str, Path] = {}
+    for path in sorted(_find_marked_dirs(data_root, ("spikesorted",), max_depth=max_depth).values()):
+        recording_id = read_sorted_input_recording(path)
+        if recording_id is None:
+            logger.warning(
+                "sorted session %s has no readable input_data_name in data_description.json; "
+                "it cannot be matched to a manifest row by content",
+                path,
+            )
+            continue
+        if recording_id in found:
+            logger.warning(
+                "two mounted sortings both claim input recording %r (%s and %s); keeping the first",
+                recording_id,
+                found[recording_id],
+                path,
+            )
+            continue
+        found[recording_id] = path
+    return found
+
+
 def find_raw_session_dir(data_root: Path, *, recording_id: str | None = None, max_depth: int = 4) -> Path | None:
     """Locate the raw ecephys session dir mounted under ``data_root`` by content.
 

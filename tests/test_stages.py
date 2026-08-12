@@ -49,7 +49,7 @@ def _config(tmp_path: Path, *, skip_ephys: bool = False) -> SimpleNamespace:
 @pytest.fixture
 def all_viable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force every probe viable so emission logic can be tested in isolation."""
-    monkeypatch.setattr(stages, "_probe_viability", lambda config, mr: (True, None))
+    monkeypatch.setattr(stages, "_probe_viability", lambda config, mr, sorted_dirs=None: (True, None))
 
 
 def test_public_stage_functions_exist() -> None:
@@ -172,7 +172,7 @@ def test_stage_discover_filters_nonviable_probes(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(
         stages,
         "_probe_viability",
-        lambda config, mr: (mr.ephys_collection != "ProbeB", "skipped for test"),
+        lambda config, mr, sorted_dirs=None: (mr.ephys_collection != "ProbeB", "skipped for test"),
     )
 
     written = stage_discover(config)

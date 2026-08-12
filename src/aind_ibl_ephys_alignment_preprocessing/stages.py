@@ -59,6 +59,7 @@ from aind_ibl_ephys_alignment_preprocessing.discovery import prepare_result_dirs
 from aind_ibl_ephys_alignment_preprocessing.ephys import (
     find_session_dir,
     find_sorted_session_dir,
+    find_sorted_session_dirs,
     has_sorting_output,
     read_sorted_input_recording,
     run_ephys_for_stream,
@@ -124,7 +125,11 @@ def _track_annotation_present(data_root: Path, mr: ManifestRow) -> tuple[bool, s
     return True, None
 
 
-def _probe_viability(config: PipelineConfig, mr: ManifestRow) -> tuple[bool, str | None]:
+def _probe_viability(
+    config: PipelineConfig,
+    mr: ManifestRow,
+    sorted_dirs: dict[str, Path] | None = None,
+) -> tuple[bool, str | None]:
     """Decide, up front, whether a probe is worth preprocessing.
 
     A probe is viable only when **both** its ephys and its histology track are
@@ -134,13 +139,44 @@ def _probe_viability(config: PipelineConfig, mr: ManifestRow) -> tuple[bool, str
     workers never have to re-decide it -- they process only what ``discover``
     deemed viable. Mirrors the monolith's per-row skip, made once and up front.
 
+    Parameters
+    ----------
+    config : PipelineConfig
+        Resolved pipeline configuration.
+    mr : ManifestRow
+        The row to judge.
+    sorted_dirs : dict[str, Path], optional
+        ``{recording_id: sorted session dir}`` from
+        :func:`~aind_ibl_ephys_alignment_preprocessing.ephys.find_sorted_session_dirs`,
+        built once by the caller because it walks ``data_root``. When omitted it is
+        built here, which is correct but costs one walk per row.
+
     Returns
     -------
     tuple[bool, str or None]
         ``(viable, reason)``; ``reason`` is the skip cause when not viable.
     """
     if not config.skip_ephys and mr.ephys_collection is not None:
-        sorted_dir = find_session_dir(config.data_root, str(mr.sorted_recording))
+        if sorted_dirs is None:
+            sorted_dirs = find_sorted_session_dirs(config.data_root)
+        # Match the sorting by the recording it was derived from, not by the pinned
+        # name. A sorted asset mounts under its *asset* name, which is free to differ
+        # from the manifest's ``sorted_recording`` -- published captures have shipped
+        # with the recording time missing from the name. Resolving by name then finds
+        # nothing and the whole session reads as unsorted; that is how 791094 lost all
+        # 10 probes of 2025-10-09_14-26-31 while the run still exited 0.
+        sorted_dir = sorted_dirs.get(mr.recording_id)
+        if sorted_dir is None:
+            # No sorting identified itself as this recording's. Fall back to the old
+            # name lookup so an asset with an unreadable data_description still works.
+            sorted_dir = find_session_dir(config.data_root, str(mr.sorted_recording))
+            if sorted_dir is not None:
+                logger.warning(
+                    "[discover] %s: no mounted sorting names this recording in its "
+                    "data_description; matched %s by directory name instead",
+                    mr.recording_id,
+                    sorted_dir,
+                )
         if not has_sorting_output(sorted_dir, str(mr.ephys_collection)):
             return False, "no spike-sorting output (bad sorting)"
     return _track_annotation_present(config.data_root, mr)
@@ -195,9 +231,12 @@ def stage_discover(
     manifest_df = pd.read_csv(config.manifest_csv)
     rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
 
+    # Built once: it walks data_root, and every row consults it.
+    sorted_dirs = {} if config.skip_ephys else find_sorted_session_dirs(config.data_root)
+
     viable: list[bool] = []
     for mr in rows:
-        ok, reason = _probe_viability(config, mr)
+        ok, reason = _probe_viability(config, mr, sorted_dirs)
         if not ok:
             logger.warning(
                 "[discover] skipping probe %s (%s/%s): %s",

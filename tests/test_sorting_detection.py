@@ -9,6 +9,7 @@ from aind_ibl_ephys_alignment_preprocessing.ephys import (
     find_raw_session_dir,
     find_session_dir,
     find_sorted_session_dir,
+    find_sorted_session_dirs,
     has_sorting_output,
     read_sorted_input_recording,
     resolve_surface_finding,
@@ -191,6 +192,58 @@ def test_find_sorted_session_dir_ambiguous_raises(tmp_path):
 def test_read_sorted_input_recording(tmp_path):
     root = _mount_sorted(tmp_path / "sorted", input_recording="ecephys_786867_x")
     assert read_sorted_input_recording(root) == "ecephys_786867_x"
+
+
+# `discover` mounts several sortings at once and must tell them apart by the recording
+# each was derived from -- never by the mount name, which is the asset name and is free
+# to disagree with the manifest's pin.
+
+
+def test_find_sorted_session_dirs_keys_by_input_recording(tmp_path):
+    _mount_sorted(tmp_path / "sorted_a", input_recording="ecephys_791094_2025-10-08_16-48-57")
+    _mount_sorted(tmp_path / "sorted_b", input_recording="ecephys_791094_2025-10-09_14-26-31")
+    found = find_sorted_session_dirs(tmp_path)
+    assert found == {
+        "ecephys_791094_2025-10-08_16-48-57": tmp_path / "sorted_a",
+        "ecephys_791094_2025-10-09_14-26-31": tmp_path / "sorted_b",
+    }
+
+
+def test_find_sorted_session_dirs_survives_a_mount_name_that_drops_the_recording_time(tmp_path):
+    """The 791094 regression: the mount name lacks the time, the pin has it.
+
+    The published capture was named ``ecephys_791094_2025-10-09_sorted_...`` while the
+    manifest pinned ``..._14-26-31_sorted_...``. Looking the directory up by pin found
+    nothing, so all 10 probes of that session were written off as unsorted and the run
+    still exited 0. Keying on ``input_data_name`` is immune to the discrepancy.
+    """
+    _mount_sorted(
+        tmp_path / "ecephys_791094_2025-10-09_sorted_2026-04-23_14-11-00",
+        input_recording="ecephys_791094_2025-10-09_14-26-31",
+    )
+    found = find_sorted_session_dirs(tmp_path)
+    assert found["ecephys_791094_2025-10-09_14-26-31"].name.startswith("ecephys_791094_2025-10-09_sorted_")
+    # The name lookup that used to be relied on genuinely cannot find it.
+    assert find_session_dir(tmp_path, "ecephys_791094_2025-10-09_14-26-31_sorted_2026-04-23_14-11-00") is None
+
+
+def test_find_sorted_session_dirs_omits_unreadable_data_description(tmp_path):
+    """A sorting that cannot name its input is left out, for the caller to fall back on."""
+    _mount_sorted(tmp_path / "sorted_ok", input_recording="ecephys_A")
+    _mount_sorted(tmp_path / "sorted_blank", input_recording=None)
+    assert find_sorted_session_dirs(tmp_path) == {"ecephys_A": tmp_path / "sorted_ok"}
+
+
+def test_find_sorted_session_dirs_keeps_first_on_duplicate_claim(tmp_path):
+    """Two mounts claiming one recording resolve deterministically rather than randomly."""
+    _mount_sorted(tmp_path / "sorted_a", input_recording="ecephys_A")
+    _mount_sorted(tmp_path / "sorted_z", input_recording="ecephys_A")
+    assert find_sorted_session_dirs(tmp_path) == {"ecephys_A": tmp_path / "sorted_a"}
+
+
+def test_find_sorted_session_dirs_empty_when_none_mounted(tmp_path):
+    _mkdir(tmp_path / "discover")
+    assert find_sorted_session_dirs(tmp_path) == {}
 
 
 def test_read_sorted_input_recording_missing_field_returns_none(tmp_path):
