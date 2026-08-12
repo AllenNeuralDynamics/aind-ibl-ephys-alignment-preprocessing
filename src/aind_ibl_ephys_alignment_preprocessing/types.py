@@ -120,6 +120,12 @@ class PipelineConfig(BaseModel, frozen=True):
     # volumes. Off by default — producing them costs the ANTs point-warps and the
     # full-volume warps into CCF for no consumer. Turn on for QC/export runs.
     emit_qc: bool = False
+    # Whether a run that covers less than its manifest asked for may proceed.
+    # ``discover``'s viability gate drops a row with a warning and the run
+    # finishes green over whatever is left, so the default has to be refusal --
+    # see ``coverage.py`` for the session that was lost this way. Mirrors the
+    # trigger capsule's ``--allow-partial`` so both layers enforce one policy.
+    allow_partial: bool = False
 
     @model_validator(mode="after")
     def _resolve_relative_paths(self) -> PipelineConfig:

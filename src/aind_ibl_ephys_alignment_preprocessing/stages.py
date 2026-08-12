@@ -55,6 +55,11 @@ from aind_code_ocean_pipeline_utils.role_dispatch import (
     write_stream_configs,
 )
 
+from aind_ibl_ephys_alignment_preprocessing.coverage import (
+    CoverageError,
+    RunCoverage,
+    build_coverage,
+)
 from aind_ibl_ephys_alignment_preprocessing.discovery import prepare_result_dirs
 from aind_ibl_ephys_alignment_preprocessing.ephys import (
     find_session_dir,
@@ -129,7 +134,7 @@ def _probe_viability(
     config: PipelineConfig,
     mr: ManifestRow,
     sorted_dirs: dict[str, Path] | None = None,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, list[str]]:
     """Decide, up front, whether a probe is worth preprocessing.
 
     A probe is viable only when **both** its ephys and its histology track are
@@ -153,9 +158,12 @@ def _probe_viability(
 
     Returns
     -------
-    tuple[bool, str or None]
-        ``(viable, reason)``; ``reason`` is the skip cause when not viable.
+    tuple[bool, str or None, list[str]]
+        ``(viable, reason, notes)``. *reason* is the skip cause when not viable.
+        *notes* records non-fatal oddities for the coverage record -- a row can
+        be viable and still worth flagging.
     """
+    notes: list[str] = []
     if not config.skip_ephys and mr.ephys_collection is not None:
         if sorted_dirs is None:
             sorted_dirs = find_sorted_session_dirs(config.data_root)
@@ -177,9 +185,11 @@ def _probe_viability(
                     mr.recording_id,
                     sorted_dir,
                 )
+                notes.append(f"sorting matched by directory name ({sorted_dir.name}), not by input recording")
         if not has_sorting_output(sorted_dir, str(mr.ephys_collection)):
-            return False, "no spike-sorting output (bad sorting)"
-    return _track_annotation_present(config.data_root, mr)
+            return False, "no spike-sorting output (bad sorting)", notes
+    ok, reason = _track_annotation_present(config.data_root, mr)
+    return ok, reason, notes
 
 
 def stage_discover(
@@ -194,10 +204,20 @@ def stage_discover(
     annotation both present) and
 
     - writes a **filtered ``manifest.csv``** (viable rows only) into
-      ``config.results_root`` for ``histology`` and ``pack`` to consume, and
+      ``config.results_root`` for ``histology`` and ``pack`` to consume,
     - writes one schema-tagged ephys ``config.json`` per unique viable
       ``(recording, collection)`` (via ``role_dispatch.write_stream_configs``),
-      which the pipeline's Flatten edge fans out to :func:`stage_ephys` workers.
+      which the pipeline's Flatten edge fans out to :func:`stage_ephys` workers,
+      and
+    - writes a **coverage record** (``coverage.json``) naming every row it read,
+      the unit each surviving row went into, and why each dropped row was
+      dropped -- then **refuses** unless ``config.allow_partial``.
+
+    The refusal is the point. Rows discarded here leave no trace in the filtered
+    manifest or the fan-out set, so every downstream check compares two sets that
+    have already shrunk together and agrees with itself; that is how a whole
+    session was lost with exit 0. See
+    :mod:`aind_ibl_ephys_alignment_preprocessing.coverage`.
 
     Parameters
     ----------
@@ -227,6 +247,12 @@ def stage_discover(
     -------
     list[pathlib.Path]
         Paths of the written ephys ``config.json`` files, one per viable unit.
+
+    Raises
+    ------
+    aind_ibl_ephys_alignment_preprocessing.coverage.CoverageError
+        If any manifest row was dropped and ``config.allow_partial`` is unset,
+        or if no row survived at all (fatal either way).
     """
     manifest_df = pd.read_csv(config.manifest_csv)
     rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
@@ -234,9 +260,12 @@ def stage_discover(
     # Built once: it walks data_root, and every row consults it.
     sorted_dirs = {} if config.skip_ephys else find_sorted_session_dirs(config.data_root)
 
-    viable: list[bool] = []
+    # Keep the verdict *with* its row. Dropping the reason on the floor -- it used
+    # to go to a log line and nowhere else -- is what made a lost session require
+    # run-log archaeology instead of a file read.
+    judged: list[tuple[ManifestRow, bool, str | None, list[str]]] = []
     for mr in rows:
-        ok, reason = _probe_viability(config, mr, sorted_dirs)
+        ok, reason, notes = _probe_viability(config, mr, sorted_dirs)
         if not ok:
             logger.warning(
                 "[discover] skipping probe %s (%s/%s): %s",
@@ -245,37 +274,93 @@ def stage_discover(
                 mr.ephys_collection,
                 reason,
             )
-        viable.append(ok)
+        judged.append((mr, ok, reason, notes))
+    viable = [ok for _, ok, _, _ in judged]
 
     config.results_root.mkdir(parents=True, exist_ok=True)
     filtered_manifest = config.results_root / "manifest.csv"
     manifest_df[pd.Series(viable, index=manifest_df.index)].to_csv(filtered_manifest, index=False)
     logger.info("[discover] %d/%d probes viable -> %s", sum(viable), len(rows), filtered_manifest)
 
-    if config.skip_ephys:
-        logger.info("[discover] ephys disabled (skip_ephys); no fan-out configs emitted")
-        return []
-
+    # Assign units before writing anything, so the coverage record can name the
+    # unit each surviving row was folded into -- and so it is written on the
+    # ``skip_ephys`` path too, which is precisely where no downstream fan-out
+    # exists to notice a gap.
     seen: set[tuple[str, str | None]] = set()
     items: list[dict[str, object]] = []
-    for mr, ok in zip(rows, viable):
-        if not ok or mr.ephys_collection is None:
-            continue
-        key = (mr.recording_id, mr.ephys_collection)
-        if key in seen:
-            continue
-        seen.add(key)
-        items.append(_ephys_config_item(mr))
+    unit_by_row: dict[int, str] = {}
+    if not config.skip_ephys:
+        for index, (mr, ok, _, _) in enumerate(judged):
+            if not ok or mr.ephys_collection is None:
+                continue
+            unit_by_row[index] = _ephys_unit_name(mr.recording_id, mr.ephys_collection)
+            key = (mr.recording_id, mr.ephys_collection)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(_ephys_config_item(mr))
 
-    written = write_stream_configs(
-        items,
-        results_dir=config.results_root,
-        schema_marker=EPHYS_STREAM_MARKER,
-        name_key="name",
-        producer_record=producer_record,
+    coverage = build_coverage(
+        mouse_id=str(rows[0].mouseid) if rows else "",
+        manifest_csv=config.manifest_csv,
+        judged=judged,
+        unit_by_row=unit_by_row,
+        skip_ephys=config.skip_ephys,
     )
-    logger.info("[discover] wrote %d ephys fan-out config(s)", len(written))
+    coverage_path = coverage.write(config.results_root)
+    logger.info(
+        "[discover] coverage: %d/%d rows viable, %d unit(s) -> %s",
+        coverage.rows_viable,
+        coverage.rows_requested,
+        len(coverage.units_emitted),
+        coverage_path,
+    )
+
+    written: list[Path] = []
+    if config.skip_ephys:
+        logger.info("[discover] ephys disabled (skip_ephys); no fan-out configs emitted")
+    else:
+        written = write_stream_configs(
+            items,
+            results_dir=config.results_root,
+            schema_marker=EPHYS_STREAM_MARKER,
+            name_key="name",
+            producer_record=producer_record,
+        )
+        logger.info("[discover] wrote %d ephys fan-out config(s)", len(written))
+
+    # Refuse *after* writing, so the record that explains the refusal survives it.
+    _assert_coverage(coverage, allow_partial=config.allow_partial)
     return written
+
+
+def _assert_coverage(coverage: RunCoverage, *, allow_partial: bool) -> None:
+    """Stop the run when it would cover less than the manifest asked for.
+
+    Mirrors the trigger's ``_require_full_coverage`` so the two layers enforce one
+    policy, and is deliberately the *default*: a dropped row does not crash
+    anything on its own, it just makes the run finish green over less work.
+
+    Zero viable rows stays fatal regardless of *allow_partial* -- ``RUNBOOK.md``
+    already calls it the known failure mode, and "process nothing successfully"
+    is never what a partial run means.
+    """
+    if coverage.rows_requested and not coverage.rows_viable:
+        raise CoverageError(
+            f"no viable probes in {coverage.manifest} ({coverage.rows_requested} row(s) requested); "
+            "nothing to process. Reasons: " + "; ".join(coverage.gaps())
+        )
+    gaps = coverage.gaps()
+    if not gaps:
+        return
+    listed = "; ".join(gaps)
+    if allow_partial:
+        logger.warning("[discover] proceeding with partial coverage (allow_partial): %s", listed)
+        return
+    raise CoverageError(
+        f"discover covers {coverage.rows_viable}/{coverage.rows_requested} manifest row(s): {listed}. "
+        "Fix the manifest or the assets, or set allow_partial to accept a partial run."
+    )
 
 
 def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
@@ -631,6 +716,7 @@ def stage_pack(
     *,
     source_results: Path | None = None,
     merge_from: Path | None = None,
+    asset_resolution: str | None = None,
 ) -> Path:
     """Assemble ``datapackage.json`` from the upstream nodes' outputs.
 
@@ -663,6 +749,11 @@ def stage_pack(
         Single prior results asset/root to stage in first (regenerate path).
     merge_from : Path or None
         Mount holding all upstream node outputs to union-merge (pipeline path).
+    asset_resolution : str or None
+        The launcher's resolved-asset JSON, merged into the run record (see
+        :func:`_carry_coverage_forward`). Asset ids are resolved before any
+        capsule is launched and are invisible from inside one, so this is the
+        only way they can reach the output.
 
     Returns
     -------
@@ -678,6 +769,53 @@ def stage_pack(
         manifest_df = pd.read_csv(config.manifest_csv)
         mouse_id = str(manifest_df["mouseid"].astype("string").iat[0])
         merge_pipeline_outputs(merge_from, config.results_root, mouse_id)
-        return regenerate_datapackage(config, source_results=None)
+        dp_path = regenerate_datapackage(config, source_results=None)
+    else:
+        dp_path = regenerate_datapackage(config, source_results=source_results)
 
-    return regenerate_datapackage(config, source_results=source_results)
+    _carry_coverage_forward(config, asset_resolution)
+    return dp_path
+
+
+def _carry_coverage_forward(config: PipelineConfig, asset_resolution: str | None) -> None:
+    """Copy ``discover``'s run record into this run's output, with the asset ids added.
+
+    Two reasons this is not merely a nicety:
+
+    - **Durability.** ``discover``'s ``coverage.json`` lives in an intermediate
+      asset the launcher *deletes on success*, so without this step the record of
+      what a successful run covered is destroyed by that run succeeding. What
+      survives is a computation log nobody thinks to fetch -- which is precisely
+      why diagnosing the 791094 loss cost what it did.
+    - **Completion.** The asset ids only exist out at the launcher; discover
+      never sees one.
+
+    Deliberately *beside* ``datapackage.json`` rather than inside it.
+    ``datapackage.json`` is the alignment GUI's consumption contract -- what to
+    read and where -- and nothing here is consumed by it. Folding this in would
+    move a schema version, and therefore every consumer's version gate, for a
+    question no consumer asks.
+
+    Best-effort: a run that has already done the work must not fail over its own
+    bookkeeping. Absence is logged, not raised -- the monolith has no discover
+    stage, and a rerun against an older ``discover`` asset finds no record.
+    """
+    from aind_ibl_ephys_alignment_preprocessing.coverage import RunCoverage
+
+    try:
+        # discover's mount: the directory the filtered manifest resolved from.
+        discovered = RunCoverage.find(config.manifest_csv.parent)
+        if discovered is None:
+            logger.info("[pack] no discover coverage record found; run record not carried forward")
+            return
+        coverage = discovered.with_assets(asset_resolution)
+        path = coverage.write(config.results_root)
+        logger.info(
+            "[pack] run record -> %s (%d/%d rows viable, %d unit(s) with resolved assets)",
+            path,
+            coverage.rows_viable,
+            coverage.rows_requested,
+            len(coverage.unit_assets),
+        )
+    except Exception as exc:  # bookkeeping must never fail a completed run
+        logger.warning("[pack] could not write the run record: %s", exc)

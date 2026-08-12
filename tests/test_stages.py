@@ -13,20 +13,28 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 from aind_code_ocean_pipeline_utils.role_dispatch import find_stream_config
 
 from aind_ibl_ephys_alignment_preprocessing import stages
+from aind_ibl_ephys_alignment_preprocessing.coverage import (
+    COVERAGE_FILENAME,
+    CoverageError,
+    RunCoverage,
+)
 from aind_ibl_ephys_alignment_preprocessing.datapackage import (
     _find_mouse_output_trees,
     merge_pipeline_outputs,
 )
+from aind_ibl_ephys_alignment_preprocessing.ephys import find_sorted_session_dirs
 from aind_ibl_ephys_alignment_preprocessing.stages import (
     EPHYS_STREAM_MARKER,
     _ephys_unit_name,
     _track_annotation_present,
     stage_discover,
 )
+from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow
 
 _MANIFEST_HEADER = "mouseid,sorted_recording,probe_file,probe_id,probe_name,surface_finding"
 
@@ -36,20 +44,21 @@ def _write_manifest(path: Path, rows: list[str]) -> None:
     path.write_text("\n".join([_MANIFEST_HEADER, *rows]) + "\n")
 
 
-def _config(tmp_path: Path, *, skip_ephys: bool = False) -> SimpleNamespace:
+def _config(tmp_path: Path, *, skip_ephys: bool = False, allow_partial: bool = False) -> SimpleNamespace:
     """A stand-in PipelineConfig with the attributes stage_discover reads."""
     return SimpleNamespace(
         manifest_csv=tmp_path / "manifest.csv",
         results_root=tmp_path / "results",
         data_root=tmp_path / "data",
         skip_ephys=skip_ephys,
+        allow_partial=allow_partial,
     )
 
 
 @pytest.fixture
 def all_viable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force every probe viable so emission logic can be tested in isolation."""
-    monkeypatch.setattr(stages, "_probe_viability", lambda config, mr, sorted_dirs=None: (True, None))
+    monkeypatch.setattr(stages, "_probe_viability", lambda config, mr, sorted_dirs=None: (True, None, []))
 
 
 def test_public_stage_functions_exist() -> None:
@@ -159,8 +168,8 @@ def test_stage_discover_handles_missing_surface_finding(tmp_path: Path, all_viab
 
 
 def test_stage_discover_filters_nonviable_probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Non-viable probes are dropped from both the manifest and the ephys configs."""
-    config = _config(tmp_path)
+    """With partial coverage allowed, non-viable probes drop from manifest and configs."""
+    config = _config(tmp_path, allow_partial=True)
     _write_manifest(
         config.manifest_csv,
         [
@@ -172,7 +181,7 @@ def test_stage_discover_filters_nonviable_probes(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(
         stages,
         "_probe_viability",
-        lambda config, mr, sorted_dirs=None: (mr.ephys_collection != "ProbeB", "skipped for test"),
+        lambda config, mr, sorted_dirs=None: (mr.ephys_collection != "ProbeB", "skipped for test", []),
     )
 
     written = stage_discover(config)
@@ -198,6 +207,211 @@ def test_stage_discover_skip_ephys_emits_no_configs(tmp_path: Path, all_viable: 
 
     assert written == []
     assert (config.results_root / "manifest.csv").is_file()
+
+
+# ---------------------------------------------------------------------------
+# Coverage: what the manifest asked for vs what discover emitted
+# ---------------------------------------------------------------------------
+
+_SHANK_HEADER = "mouseid,sorted_recording,probe_file,probe_id,probe_name,ephys_shank,surface_finding"
+
+
+def _write_shank_manifest(path: Path, rows: list[str]) -> None:
+    """Write a manifest whose rows carry an explicit ``ephys_shank``."""
+    path.write_text("\n".join([_SHANK_HEADER, *rows]) + "\n")
+
+
+def _read_coverage(config: SimpleNamespace) -> RunCoverage:
+    """Load the coverage record discover wrote."""
+    return RunCoverage.read(config.results_root / COVERAGE_FILENAME)
+
+
+def _mount_sorted_for_coverage(root: Path, *, input_recording: str, collection: str) -> None:
+    """Mount a spike-sorted asset that names *input_recording* and sorted *collection*."""
+    (root / "spikesorted").mkdir(parents=True, exist_ok=True)
+    (root / "data_description.json").write_text(json.dumps({"input_data_name": input_recording}))
+    (root / "postprocessed" / f"experiment1_Neuropix.{collection}-AP_recording1").mkdir(parents=True, exist_ok=True)
+
+
+@pytest.fixture
+def tracks_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pass the histology half of the gate so the sorting half can be tested for real."""
+    monkeypatch.setattr(stages, "_track_annotation_present", lambda data_root, mr: (True, None))
+
+
+def test_stage_discover_refuses_when_a_pinned_session_has_no_sorting(tmp_path: Path, tracks_present: None) -> None:
+    """The 791094 regression: two pinned sessions, one resolvable, and the run stops.
+
+    Before the coverage record this passed silently -- the unresolvable session's
+    rows were dropped, the filtered manifest and the fan-out set shrank together,
+    and every downstream check compared the two shrunken sets and agreed.
+    """
+    config = _config(tmp_path)
+    _write_manifest(
+        config.manifest_csv,
+        [
+            "791094,ecephys_791094_2025-10-08_sorted_x,ng,Track1,ProbeA,",
+            "791094,ecephys_791094_2025-10-09_sorted_y,ng,Track2,ProbeB,",
+        ],
+    )
+    # Only 2025-10-08's sorting is mounted; 2025-10-09's is absent entirely.
+    _mount_sorted_for_coverage(
+        config.data_root / "sorted_x", input_recording="ecephys_791094_2025-10-08", collection="ProbeA"
+    )
+
+    with pytest.raises(CoverageError) as excinfo:
+        stage_discover(config)
+
+    assert "ecephys_791094_2025-10-09" in str(excinfo.value)
+    # The record that explains the refusal must survive it.
+    coverage = _read_coverage(config)
+    assert coverage.rows_requested == 2
+    assert coverage.rows_viable == 1
+    assert [row.recording_id for row in coverage.dropped] == ["ecephys_791094_2025-10-09"]
+    assert "no spike-sorting output" in str(coverage.dropped[0].reason)
+
+
+def test_stage_discover_coverage_records_every_row_and_its_unit(tmp_path: Path, all_viable: None) -> None:
+    """Every manifest row appears in the record, naming the unit it fed."""
+    config = _config(tmp_path)
+    _write_manifest(
+        config.manifest_csv,
+        [
+            "791094,ecephys_791094_2025-10-08_sorted_x,ng,Track1,ProbeA,",
+            "791094,ecephys_791094_2025-10-09_sorted_y,ng,Track2,ProbeB,",
+        ],
+    )
+
+    stage_discover(config)
+    coverage = _read_coverage(config)
+
+    assert coverage.mouse_id == "791094"
+    assert coverage.rows_requested == coverage.rows_viable == 2
+    assert coverage.dropped == []
+    assert coverage.units_emitted == [
+        "ecephys_791094_2025-10-08__ProbeA",
+        "ecephys_791094_2025-10-09__ProbeB",
+    ]
+    assert [row.unit for row in coverage.rows] == coverage.units_emitted
+
+
+def test_stage_discover_coverage_sees_a_dropped_shank(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lost shank is a coverage gap even though its unit is still emitted.
+
+    Fan-out units are ``(recording, collection)`` *deduplicated*, so a sibling
+    shank keeps the unit alive and a unit-level diff reports full coverage. Only
+    a row-keyed record shows the loss.
+    """
+    config = _config(tmp_path, allow_partial=True)
+    _write_shank_manifest(
+        config.manifest_csv,
+        [
+            "791094,ecephys_791094_2025-10-08_sorted_x,ng,Track1,ProbeA,0,",
+            "791094,ecephys_791094_2025-10-08_sorted_x,ng,Track2,ProbeA,1,",
+        ],
+    )
+    monkeypatch.setattr(
+        stages,
+        "_probe_viability",
+        lambda config, mr, sorted_dirs=None: (mr.ephys_shank != 1, "no track points for layer", []),
+    )
+
+    written = stage_discover(config)
+    coverage = _read_coverage(config)
+
+    # The unit survives on shank 0 alone -- which is exactly why unit counts lie.
+    assert len(written) == 1
+    assert coverage.units_emitted == ["ecephys_791094_2025-10-08__ProbeA"]
+    # ...and the record still names the shank that was lost.
+    assert coverage.rows_viable == 1
+    assert [row.key for row in coverage.dropped] == ["ecephys_791094_2025-10-08/ProbeA/shank1"]
+
+
+def test_stage_discover_allows_a_partial_run_when_asked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``allow_partial`` downgrades the refusal to a warning, but still records it."""
+    config = _config(tmp_path, allow_partial=True)
+    _write_manifest(
+        config.manifest_csv,
+        [
+            "791094,ecephys_791094_2025-10-08_sorted_x,ng,Track1,ProbeA,",
+            "791094,ecephys_791094_2025-10-09_sorted_y,ng,Track2,ProbeB,",
+        ],
+    )
+    monkeypatch.setattr(
+        stages,
+        "_probe_viability",
+        lambda config, mr, sorted_dirs=None: (mr.ephys_collection == "ProbeA", "skipped for test", []),
+    )
+
+    written = stage_discover(config)
+
+    assert len(written) == 1
+    assert len(_read_coverage(config).dropped) == 1
+
+
+def test_stage_discover_refuses_zero_viable_even_with_allow_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No viable probe is fatal regardless: a partial run never means "none"."""
+    config = _config(tmp_path, allow_partial=True)
+    _write_manifest(
+        config.manifest_csv,
+        ["791094,ecephys_791094_2025-10-08_sorted_x,ng,Track1,ProbeA,"],
+    )
+    monkeypatch.setattr(
+        stages,
+        "_probe_viability",
+        lambda config, mr, sorted_dirs=None: (False, "skipped for test", []),
+    )
+
+    with pytest.raises(CoverageError, match="no viable probes"):
+        stage_discover(config)
+
+
+def test_stage_discover_writes_coverage_when_ephys_is_skipped(tmp_path: Path, all_viable: None) -> None:
+    """Histology-only runs get a record too -- they have no fan-out to notice a gap."""
+    config = _config(tmp_path, skip_ephys=True)
+    _write_manifest(
+        config.manifest_csv,
+        ["791094,ecephys_791094_2025-10-08_sorted_x,ng,Track1,ProbeA,"],
+    )
+
+    stage_discover(config)
+    coverage = _read_coverage(config)
+
+    assert coverage.skip_ephys is True
+    assert coverage.units_emitted == []
+    assert coverage.rows_viable == 1
+
+
+def test_probe_viability_notes_a_name_matched_sorting(tmp_path: Path, tracks_present: None) -> None:
+    """A sorting found only by directory name is recorded, not just logged.
+
+    That fallback *is* the 791094 signature: the asset did not name the recording
+    it was sorted from, so the structural match failed.
+    """
+    config = _config(tmp_path)
+    # Mount a sorting whose data_description names a different recording, so the
+    # structural lookup misses and only the name walk can find it.
+    mount = config.data_root / "ecephys_791094_2025-10-08_sorted_x"
+    _mount_sorted_for_coverage(mount, input_recording="ecephys_791094_1999-01-01", collection="ProbeA")
+
+    row = ManifestRow.from_series(
+        pd.Series(
+            {
+                "mouseid": "791094",
+                "sorted_recording": "ecephys_791094_2025-10-08_sorted_x",
+                "probe_file": "ng",
+                "probe_id": "Track1",
+                "probe_name": "ProbeA",
+            },
+            name=0,  # iterrows names each row with its index; from_series reads it
+        )
+    )
+    ok, reason, notes = stages._probe_viability(config, row, find_sorted_session_dirs(config.data_root))
+
+    assert ok and reason is None
+    assert any("matched by directory name" in note for note in notes)
 
 
 class _Row:
@@ -469,3 +683,87 @@ def test_stage_ephys_collect_merges_from_data_using_manifest_mouse(
     stages.stage_ephys_collect(config, merge_from=config.data_root)
 
     assert calls == {"src": config.data_root, "dst": config.results_root, "mouse": "786867"}
+
+
+def test_coverage_units_match_the_emitted_config_names(tmp_path: Path, all_viable: None) -> None:
+    """``units_emitted`` uses the same key the fan-out configs carry.
+
+    That key is what the trigger's resolved-asset map is keyed by, and what the
+    run record joins on. If the two ever diverge, the record still validates --
+    it just answers nothing.
+    """
+    config = _config(tmp_path)
+    _write_manifest(
+        config.manifest_csv,
+        [
+            "791094,ecephys_791094_2025-10-08_sorted_x,ng,Track1,ProbeA,",
+            "791094,ecephys_791094_2025-10-09_sorted_y,ng,Track2,ProbeB,",
+        ],
+    )
+
+    written = stage_discover(config)
+    coverage = _read_coverage(config)
+
+    config_names = sorted(json.loads(path.read_text())["name"] for path in written)
+    assert config_names == coverage.units_emitted
+
+
+def test_pack_carries_the_run_record_forward(tmp_path: Path, all_viable: None) -> None:
+    """End to end across the handoff: discover writes it, pack completes it.
+
+    Exercises the real serialized file rather than a hand-built record, so a
+    change on either side that breaks the join fails here. This step is what
+    makes the record durable at all -- discover's copy lives in an intermediate
+    the launcher deletes on success.
+    """
+    from aind_ibl_ephys_alignment_preprocessing.stages import _carry_coverage_forward
+
+    discover = _config(tmp_path / "discover")
+    discover.manifest_csv.parent.mkdir(parents=True, exist_ok=True)
+    _write_manifest(
+        discover.manifest_csv,
+        ["791094,ecephys_791094_2025-10-08_sorted_x,ng,Track1,ProbeA,"],
+    )
+    stage_discover(discover)
+
+    # pack runs against discover's *filtered* manifest, mounted under /data.
+    pack = SimpleNamespace(
+        manifest_csv=discover.results_root / "manifest.csv",
+        results_root=tmp_path / "pack_results",
+        data_root=tmp_path / "data",
+        skip_ephys=False,
+        allow_partial=False,
+    )
+    # Exactly the shape the trigger's _asset_resolution_arg emits.
+    resolution = json.dumps(
+        {
+            "units": {
+                "ecephys_791094_2025-10-08__ProbeA": {
+                    "raw": {"id": "raw-id", "name": "ecephys_791094_2025-10-08"},
+                    "sorted": {"id": "sorted-id", "name": "ecephys_791094_2025-10-08_sorted_x"},
+                }
+            },
+            "smartspim": {"id": "spim-id", "name": "SmartSPIM_791094_stitched"},
+        }
+    )
+
+    _carry_coverage_forward(pack, resolution)
+
+    coverage = RunCoverage.read(pack.results_root / COVERAGE_FILENAME)
+    assert set(coverage.unit_assets) == set(coverage.units_emitted)
+    assert coverage.is_complete is True
+    assert coverage.unit_assets["ecephys_791094_2025-10-08__ProbeA"].sorted.id == "sorted-id"
+    assert coverage.smartspim.id == "spim-id"
+
+
+def test_pack_survives_a_missing_run_record(tmp_path: Path) -> None:
+    """The monolith has no discover stage; bookkeeping must not fail the run."""
+    from aind_ibl_ephys_alignment_preprocessing.stages import _carry_coverage_forward
+
+    config = _config(tmp_path)
+    config.manifest_csv.parent.mkdir(parents=True, exist_ok=True)
+    config.manifest_csv.write_text("mouseid\n791094\n")
+
+    _carry_coverage_forward(config, None)
+
+    assert not (config.results_root / COVERAGE_FILENAME).exists()
