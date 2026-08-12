@@ -130,6 +130,41 @@ def test_complete_run_reports_complete():
     assert _record(rows_requested=1, rows_viable=1, rows=[]).is_complete is True
 
 
+def test_an_empty_record_is_not_complete():
+    """0 == 0 is complete only vacuously, and reads as reassurance about nothing."""
+    assert _record(rows_requested=0, rows_viable=0, rows=[], units_emitted=[]).is_complete is False
+
+
+def test_find_warns_when_several_records_are_mounted(tmp_path: Path, caplog):
+    """Picking the alphabetically first would carry a stale row set forward.
+
+    A rerun can mount a previous ``pack`` output beside the ``discover`` asset,
+    and both roots hold a ``coverage.json``. The choice is arbitrary, so it is at
+    least loud.
+    """
+    _record(mouse_id="first").write(tmp_path / "a_stale_pack")
+    _record(mouse_id="second").write(tmp_path / "b_discover")
+
+    with caplog.at_level("WARNING"):
+        found = RunCoverage.find(tmp_path)
+
+    assert found.mouse_id == "first"  # documented, not endorsed
+    assert "2 coverage records" in caplog.text
+    assert "a_stale_pack" in caplog.text and "b_discover" in caplog.text
+
+
+def test_find_does_not_warn_when_the_record_sits_beside_the_root(tmp_path: Path, caplog):
+    """The producer's own record is unambiguous however many are mounted below it."""
+    _record(mouse_id="mine").write(tmp_path)
+    _record(mouse_id="theirs").write(tmp_path / "nested")
+
+    with caplog.at_level("WARNING"):
+        found = RunCoverage.find(tmp_path)
+
+    assert found.mouse_id == "mine"
+    assert "coverage records" not in caplog.text
+
+
 def test_row_key_is_shank_aware():
     """Rows are keyed per shank, because units are not."""
     row = RowCoverage(recording_id="rec", ephys_collection="ProbeA", ephys_shank=1, viable=False)

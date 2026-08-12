@@ -159,8 +159,13 @@ class RunCoverage(BaseModel, frozen=True):
 
     @property
     def is_complete(self) -> bool:
-        """Whether every requested row survived."""
-        return self.rows_requested == self.rows_viable
+        """Whether the manifest asked for work and every requested row survived.
+
+        A record with no rows at all is *not* complete. Equality alone reports an
+        empty manifest as fully covered, which is true only vacuously and reads as
+        reassurance about a run that did nothing.
+        """
+        return self.rows_requested > 0 and self.rows_requested == self.rows_viable
 
     def gaps(self) -> list[str]:
         """One human-readable line per dropped row, for a coverage refusal."""
@@ -223,9 +228,25 @@ class RunCoverage(BaseModel, frozen=True):
         monolith run, or a rerun against an older ``discover`` asset, simply has
         no record, and a missing record must not fail a run that already
         succeeded.
+
+        Several candidates one level down is ambiguous and warned about, not
+        silently resolved: only ``discover`` writes this file, but a rerun can
+        mount a *previous* ``pack`` output whose root holds one too, and picking
+        the alphabetically first would carry a stale row set forward as though it
+        described this run.
         """
         root = Path(root)
-        for candidate in (root / COVERAGE_FILENAME, *sorted(root.glob(f"*/{COVERAGE_FILENAME}"))):
+        beside = root / COVERAGE_FILENAME
+        nested = sorted(root.glob(f"*/{COVERAGE_FILENAME}"))
+        if not beside.is_file() and len(nested) > 1:
+            logger.warning(
+                "%d coverage records under %s (%s); using %s -- the others are ignored",
+                len(nested),
+                root,
+                ", ".join(str(path.parent.name) for path in nested),
+                nested[0],
+            )
+        for candidate in (beside, *nested):
             if candidate.is_file():
                 try:
                     return cls.read(candidate)

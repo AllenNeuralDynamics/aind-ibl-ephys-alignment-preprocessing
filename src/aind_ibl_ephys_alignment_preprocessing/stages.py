@@ -344,8 +344,22 @@ def _assert_coverage(coverage: RunCoverage, *, allow_partial: bool) -> None:
     Zero viable rows stays fatal regardless of *allow_partial* -- ``RUNBOOK.md``
     already calls it the known failure mode, and "process nothing successfully"
     is never what a partial run means.
+
+    An **empty manifest** is fatal on its own terms, checked before anything else.
+    It has no dropped rows to report, so every gap-based check passes it: an
+    earlier version guarded the zero-viable branch with ``rows_requested`` to
+    avoid a confusing message, and bought a hole in exactly the failure class
+    this function exists to close -- a header-only or mis-generated manifest ran
+    green over nothing at all. A manifest that lists no work is a generation
+    failure upstream, never a request for an empty run.
     """
-    if coverage.rows_requested and not coverage.rows_viable:
+    if not coverage.rows_requested:
+        raise CoverageError(
+            f"{coverage.manifest} lists no manifest rows, so there is nothing to process. "
+            "An empty manifest is an upstream generation failure; allow_partial does not apply "
+            "(there is no part to run)."
+        )
+    if not coverage.rows_viable:
         raise CoverageError(
             f"no viable probes in {coverage.manifest} ({coverage.rows_requested} row(s) requested); "
             "nothing to process. Reasons: " + "; ".join(coverage.gaps())
@@ -800,8 +814,6 @@ def _carry_coverage_forward(config: PipelineConfig, asset_resolution: str | None
     bookkeeping. Absence is logged, not raised -- the monolith has no discover
     stage, and a rerun against an older ``discover`` asset finds no record.
     """
-    from aind_ibl_ephys_alignment_preprocessing.coverage import RunCoverage
-
     try:
         # discover's mount: the directory the filtered manifest resolved from.
         discovered = RunCoverage.find(config.manifest_csv.parent)

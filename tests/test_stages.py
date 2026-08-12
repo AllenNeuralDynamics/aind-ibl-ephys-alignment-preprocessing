@@ -368,6 +368,23 @@ def test_stage_discover_refuses_zero_viable_even_with_allow_partial(
         stage_discover(config)
 
 
+def test_stage_discover_refuses_an_empty_manifest(tmp_path: Path, all_viable: None) -> None:
+    """A header-only manifest is the same silent success, with no rows to blame.
+
+    It has nothing to drop, so every gap-based check passes it. The first version
+    of the gate skipped the zero-viable branch when ``rows_requested`` was 0 and
+    let a manifest describing no work run green over nothing.
+    """
+    config = _config(tmp_path, allow_partial=True)
+    _write_manifest(config.manifest_csv, [])
+
+    with pytest.raises(CoverageError, match="lists no manifest rows"):
+        stage_discover(config)
+
+    # The record still lands, so the refusal is inspectable rather than log-only.
+    assert _read_coverage(config).rows_requested == 0
+
+
 def test_stage_discover_writes_coverage_when_ephys_is_skipped(tmp_path: Path, all_viable: None) -> None:
     """Histology-only runs get a record too -- they have no fan-out to notice a gap."""
     config = _config(tmp_path, skip_ephys=True)
