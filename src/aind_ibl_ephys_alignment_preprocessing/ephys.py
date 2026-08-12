@@ -5,11 +5,26 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow, OutputDirs
 
 logger = logging.getLogger(__name__)
+
+# Open Ephys names each stream directory
+# ``experiment<N>_Record Node <NNN>#Neuropix-PXI-100.<token>_recording<M>[...]``,
+# so the collection token is delimited by the processor's ``.`` on the left and
+# ``_recording`` on the right. Anchoring on those delimiters -- rather than
+# substring-testing the whole name -- is what keeps ``45883`` from matching
+# ``45883-1``.
+_STREAM_TOKEN_RE = re.compile(r"\.(?P<token>[^.]+)_recording")
+
+# Stream-type suffixes Open Ephys appends to the collection itself (``ProbeA-AP``).
+# ``-AP`` is the band we sort, so it is stripped when comparing identities; ``-LFP``
+# is a different band with no spike output, so it is rejected outright.
+_AP_SUFFIX = "-AP"
+_LFP_SUFFIX = "-LFP"
 
 
 def find_session_dir(data_root: Path, name: str, *, max_depth: int = 4) -> Path | None:
@@ -305,6 +320,49 @@ def resolve_surface_finding(data_root: Path, surface_finding: Path | str) -> Pat
     return found if found is not None else direct
 
 
+def _normalize_collection(token: str) -> str | None:
+    """Reduce a stream token to the collection it identifies.
+
+    Parameters
+    ----------
+    token : str
+        The token between the processor's ``.`` and ``_recording``, or a
+        manifest-supplied collection name.
+
+    Returns
+    -------
+    str or None
+        The collection, with an ``-AP`` stream-type suffix removed, or ``None``
+        for an LFP stream (a different band, carrying no spike output).
+    """
+    if token.endswith(_LFP_SUFFIX):
+        return None
+    if token.endswith(_AP_SUFFIX):
+        return token[: -len(_AP_SUFFIX)]
+    return token
+
+
+def analyzer_collection(name: str) -> str | None:
+    """Parse the ephys collection out of a postprocessed analyzer directory name.
+
+    Parameters
+    ----------
+    name : str
+        Basename of a ``postprocessed/`` entry, e.g.
+        ``experiment1_Record Node 118#Neuropix-PXI-100.45883-1_recording1.zarr``.
+
+    Returns
+    -------
+    str or None
+        The collection the analyzer belongs to (``45883-1`` above), or ``None``
+        when the name carries no parseable stream token or names an LFP stream.
+    """
+    match = _STREAM_TOKEN_RE.search(name)
+    if match is None:
+        return None
+    return _normalize_collection(match.group("token"))
+
+
 def has_sorting_output(recording_folder: Path | None, ephys_collection: str) -> bool:
     """Return whether a sorted asset holds postprocessed output for a collection.
 
@@ -314,6 +372,13 @@ def has_sorting_output(recording_folder: Path | None, ephys_collection: str) -> 
     ``...ProbeA-AP``). When no such analyzer exists -- the usual sign of failed
     upstream spike sorting -- the converter writes ``sorting_error.txt`` and
     produces no usable ephys, so the probe is not worth processing.
+
+    The comparison is on the *parsed* collection, never on a substring of the
+    directory name. An unanchored match cannot tell a stream-type suffix from a
+    different collection: for ``45883`` it accepts ``45883-1``, i.e. one shank of
+    a four-shank probe standing in for the whole probe. That produced a datapackage
+    folder holding only ``xyz_picks_image_space.json`` for 750107's 2025-01-31 PL
+    probe, which passed every downstream check that counts probe directories.
 
     Parameters
     ----------
@@ -327,7 +392,7 @@ def has_sorting_output(recording_folder: Path | None, ephys_collection: str) -> 
     Returns
     -------
     bool
-        *True* if at least one non-LFP postprocessed analyzer matches the
+        *True* if at least one non-LFP postprocessed analyzer belongs to the
         collection.
     """
     if recording_folder is None:
@@ -335,7 +400,12 @@ def has_sorting_output(recording_folder: Path | None, ephys_collection: str) -> 
     postprocessed = recording_folder / "postprocessed"
     if not postprocessed.is_dir():
         return False
-    return any(p.is_dir() and "-LFP" not in p.name for p in postprocessed.glob(f"*{ephys_collection}*"))
+    # Normalize the requested collection too, so a manifest may pin either
+    # ``ProbeA`` or ``ProbeA-AP`` for the same stream.
+    wanted = _normalize_collection(ephys_collection)
+    if wanted is None:
+        return False
+    return any(p.is_dir() and analyzer_collection(p.name) == wanted for p in postprocessed.iterdir())
 
 
 def run_ephys_for_recording(

@@ -72,6 +72,53 @@ def test_has_sorting_output_none_folder_returns_false():
     assert has_sorting_output(None, "ProbeA") is False
 
 
+# ------------------------------------------------- collection identity, not substring --
+# The token between the processor's "." and "_recording" IS the collection. Matching a
+# substring of the whole name cannot distinguish a stream-type suffix ("ProbeA-AP", same
+# collection) from a different collection ("45883-1", shank 1 of a quad).
+
+_QUAD = "experiment1_Record Node 118#Neuropix-PXI-100.45883-{shank}_recording1"
+
+
+def _mount_quad(root: Path) -> None:
+    """Create the four per-shank analyzers a quad-base probe sorts into."""
+    for shank in range(1, 5):
+        _mkdir(root / "postprocessed" / _QUAD.format(shank=shank))
+
+
+def test_quad_shanks_do_not_satisfy_the_base_collection(tmp_path):
+    """750107 2025-01-31: the manifest pinned ``45883``, the sort has ``45883-1..4``.
+
+    The old ``*45883*`` glob matched shank 1, so the probe passed the viability gate
+    and the datapackage got a folder holding only ``xyz_picks_image_space.json`` --
+    a hollow probe that every probe-counting check downstream reported as present.
+    """
+    _mount_quad(tmp_path)
+    assert has_sorting_output(tmp_path, "45883") is False
+
+
+def test_quad_shank_satisfies_its_own_collection(tmp_path):
+    # The fix must not cost us the rows that name a shank correctly.
+    _mount_quad(tmp_path)
+    assert has_sorting_output(tmp_path, "45883-1") is True
+    assert has_sorting_output(tmp_path, "45883-4") is True
+    assert has_sorting_output(tmp_path, "45883-5") is False
+
+
+def test_collection_pinned_with_its_stream_suffix_still_matches(tmp_path):
+    # "-AP" is a stream type on the collection, not a different collection, so a
+    # manifest may pin either form.
+    _mkdir(tmp_path / "postprocessed" / "experiment1_Neuropix.ProbeA-AP_recording1")
+    assert has_sorting_output(tmp_path, "ProbeA-AP") is True
+
+
+def test_unparseable_analyzer_name_does_not_match(tmp_path):
+    # No stream token means no identity to compare; report honestly rather than
+    # falling back to a substring test.
+    _mkdir(tmp_path / "postprocessed" / "45883")
+    assert has_sorting_output(tmp_path, "45883") is False
+
+
 # --------------------------------------------------------------- find_session_dir --
 
 _SESSION = "ecephys_791093_2025-08-28_15-21-17"

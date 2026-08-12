@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -99,7 +99,7 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
     )
 
 
-def _infer_asset_uri(source_uri: str, asset_pathlike: str) -> str | None:
+def _infer_asset_uri(source_uri: str, asset_pathlike: str | PurePath) -> str | None:
     """Infer the asset-level URI from a source URI inside that asset.
 
     Neuroglancer sources often point inside the stitched SmartSPIM asset, for
