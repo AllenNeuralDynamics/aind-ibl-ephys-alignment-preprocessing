@@ -94,29 +94,6 @@ async def convert_img_to_direction_and_write_async(
     return image_geometry(img_oriented)
 
 
-async def copy_registration_channel_ccf_reorient_async(
-    asset_info: AssetInfo,
-    outputs: OutputDirs,
-    limits: Limits,
-) -> None:
-    """Async copy precomputed CCF registration to results."""
-    logger.info("[CCF Copy] Copying precomputed CCF registration to results")
-    if not asset_info.registration_in_ccf_precomputed.exists():
-        raise FileNotFoundError(
-            f"Precomputed registration in CCF not found: {asset_info.registration_in_ccf_precomputed}"
-        )
-    ccf_img = await io_to_thread_on(
-        limits,
-        str(asset_info.registration_in_ccf_precomputed),
-        sitk.ReadImage,
-        str(asset_info.registration_in_ccf_precomputed),
-    )
-    logger.info("[CCF Copy] Read precomputed CCF registration image")
-    ccf_img_dest = str(outputs.histology_ccf / "histology_registration.nrrd")
-    await convert_img_to_direction_and_write_async(ccf_img, ccf_img_dest, limits)
-    logger.info("[CCF Copy] Completed: histology_registration.nrrd in CCF space")
-
-
 async def write_registration_channel_images_async(
     asset_info: AssetInfo,
     outputs: OutputDirs,

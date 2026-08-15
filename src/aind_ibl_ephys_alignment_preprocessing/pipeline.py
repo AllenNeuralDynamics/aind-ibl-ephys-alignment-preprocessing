@@ -31,7 +31,6 @@ from aind_ibl_ephys_alignment_preprocessing.ephys import (
 from aind_ibl_ephys_alignment_preprocessing.histology import (
     ants_domain_stub,
     ants_warp_domain,
-    copy_registration_channel_ccf_reorient,
     process_additional_channels_pipeline,
     transform_ccf_labels_to_image_space,
     transform_ccf_to_image_space,
@@ -77,8 +76,6 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     node, zarr_metadata = _open_zarr(asset_info.zarr_volumes.registration)
     level = determine_desired_level(zarr_metadata, desired_voxel_size_um=config.desired_voxel_size_um)
 
-    if config.emit_qc:  # CCF-space registration volume is GUI-unused QC
-        copy_registration_channel_ccf_reorient(asset_info, out)
     raw_img_path, base_header, pipeline_header, warp_dtype = write_registration_channel_images(
         asset_info,
         out,

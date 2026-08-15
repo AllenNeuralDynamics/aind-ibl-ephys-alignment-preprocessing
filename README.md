@@ -183,7 +183,6 @@ data_root/
 |   |       +-- <additional_channels>.zarr/
 |   +-- image_atlas_alignment/
 |       +-- <registration_channel_stem>/
-|           |-- moved_ls_to_ccf.nii.gz
 |           |-- ls_to_template_SyN_0GenericAffine.mat
 |           +-- ls_to_template_SyN_1InverseWarp.nii.gz
 |
@@ -257,8 +256,7 @@ and any additional channels.
 The asset directory must contain:
 - `image_tile_fusing/OMEZarr/<channel>.zarr/` -- fused OME-Zarr volumes
 - `image_atlas_alignment/<registration_channel_stem>/` -- ANTs registration
-  outputs including `moved_ls_to_ccf.nii.gz` (the precomputed light-sheet to
-  CCF registration)
+  outputs: the light-sheet to template affine and inverse warp
 
 ### Reference volumes
 
@@ -307,8 +305,7 @@ All outputs are written under `results_root/<mouseid>/`:
 results_root/
 |-- manifest.csv                              # Copy of input manifest
 +-- <mouseid>/
-    |-- ccf_space_histology/
-    |   |-- histology_registration.nrrd       # Registration channel in CCF space
+    |-- ccf_space_histology/                  # QC only (emit_qc); GUI never reads it
     |   +-- histology_<channel>.nrrd          # Additional channels in CCF space
     |
     |-- image_space_histology/

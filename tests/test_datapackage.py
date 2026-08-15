@@ -39,13 +39,14 @@ def _external(asset: str, path: str) -> PathReference:
     return PathReference(asset=asset, path=path)
 
 
-def test_schema_version_is_4_0_0():
-    """Schema is 3.2.0 — 3.2 added the pipeline-image geometry sidecar; GUI needs 3.x.
+def test_schema_version_is_4_1_0():
+    """Schema is 4.1.0 — 4.1 drops the CCF-space registration pass-through.
 
-    Additive, so the GUI's ``major == 3`` gate keeps passing and packages stay
-    readable while consumers migrate off the redundant volume.
+    Removing a field is normally breaking, but that one was never read by any
+    consumer, so it is treated as a defect fix. Consumers gate on the exact
+    version, so this must stay in step with the GUI's supported-version list.
     """
-    assert SCHEMA_VERSION == "4.0.0"
+    assert SCHEMA_VERSION == "4.1.0"
 
 
 def test_transforms_are_external_asset_references(tmp_path):
@@ -153,7 +154,7 @@ def test_datapackage_round_trip(tmp_path):
                 labels=_local("image_space_histology/labels_in_mouse.nrrd"),
             ),
             ccf_space=CcfSpaceHistology(
-                registration=_local("ccf_space_histology/histology_registration.nrrd"),
+                additional_channels=[_local("ccf_space_histology/histology_Ex_561_Em_600.nrrd")],
             ),
         ),
         probes={},
@@ -484,7 +485,7 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
         "image_space_histology/histology_registration_pipeline.json",
         "image_space_histology/ccf_in_mouse.nrrd",
         "image_space_histology/labels_in_mouse.nrrd",
-        "ccf_space_histology/histology_registration.nrrd",
+        "ccf_space_histology/histology_Ex_561_Em_600.nrrd",
         "rec1/46101/xyz_picks.json",
         "rec1/46101/xyz_picks_image_space.json",
         "rec1/46101/channels.localCoordinates.npy",
@@ -516,7 +517,7 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
                 labels=_local("image_space_histology/labels_in_mouse.nrrd"),
             ),
             ccf_space=CcfSpaceHistology(
-                registration=_local("ccf_space_histology/histology_registration.nrrd"),
+                additional_channels=[_local("ccf_space_histology/histology_Ex_561_Em_600.nrrd")],
             ),
         ),
         probes={

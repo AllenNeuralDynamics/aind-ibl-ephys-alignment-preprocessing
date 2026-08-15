@@ -440,23 +440,6 @@ class PipelineValidator:
                             f"Registration directory exists: {reg_dir}",
                             severity="info",
                         )
-                        ccf_files = list(reg_dir.glob("*/moved_ls_to_ccf.nii.gz"))
-                        if ccf_files:
-                            self._add_result(
-                                True,
-                                category,
-                                "precomputed_registration",
-                                f"Found precomputed CCF registration: {ccf_files[0]}",
-                                severity="info",
-                            )
-                        else:
-                            self._add_result(
-                                False,
-                                category,
-                                "precomputed_registration",
-                                f"Precomputed registration (moved_ls_to_ccf.nii.gz) not found in {reg_dir}",
-                            )
-
                         affine_files = list(reg_dir.glob("*/*_0GenericAffine.mat"))
                         warp_files = list(reg_dir.glob("*/*_1InverseWarp.nii.gz"))
                         if affine_files and warp_files:

@@ -67,7 +67,6 @@ def test_histology_importable():
         apply_ccf_inverse_tx_then_fix_domain,
         compress_reorient_nrrd_file,
         convert_img_direction_and_write,
-        copy_registration_channel_ccf_reorient,
         process_additional_channels_pipeline,
         transform_ccf_labels_to_image_space,
         transform_ccf_to_image_space,
@@ -75,7 +74,6 @@ def test_histology_importable():
     )
 
     assert callable(convert_img_direction_and_write)
-    assert callable(copy_registration_channel_ccf_reorient)
     assert callable(write_registration_channel_images)
     assert callable(process_additional_channels_pipeline)
     assert callable(apply_ccf_inverse_tx_then_fix_domain)

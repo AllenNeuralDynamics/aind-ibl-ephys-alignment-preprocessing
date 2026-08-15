@@ -21,12 +21,18 @@ from aind_ibl_ephys_alignment_preprocessing.types import (
 
 logger = logging.getLogger(__name__)
 
-SchemaVersion = Literal["4.0.0"]
-SCHEMA_VERSION: SchemaVersion = "4.0.0"
+SchemaVersion = Literal["4.1.0"]
+SCHEMA_VERSION: SchemaVersion = "4.1.0"
 # Why 3.0.0: 2.x stored filesystem locations as strings. 3.0.0 changes every
 # datapackage path into a reference object ``{asset, path}``, where
 # ``asset=None`` means datapackage-local and external assets are resolved via
 # the ``external_assets`` registry plus consumer/producers runtime policy.
+#
+# Why 4.1.0: drops ``histology.ccf_space.registration``. It was a reorientation
+# of the upstream ``moved_ls_to_ccf.nii.gz`` -- a pass-through of a file the
+# producer neither derived nor validated against, and which no consumer ever
+# read. Removing a field is normally breaking, but this one was never consumed,
+# so it is treated as a defect fix rather than a contract change.
 
 
 # ---------------------------------------------------------------------------
@@ -88,9 +94,13 @@ class ImageSpaceHistology(BaseModel, frozen=True):
 
 
 class CcfSpaceHistology(BaseModel, frozen=True):
-    """References to CCF-space histology volumes."""
+    """References to CCF-space histology volumes.
 
-    registration: PathReference
+    Carries only the additional channels, which are genuinely warped into CCF.
+    Through 4.0.0 this also held ``registration``: a reorientation of the
+    upstream ``moved_ls_to_ccf.nii.gz`` that no consumer ever read.
+    """
+
     additional_channels: list[PathReference] = []
 
 
@@ -227,7 +237,6 @@ class DataPackage(BaseModel, frozen=True):
             *self.histology.image_space.additional_channels,
         ]
         if self.histology.ccf_space is not None:
-            paths.append(self.histology.ccf_space.registration)
             paths.extend(self.histology.ccf_space.additional_channels)
         for recording in self.probes.values():
             for probe in recording.values():
@@ -451,14 +460,13 @@ def _build_histology(outputs: OutputDirs, manifest_root: Path, config: PipelineC
             (
                 _local_ref(p, manifest_root)
                 for p in ccf_dir.glob("histology_*.nrrd")
+                # Guard against a stale registration volume from a pre-4.1.0 run
+                # being misfiled as an additional channel.
                 if p.name != "histology_registration.nrrd"
             ),
             key=lambda ref: ref.path,
         )
-        ccf_space = CcfSpaceHistology(
-            registration=_local_ref(ccf_dir / "histology_registration.nrrd", manifest_root),
-            additional_channels=ccf_additional,
-        )
+        ccf_space = CcfSpaceHistology(additional_channels=ccf_additional)
 
     return HistologyPaths(
         image_space=ImageSpaceHistology(

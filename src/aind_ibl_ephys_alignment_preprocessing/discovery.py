@@ -88,14 +88,12 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
     alignment_zarr_path = Path(alignment_zarr_uri)
     registration_channel_stem = alignment_zarr_path.stem
     registration_dir_path = asset_path / "image_atlas_alignment" / f"{registration_channel_stem}"
-    registration_in_ccf_precomputed = registration_dir_path / "moved_ls_to_ccf.nii.gz"
     return AssetInfo(
         asset_path=asset_path,
         asset_uri=_infer_asset_uri(a_zarr_uri, asset_pathlike),
         zarr_volumes=zarr_paths,
         pipeline_registration_chains=pipeline_reg_info,
         registration_dir_path=registration_dir_path,
-        registration_in_ccf_precomputed=registration_in_ccf_precomputed,
     )
 
 

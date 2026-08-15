@@ -416,9 +416,6 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
 
     from aind_ibl_ephys_alignment_preprocessing._async.concurrency import Limits, to_thread_logged
     from aind_ibl_ephys_alignment_preprocessing._async.ephys import _asyncio_exception_handler
-    from aind_ibl_ephys_alignment_preprocessing._async.histology import (
-        copy_registration_channel_ccf_reorient_async,
-    )
     from aind_ibl_ephys_alignment_preprocessing._async.pipeline import _create_volumes_async
     from aind_ibl_ephys_alignment_preprocessing._async.probes import process_manifest_row_safe_async
     from aind_ibl_ephys_alignment_preprocessing.discovery import find_asset_info
@@ -535,11 +532,6 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
                 _coords(manifest_df, asset_info, raw_img_stub, raw_img_stub_buggy, ibl_atlas, out, limits),
                 name=f"histology-coords-{mouse_id}",
             )
-            if config.emit_qc:  # CCF-space registration volume is GUI-unused QC
-                tg.create_task(
-                    copy_registration_channel_ccf_reorient_async(asset_info, out, limits),
-                    name=f"histology-ccf-copy-{mouse_id}",
-                )
 
         logger.info("[histology] Completed volumes + coords for mouse %s", mouse_id)
         return coords_task.result()

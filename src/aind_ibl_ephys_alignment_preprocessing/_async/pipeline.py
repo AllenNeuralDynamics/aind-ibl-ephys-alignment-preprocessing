@@ -19,7 +19,6 @@ from aind_ibl_ephys_alignment_preprocessing._async.ephys import (
     run_manifest_subprocess_sync,
 )
 from aind_ibl_ephys_alignment_preprocessing._async.histology import (
-    copy_registration_channel_ccf_reorient_async,
     process_additional_channels_pipeline_async,
     transform_ccf_labels_to_image_space_async,
     transform_ccf_to_image_space_async,
@@ -227,11 +226,6 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
             name=f"process-manifest-subprocess-{mouse_id}",
         )
 
-        if config.emit_qc:  # CCF-space registration volume is GUI-unused QC
-            tg.create_task(
-                copy_registration_channel_ccf_reorient_async(asset_info, out, limits),
-                name=f"copy-ccf-registration-{mouse_id}",
-            )
     logger.info("[Orchestrator] All parallel tasks completed")
     manifest_pool.shutdown(wait=True)
     processed_results: list[ProcessResult] = manifest_task.result()

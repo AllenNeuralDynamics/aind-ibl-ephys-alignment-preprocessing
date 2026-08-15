@@ -444,28 +444,6 @@ def convert_img_direction_and_write(
     return image_geometry(img_oriented)
 
 
-def copy_registration_channel_ccf_reorient(
-    asset_info: AssetInfo,
-    outputs: OutputDirs,
-) -> None:
-    """Copy precomputed CCF registration to results as reoriented NRRD.
-
-    Parameters
-    ----------
-    asset_info : AssetInfo
-        Asset metadata with precomputed registration path.
-    outputs : OutputDirs
-        Output directory tree.
-    """
-    if not asset_info.registration_in_ccf_precomputed.exists():
-        raise FileNotFoundError(
-            f"Precomputed registration in CCF not found: {asset_info.registration_in_ccf_precomputed}"
-        )
-    ccf_img = sitk.ReadImage(str(asset_info.registration_in_ccf_precomputed))
-    img_in_ccf_dst = outputs.histology_ccf / "histology_registration.nrrd"
-    convert_img_direction_and_write(ccf_img, img_in_ccf_dst)
-
-
 def write_registration_channel_images(
     asset_info: AssetInfo,
     outputs: OutputDirs,

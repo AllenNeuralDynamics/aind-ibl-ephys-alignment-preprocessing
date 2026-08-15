@@ -262,7 +262,6 @@ class AssetInfo:
     zarr_volumes: ZarrPaths
     pipeline_registration_chains: PipelineRegistrationInfo
     registration_dir_path: Path
-    registration_in_ccf_precomputed: Path
 
 
 @dataclass(frozen=True)
