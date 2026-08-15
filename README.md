@@ -200,6 +200,11 @@ A CSV file describing how histology tracks map onto ephys collections. Each
 row represents one histology track (or one histology shank) mapped to one
 ephys collection and ephys shank.
 
+The contract is declared once in `types.MANIFEST_COLUMNS` and drives both the
+parser and pre-flight validation, so what a run accepts cannot drift from what
+validation demands. **Optional columns are never required**: a manifest written
+before a column existed stays valid.
+
 **Required columns:**
 
 | Column | Description |
@@ -222,6 +227,7 @@ ephys collection and ephys shank.
 | `probe_name` | *legacy* | Alias for `ephys_collection`. |
 | `probe_shank` | *legacy* | Alias for both `histology_shank` and `ephys_shank`. |
 | `surface_finding` | *null* | Path (relative to `data_root`) to a surface-finding file. |
+| `registration_asset` | *null* | Path (relative to `data_root`) to a registration directory holding the `ls_to_template_SyN_*` transforms to use **instead of** the stitched asset's own -- e.g. `SmartSPIM_750108_reg/ccf_Ex_639_Em_667`. Per-*brain*: replicated across rows like `mouseid`, and rows must agree. The registration channel is taken from the directory name (a leading `ccf_` is stripped), so the histology volume is built from the channel the transforms were computed from rather than the one `processing.json` names. |
 
 **Constraints:**
 - All rows must have the same `mouseid`.

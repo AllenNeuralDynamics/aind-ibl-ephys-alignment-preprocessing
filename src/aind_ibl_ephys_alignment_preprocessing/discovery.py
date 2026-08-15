@@ -28,6 +28,100 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Transforms a registration directory must supply, whichever asset it lives in.
+REGISTRATION_TRANSFORMS = (
+    "ls_to_template_SyN_0GenericAffine.mat",
+    "ls_to_template_SyN_1InverseWarp.nii.gz",
+)
+
+
+def manifest_registration_override(config: PipelineConfig) -> Path | None:
+    """Return the manifest's ``registration_asset`` path fragment, if any.
+
+    The column is per-*brain*: like ``mouseid`` it is replicated across rows, so
+    the first non-empty value wins. Rows disagreeing is a manifest error, not
+    something to resolve silently, so it raises.
+
+    Parameters
+    ----------
+    config : PipelineConfig
+        Pipeline configuration with resolved paths.
+
+    Returns
+    -------
+    Path or None
+        The path fragment, relative to ``config.data_root``, or ``None`` when
+        the column is absent/empty (the overwhelming majority of manifests).
+
+    Raises
+    ------
+    ValueError
+        If rows name different registration assets.
+    """
+    import pandas as pd
+
+    if not config.manifest_csv.exists():
+        return None
+    df = pd.read_csv(config.manifest_csv)
+    if "registration_asset" not in df.columns:
+        return None
+    values = {str(v).strip() for v in df["registration_asset"] if pd.notna(v) and str(v).strip()}
+    if not values:
+        return None
+    if len(values) > 1:
+        raise ValueError(
+            f"registration_asset must name one directory per manifest; {config.manifest_csv} has {sorted(values)}"
+        )
+    return Path(values.pop())
+
+
+def resolve_registration_dir(config: PipelineConfig, asset_path: Path) -> tuple[Path, str | None]:
+    """Resolve the registration directory and the channel it was computed from.
+
+    Without an override this is the stitched asset's own
+    ``image_atlas_alignment/<channel>/``, and the channel is left to the caller
+    (``processing.json`` names it). With one, the manifest points straight at a
+    directory and the channel comes from its *name* -- ``processing.json`` names
+    the channel that was registered in error, which is the whole reason an
+    override exists, so it must not be consulted.
+
+    Parameters
+    ----------
+    config : PipelineConfig
+        Pipeline configuration with resolved paths.
+    asset_path : Path
+        The stitched SmartSPIM asset root.
+
+    Returns
+    -------
+    tuple[Path, str or None]
+        ``(registration_dir, channel)``. *channel* is ``None`` when there is no
+        override, meaning "keep whatever the asset's own metadata says".
+
+    Raises
+    ------
+    FileNotFoundError
+        If the override names a directory that does not exist, or one missing
+        either transform.
+    """
+    override = manifest_registration_override(config)
+    if override is None:
+        return asset_path / "image_atlas_alignment", None
+
+    reg_dir = config.data_root / override
+    if not reg_dir.is_dir():
+        raise FileNotFoundError(
+            f"registration_asset {override} not found under {config.data_root} (resolved to {reg_dir})"
+        )
+    missing = [name for name in REGISTRATION_TRANSFORMS if not (reg_dir / name).exists()]
+    if missing:
+        raise FileNotFoundError(f"registration_asset {override} is missing {', '.join(missing)} in {reg_dir}")
+    # ``ccf_<channel>`` is the standalone capsule's layout; the pipeline's own is
+    # ``image_atlas_alignment/<channel>``, where the name is already the channel.
+    channel = reg_dir.name.removeprefix("ccf_")
+    logger.info("using registration override %s (channel %s)", reg_dir, channel)
+    return reg_dir, channel
+
 
 def find_asset_info(config: PipelineConfig) -> AssetInfo:
     """Discover SmartSPIM asset structure from the Neuroglancer JSON.
@@ -65,6 +159,20 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
     alignment_zarr_uri, metadata, processing_data = alignment_zarr_uri_and_metadata_from_zarr_or_asset_pathlike(
         asset_uri=asset_path_str,
     )
+
+    # An override moves the transforms out of the stitched asset, and with them
+    # the channel they were computed from. The zarr itself never moves: only
+    # the registration directory lives elsewhere.
+    registration_dir_path, override_channel = resolve_registration_dir(config, asset_path)
+    if override_channel is not None:
+        override_zarr = zarr_path / f"{override_channel}.zarr"
+        if not override_zarr.is_dir():
+            raise FileNotFoundError(
+                f"registration_asset names channel {override_channel!r}, but {override_zarr} does not exist; "
+                f"available: {sorted(p.stem for p in image_channel_zarrs)}"
+            )
+        alignment_zarr_uri = override_zarr.as_posix()
+
     other_channels = list({p.as_posix() for p in image_channel_zarrs} - {alignment_zarr_uri})
     zarr_paths = ZarrPaths(
         registration=alignment_zarr_uri,
@@ -85,9 +193,10 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
         img_tx_inverted=img_tx_inverted,
     )
 
-    alignment_zarr_path = Path(alignment_zarr_uri)
-    registration_channel_stem = alignment_zarr_path.stem
-    registration_dir_path = asset_path / "image_atlas_alignment" / f"{registration_channel_stem}"
+    if override_channel is None:
+        # No override: the registration lives beside the channel the asset's own
+        # metadata nominated, so the stem is the channel.
+        registration_dir_path = registration_dir_path / Path(alignment_zarr_uri).stem
     return AssetInfo(
         asset_path=asset_path,
         asset_uri=_infer_asset_uri(a_zarr_uri, asset_pathlike),

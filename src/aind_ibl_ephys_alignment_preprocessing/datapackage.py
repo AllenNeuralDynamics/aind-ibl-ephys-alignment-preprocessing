@@ -366,19 +366,43 @@ def build_datapackage(
     )
 
 
+def _registration_asset_root(asset_info: AssetInfo, config: PipelineConfig) -> Path | None:
+    """Return the override asset root, or ``None`` when the registration is in-asset.
+
+    Derived rather than carried as a flag: a registration directory that is not
+    under the stitched asset can only have come from the manifest's
+    ``registration_asset`` column, and its first path component under
+    ``data_root`` is the asset that was mounted.
+    """
+    reg_dir = asset_info.registration_dir_path
+    if asset_info.asset_path in reg_dir.parents:
+        return None
+    try:
+        relative = reg_dir.relative_to(config.data_root)
+    except ValueError:
+        return None
+    return config.data_root / relative.parts[0]
+
+
 def _build_transforms(asset_info: AssetInfo, config: PipelineConfig, manifest_root: Path) -> TransformPaths:
     reg_dir = asset_info.registration_dir_path
     tmpl_dir = config.template_to_ccf_dir
+    # Point the image->template pair at whichever asset actually holds them, so
+    # a datapackage records the registration it was built from rather than the
+    # one the stitched asset happens to carry.
+    override_root = _registration_asset_root(asset_info, config)
+    reg_asset = "registration" if override_root is not None else "smartspim"
+    reg_root = override_root if override_root is not None else asset_info.asset_path
     return TransformPaths(
         image_to_template_affine=_external_ref(
-            "smartspim",
+            reg_asset,
             reg_dir / "ls_to_template_SyN_0GenericAffine.mat",
-            asset_info.asset_path,
+            reg_root,
         ),
         image_to_template_warp=_external_ref(
-            "smartspim",
+            reg_asset,
             reg_dir / "ls_to_template_SyN_1InverseWarp.nii.gz",
-            asset_info.asset_path,
+            reg_root,
         ),
         template_to_ccf_affine=_external_ref(
             "spim_template_to_ccf",
@@ -395,7 +419,7 @@ def _build_transforms(asset_info: AssetInfo, config: PipelineConfig, manifest_ro
 
 def _build_external_assets(asset_info: AssetInfo, config: PipelineConfig) -> dict[str, ExternalAsset]:
     platform = _detect_platform(config)
-    return {
+    assets = {
         "smartspim": ExternalAsset(
             role="smartspim_registration",
             name=asset_info.asset_path.name,
@@ -408,6 +432,21 @@ def _build_external_assets(asset_info: AssetInfo, config: PipelineConfig) -> dic
             provenance={"mounted_at": str(config.template_to_ccf_dir), "on": platform},
         ),
     }
+    # Only present when the manifest pinned a registration outside the stitched
+    # asset. Recording *which* one was used is the main thing the override buys
+    # over overwriting `image_atlas_alignment/` in place.
+    override_root = _registration_asset_root(asset_info, config)
+    if override_root is not None:
+        assets["registration"] = ExternalAsset(
+            role="registration_override",
+            name=override_root.name,
+            provenance={
+                "mounted_at": str(override_root),
+                "registration_dir": str(asset_info.registration_dir_path),
+                "on": platform,
+            },
+        )
+    return assets
 
 
 def _detect_platform(config: PipelineConfig) -> str:
