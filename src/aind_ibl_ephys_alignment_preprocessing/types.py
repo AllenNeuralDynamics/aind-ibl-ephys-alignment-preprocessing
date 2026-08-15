@@ -288,6 +288,99 @@ class ProcessResult:
 
 
 @dataclass(frozen=True)
+class ManifestColumn:
+    """One column of the manifest CSV contract.
+
+    Parameters
+    ----------
+    name : str
+        Canonical column name.
+    required : bool
+        Whether a manifest without it (or any of its *aliases*) is invalid.
+        Optional columns must never be demanded: every manifest predating a
+        column has to keep working unchanged, which is the whole reason new
+        columns are added optional.
+    aliases : tuple[str, ...]
+        Older names still accepted for the same field, most-preferred first.
+        Satisfying any one of them satisfies the column.
+    description : str
+        What the column pins, for error messages and docs.
+    """
+
+    name: str
+    required: bool
+    aliases: tuple[str, ...] = ()
+    description: str = ""
+
+    @property
+    def accepted_names(self) -> tuple[str, ...]:
+        """Every column name that satisfies this field, canonical first."""
+        return (self.name, *self.aliases)
+
+
+#: The manifest CSV contract, in one place.
+#:
+#: Both the parser (:meth:`ManifestRow.from_series`) and the pre-flight
+#: validator read this, so "which columns are required" cannot drift between
+#: what a run accepts and what validation reports.
+MANIFEST_COLUMNS: tuple[ManifestColumn, ...] = (
+    ManifestColumn("mouseid", required=True, description="Mouse identifier; one per manifest."),
+    ManifestColumn("sorted_recording", required=True, description="Spike-sorting folder name."),
+    ManifestColumn("probe_file", required=True, description="Annotation file basename, no extension."),
+    ManifestColumn(
+        "histology_track_id",
+        required=True,
+        aliases=("probe_id",),
+        description="Neuroglancer layer / histology track identifier.",
+    ),
+    ManifestColumn(
+        "ephys_collection",
+        required=True,
+        aliases=("probe_name",),
+        description="ALF/ephys output collection, from the Open Ephys stream.",
+    ),
+    ManifestColumn("annotation_format", required=False, description="Annotation format; defaults to json."),
+    ManifestColumn(
+        "logical_probe",
+        required=False,
+        description="Physical probe identity; split-stream collections share one.",
+    ),
+    ManifestColumn(
+        "histology_shank",
+        required=False,
+        aliases=("probe_shank",),
+        description="0-based physical/histology shank index.",
+    ),
+    ManifestColumn(
+        "ephys_shank",
+        required=False,
+        aliases=("probe_shank",),
+        description="0-based shank index within the ephys collection.",
+    ),
+    ManifestColumn(
+        "surface_finding",
+        required=False,
+        description="Separate surface-finding recording to merge blocks from.",
+    ),
+    ManifestColumn(
+        "registration_asset",
+        required=False,
+        description=(
+            "Path to a registration directory holding the ls_to_template_SyN_* "
+            "transforms to use instead of the stitched asset's own. Per-brain."
+        ),
+    ),
+)
+
+#: Columns whose absence invalidates a manifest, canonical name first.
+REQUIRED_MANIFEST_COLUMNS: tuple[ManifestColumn, ...] = tuple(c for c in MANIFEST_COLUMNS if c.required)
+
+#: Columns a manifest may omit entirely. Adding one here must never break a
+#: manifest written before it existed.
+OPTIONAL_MANIFEST_COLUMNS: tuple[ManifestColumn, ...] = tuple(c for c in MANIFEST_COLUMNS if not c.required)
+
+
+@dataclass(frozen=True)
 class ManifestRow:
     """A single row from the manifest CSV.
 
@@ -320,6 +413,13 @@ class ManifestRow:
         0-based shank index within ``ephys_collection``.
     surface_finding : Path | None
         Optional surface-finding file path fragment.
+    registration_asset : Path | None
+        Optional path to a registration directory, relative to ``data_root``,
+        holding the ``ls_to_template_SyN_*`` transforms to use instead of the
+        stitched asset's own (e.g. ``SmartSPIM_750108_reg/ccf_Ex_639_Em_667``).
+        Per-*brain*, not per-probe: like ``mouseid`` it is replicated across
+        rows, and discovery reads the first non-empty value. Empty leaves the
+        stitched asset's registration in use.
     row_index : int | None
         Row index from the CSV for provenance.
     """
@@ -337,6 +437,7 @@ class ManifestRow:
     histology_shank: int | None = None
     ephys_shank: int | None = None
     surface_finding: Path | None = None
+    registration_asset: Path | None = None
     row_index: int | None = None
 
     def __post_init__(self) -> None:
@@ -415,5 +516,6 @@ class ManifestRow:
             histology_shank=histology_shank,
             ephys_shank=ephys_shank,
             surface_finding=opt_path(s.get("surface_finding")),
+            registration_asset=opt_path(s.get("registration_asset")),
             row_index=int(s.name) if hasattr(s, "name") else None,  # type: ignore[call-overload]
         )

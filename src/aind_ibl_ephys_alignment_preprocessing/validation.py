@@ -24,7 +24,12 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow, ReferencePaths
+from aind_ibl_ephys_alignment_preprocessing.types import (
+    OPTIONAL_MANIFEST_COLUMNS,
+    REQUIRED_MANIFEST_COLUMNS,
+    ManifestRow,
+    ReferencePaths,
+)
 
 if TYPE_CHECKING:
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
@@ -321,8 +326,11 @@ class PipelineValidator:
             return
         self._add_result(True, category, "readable", f"Manifest CSV readable ({len(df)} rows)", severity="info")
 
-        required_cols = ["mouseid", "sorted_recording", "probe_file"]
-        missing_cols = [col for col in required_cols if col not in df.columns]
+        # Driven by the declarative contract so what a run accepts and what
+        # validation demands cannot drift apart. Optional columns are never
+        # required: a manifest written before a column existed stays valid.
+        simple = [c for c in REQUIRED_MANIFEST_COLUMNS if not c.aliases]
+        missing_cols = [c.name for c in simple if c.name not in df.columns]
         if missing_cols:
             self._add_result(
                 False, category, "required_columns", f"Missing required columns: {', '.join(missing_cols)}"
@@ -331,20 +339,23 @@ class PipelineValidator:
             self._add_result(True, category, "required_columns", "All required columns present", severity="info")
 
         self._validate_mouseid_consistency(df, category)
-        self._validate_null_columns(df, required_cols, category)
-        self._validate_required_column_group(
-            df,
-            ("histology_track_id", "probe_id"),
-            "histology_track_id",
-            category,
-        )
-        self._validate_required_column_group(
-            df,
-            ("ephys_collection", "probe_name"),
-            "ephys_collection",
-            category,
-        )
+        self._validate_null_columns(df, [c.name for c in simple], category)
+        for column in REQUIRED_MANIFEST_COLUMNS:
+            if column.aliases:
+                self._validate_required_column_group(df, column.accepted_names, column.name, category)
+        self._report_optional_columns(df, category)
         self._validate_uniqueness_constraints(df, category)
+
+    def _report_optional_columns(self, df: pd.DataFrame, category: str) -> None:
+        """Note which optional columns are in play; never fail on their absence."""
+        present = [c.name for c in OPTIONAL_MANIFEST_COLUMNS if any(n in df.columns for n in c.accepted_names)]
+        self._add_result(
+            True,
+            category,
+            "optional_columns",
+            f"Optional columns present: {', '.join(present)}" if present else "No optional columns used",
+            severity="info",
+        )
 
     # -- Category 3: Reference Data --------------------------------------------
 
@@ -431,7 +442,18 @@ class PipelineValidator:
                     else:
                         self._add_result(False, category, "omezarr_dir", f"OME-Zarr directory not found: {zarr_path}")
 
-                    reg_dir = asset_path / "image_atlas_alignment"
+                    # The manifest may pin the registration to another asset, in
+                    # which case it names the directory itself and the glob is a
+                    # level shallower. Reuse discovery's resolution so validation
+                    # cannot look somewhere the run will not.
+                    from aind_ibl_ephys_alignment_preprocessing.discovery import resolve_registration_dir
+
+                    try:
+                        reg_dir, override_channel = resolve_registration_dir(self.config, asset_path)
+                    except (FileNotFoundError, ValueError) as e:
+                        self._add_result(False, category, "registration_dir", str(e))
+                        reg_dir, override_channel = asset_path / "image_atlas_alignment", None
+                    pattern = "" if override_channel is not None else "*/"
                     if reg_dir.exists():
                         self._add_result(
                             True,
@@ -440,8 +462,8 @@ class PipelineValidator:
                             f"Registration directory exists: {reg_dir}",
                             severity="info",
                         )
-                        affine_files = list(reg_dir.glob("*/*_0GenericAffine.mat"))
-                        warp_files = list(reg_dir.glob("*/*_1InverseWarp.nii.gz"))
+                        affine_files = list(reg_dir.glob(f"{pattern}*_0GenericAffine.mat"))
+                        warp_files = list(reg_dir.glob(f"{pattern}*_1InverseWarp.nii.gz"))
                         if affine_files and warp_files:
                             self._add_result(
                                 True,
