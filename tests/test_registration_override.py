@@ -301,3 +301,108 @@ def test_every_manifest_row_field_is_in_the_contract():
     parsed = {f.name for f in __import__("dataclasses").fields(ManifestRow)} - derived
 
     assert parsed <= declared, parsed - declared
+
+
+# --- find_asset_info end to end --------------------------------------------
+#
+# The override's whole job happens inside find_asset_info, which was previously
+# only smoke-tested. The zarr-utils calls are patched out so the wiring itself
+# -- which directory, which channel, which URI reaches the pipeline chain -- is
+# what gets exercised.
+
+DEFAULT_CHANNEL = "Ex_561_Em_600"
+OVERRIDE_CHANNEL = "Ex_639_Em_667"
+
+
+def _stitched_asset(data_root: Path, *channels: str) -> Path:
+    asset = data_root / "SmartSPIM_750108"
+    omezarr = asset / "image_tile_fusing" / "OMEZarr"
+    for channel in channels:
+        (omezarr / f"{channel}.zarr").mkdir(parents=True, exist_ok=True)
+    return asset
+
+
+def _patch_zarr_utils(monkeypatch, asset: Path, default_channel: str) -> dict:
+    """Patch discovery's zarr-utils calls; record what the pipeline chain saw."""
+    from aind_ibl_ephys_alignment_preprocessing import discovery
+
+    default_zarr = asset / "image_tile_fusing" / "OMEZarr" / f"{default_channel}.zarr"
+    seen: dict = {}
+
+    monkeypatch.setattr(discovery, "get_json", lambda *a, **k: {})
+    monkeypatch.setattr(discovery, "get_image_sources", lambda *a, **k: {"layer": str(default_zarr)})
+    monkeypatch.setattr(discovery, "as_pathlike", lambda uri: (None, None, str(uri)))
+    monkeypatch.setattr(discovery, "_asset_from_zarr_pathlike", lambda p: asset.name)
+    monkeypatch.setattr(
+        discovery,
+        "alignment_zarr_uri_and_metadata_from_zarr_or_asset_pathlike",
+        lambda **k: (default_zarr.as_posix(), {"meta": 1}, {"processing": 1}),
+    )
+
+    def _chain(uri, processing, **kwargs):
+        seen["uri"] = uri
+        seen["processing"] = processing
+        return [], [], [], []
+
+    monkeypatch.setattr(discovery, "pipeline_transforms_local_paths", _chain)
+    return seen
+
+
+def test_find_asset_info_without_override_is_unchanged(tmp_path, monkeypatch):
+    from aind_ibl_ephys_alignment_preprocessing.discovery import find_asset_info
+
+    config = _config(tmp_path, f"{MANIFEST_HEADER}\n750108,p,s,a,b\n")
+    asset = _stitched_asset(config.data_root, DEFAULT_CHANNEL, OVERRIDE_CHANNEL)
+    seen = _patch_zarr_utils(monkeypatch, asset, DEFAULT_CHANNEL)
+
+    info = find_asset_info(config)
+
+    assert info.registration_dir_path == asset / "image_atlas_alignment" / DEFAULT_CHANNEL
+    assert info.zarr_volumes.registration.endswith(f"{DEFAULT_CHANNEL}.zarr")
+    assert [Path(p).stem for p in info.zarr_volumes.additional] == [OVERRIDE_CHANNEL]
+    assert seen["uri"].endswith(f"{DEFAULT_CHANNEL}.zarr")
+
+
+def test_find_asset_info_override_moves_dir_channel_and_chain(tmp_path, monkeypatch):
+    """All four things the override must change, in one assertion block."""
+    from aind_ibl_ephys_alignment_preprocessing.discovery import find_asset_info
+
+    body = f"{MANIFEST_HEADER},registration_asset\n750108,p,s,a,b,reg/ccf_{OVERRIDE_CHANNEL}\n"
+    config = _config(tmp_path, body)
+    asset = _stitched_asset(config.data_root, DEFAULT_CHANNEL, OVERRIDE_CHANNEL)
+    _registration_dir(config.data_root, f"reg/ccf_{OVERRIDE_CHANNEL}")
+    seen = _patch_zarr_utils(monkeypatch, asset, DEFAULT_CHANNEL)
+
+    info = find_asset_info(config)
+
+    # 1. the transforms come from the override asset
+    assert info.registration_dir_path == config.data_root / "reg" / f"ccf_{OVERRIDE_CHANNEL}"
+    # 2. the histology volume follows the channel the transforms were computed from
+    assert info.zarr_volumes.registration.endswith(f"{OVERRIDE_CHANNEL}.zarr")
+    # 3. ...and that channel is no longer counted as an additional one
+    assert [Path(p).stem for p in info.zarr_volumes.additional] == [DEFAULT_CHANNEL]
+    # 4. the per-channel stitching chain follows the channel too...
+    assert seen["uri"].endswith(f"{OVERRIDE_CHANNEL}.zarr")
+    # ...but processing.json still comes from the stitched asset, not the override
+    assert seen["processing"] == {"processing": 1}
+    # the zarr itself never moves out of the stitched asset
+    assert Path(info.zarr_volumes.registration).is_relative_to(asset)
+
+
+def test_find_asset_info_rejects_a_channel_the_brain_does_not_have(tmp_path, monkeypatch):
+    """Third failure mode: the column names a channel absent from the zarr set."""
+    from aind_ibl_ephys_alignment_preprocessing.discovery import find_asset_info
+
+    body = f"{MANIFEST_HEADER},registration_asset\n750108,p,s,a,b,reg/ccf_Ex_999_Em_999\n"
+    config = _config(tmp_path, body)
+    asset = _stitched_asset(config.data_root, DEFAULT_CHANNEL, OVERRIDE_CHANNEL)
+    _registration_dir(config.data_root, "reg/ccf_Ex_999_Em_999")
+    _patch_zarr_utils(monkeypatch, asset, DEFAULT_CHANNEL)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        find_asset_info(config)
+
+    message = str(excinfo.value)
+    assert "Ex_999_Em_999" in message
+    # and it says what the brain does have, so the fix is obvious
+    assert DEFAULT_CHANNEL in message and OVERRIDE_CHANNEL in message
