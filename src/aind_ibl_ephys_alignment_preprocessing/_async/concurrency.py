@@ -152,6 +152,11 @@ def _run_ephys_sync(mr: ManifestRow, out: OutputDirs, data_root: Path, num_paral
     """
     from aind_ephys_ibl_gui_conversion.ephys import extract_continuous, extract_spikes
 
+    from aind_ibl_ephys_alignment_preprocessing.ephys import (
+        find_session_dir,
+        resolve_surface_finding,
+    )
+
     sorted_rec = mr.sorted_recording
     recording_id = mr.recording_id
     results_folder = out.tracks_root.parent / recording_id
@@ -164,16 +169,25 @@ def _run_ephys_sync(mr: ManifestRow, out: OutputDirs, data_root: Path, num_paral
             logger.info("[Ephys %s] Skipping (already complete)", recording_id)
             return
         logger.info("[Ephys %s] Starting extraction (process pool)", recording_id)
-        recording_folder = data_root / sorted_rec
+        recording_folder = find_session_dir(data_root, str(sorted_rec))
+        if recording_folder is None:
+            raise FileNotFoundError(f"sorted recording {sorted_rec!r} not found under {data_root}")
+        session_folder = find_session_dir(data_root, recording_id)
         if mr.surface_finding is not None:
             extract_continuous(
                 recording_folder,
                 results_folder,
-                probe_surface_finding=data_root / str(mr.surface_finding),
+                probe_surface_finding=resolve_surface_finding(data_root, mr.surface_finding),
                 num_parallel_jobs=num_parallel_jobs,
+                session_folder=session_folder,
             )
         else:
-            extract_continuous(recording_folder, results_folder, num_parallel_jobs=num_parallel_jobs)
+            extract_continuous(
+                recording_folder,
+                results_folder,
+                num_parallel_jobs=num_parallel_jobs,
+                session_folder=session_folder,
+            )
         extract_spikes(recording_folder, results_folder)
         done.write_text("ok")
         logger.info("[Ephys %s] Completed", recording_id)

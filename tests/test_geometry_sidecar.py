@@ -1,0 +1,116 @@
+"""The geometry sidecar must describe the volume on disk, exactly.
+
+Its whole purpose is to replace opening a volume, so a consumer using it must
+land on the same physical points as one that opened the file.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+sitk = pytest.importorskip("SimpleITK")
+
+from aind_ibl_ephys_alignment_preprocessing._async.histology import (  # noqa: E402
+    image_geometry,
+)
+
+# Deliberately not axis-aligned-trivial: an identity direction would pass even
+# if rows and columns were transposed.
+IRP_DIRECTION = (0.0, 0.0, 1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0)
+
+
+def _volume():
+    img = sitk.GetImageFromArray(np.zeros((7, 9, 11), dtype=np.uint16))
+    img.SetSpacing((0.030, 0.030, 0.030))
+    img.SetOrigin((11.82, -1.5, 1.5))
+    img.SetDirection(IRP_DIRECTION)
+    return img
+
+
+def _rebuild(payload) -> sitk.Image:
+    """Rehydrate the way a consumer should: a 1x1x1 stub, not the real grid.
+
+    The transform is arithmetic on origin/spacing/direction with no bounds check,
+    so the stub answers for any index and costs one voxel instead of the tens of
+    megabytes the full grid would.
+    """
+    from aind_anatomical_utils.anatomical_volume import AnatomicalHeader
+
+    h = payload["header"]
+    header = AnatomicalHeader(
+        origin=tuple(h["origin"]),
+        spacing=tuple(h["spacing"]),
+        direction=np.array(h["direction"]).reshape(3, 3),
+        size_ijk=tuple(h["size_ijk"]),
+    )
+    stub = header.as_sitk_stub()
+    assert stub.GetSize() == (1, 1, 1)
+    return stub
+
+
+def test_size_is_index_order_not_array_shape():
+    """The reversal is the silent failure this sidecar could cause."""
+    img = _volume()
+    payload = image_geometry(img)
+
+    assert tuple(payload["header"]["size_ijk"]) == img.GetSize() == (11, 9, 7)
+    assert tuple(payload["header"]["size_ijk"]) != sitk.GetArrayFromImage(img).shape
+
+
+def test_direction_columns_are_the_index_axes_in_lps():
+    """Row-major flattening with columns as index-axis vectors -- not the transpose."""
+    payload = image_geometry(_volume())
+    direction = np.array(payload["header"]["direction"]).reshape(3, 3)
+
+    # i, j, k unit vectors expressed in LPS.
+    assert np.allclose(direction[:, 0], [0, 0, -1])
+    assert np.allclose(direction[:, 1], [0, -1, 0])
+    assert np.allclose(direction[:, 2], [1, 0, 0])
+
+
+@pytest.mark.parametrize(
+    "index",
+    [(0, 0, 0), (10, 8, 6), (5.5, 2.25, 3.75), (10.0, 0.0, 0.0)],
+)
+def test_reconstructed_geometry_maps_points_identically(index):
+    """The point of the whole exercise: same physical answer, no volume opened."""
+    img = _volume()
+    rebuilt = _rebuild(image_geometry(img))
+
+    assert rebuilt.TransformContinuousIndexToPhysicalPoint(index) == pytest.approx(
+        img.TransformContinuousIndexToPhysicalPoint(index)
+    )
+
+
+def test_sidecar_describes_the_file_as_written_not_as_held(tmp_path):
+    """Reorientation changes origin and direction; the sidecar must follow it."""
+    from aind_ibl_ephys_alignment_preprocessing._constants import _BLESSED_DIRECTION
+
+    img = _volume()
+    oriented = sitk.DICOMOrient(img, _BLESSED_DIRECTION)
+    path = tmp_path / "histology_registration_pipeline.nrrd"
+    sitk.WriteImage(oriented, str(path), useCompression=True)
+
+    payload = image_geometry(oriented)
+    on_disk = sitk.ReadImage(str(path))
+
+    assert tuple(payload["header"]["origin"]) == pytest.approx(on_disk.GetOrigin())
+    assert tuple(payload["header"]["direction"]) == pytest.approx(on_disk.GetDirection())
+    assert tuple(payload["header"]["size_ijk"]) == on_disk.GetSize()
+    # And capturing before the conversion would have been wrong:
+    assert tuple(payload["header"]["origin"]) != pytest.approx(img.GetOrigin())
+
+
+def test_payload_declares_its_conventions():
+    """Numbers alone cannot say LPS or millimetres; ITK is unit-agnostic.
+
+    Millimetres, not micrometres: ``aind_zarr_utils`` reads OME-Zarr with
+    ``scale_unit="millimeter"``, so the pyramid's micrometre scales arrive
+    converted and the stored ANTs warps share that frame.
+    """
+    payload = image_geometry(_volume())
+
+    assert payload["space"] == "left-posterior-superior"
+    assert payload["units"] == "millimeter"
+    assert payload["schema"].startswith("anatomical-header/")

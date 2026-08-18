@@ -79,8 +79,53 @@ class PipelineConfig(BaseModel, frozen=True):
 
     # Processing options
     skip_ephys: bool = False
-    desired_voxel_size_um: float = 25.0
+    # Selects the multiscale level via `determine_desired_level`, which returns
+    # the COARSEST level still at least as fine as this — i.e. it rounds toward
+    # higher resolution, never below it. A 25.0 target (the atlas resolution)
+    # therefore landed on SmartSPIM's 14.4 µm level, not its 28.8 µm one: 8x the
+    # voxels, and that 8x multiplies through every volume the histology stage
+    # touches (channel reads, both CCF warps, all six compressed NRRD writes,
+    # and the peak memory holding them). 35.0 selects the ~30 µm tier on both
+    # SmartSPIM base resolutions in use — 28.8 µm on a 1.8 µm base, 32 µm on a
+    # 2.0 µm base — where 30.0 would fall back to 16 µm on the latter.
+    # This is a display-resolution knob only: probe coordinates come from the
+    # header-only anatomical stubs, which never read a multiscale level.
+    desired_voxel_size_um: float = 35.0
+    # Grid every image-space histology volume is resampled onto, isotropic, in µm.
+    # Distinct from `desired_voxel_size_um` above, which only picks which stored
+    # multiscale level to read: whether a volume *has* a level near the target is
+    # an accident of when it was stitched, so reading alone leaves each mouse on
+    # a different grid (14.4, 16/32 and 28.8/32 µm all occur across the current
+    # eleven). That is a consistency-of-analysis problem before it is a speed one
+    # — cross-animal comparisons end up differently sampled purely by stitching
+    # vintage — and resampling is what removes it.
+    #
+    # Quoted in micrometres because that is the natural unit for these volumes,
+    # but image spacing throughout the pipeline is MILLIMETRES: aind_zarr_utils
+    # reads OME-Zarr with scale_unit="millimeter", so the pyramid's micrometre
+    # scales arrive converted and the stored ANTs warps share that frame. The
+    # conversion happens once, in resample_to_isotropic. Note the contrast with
+    # `desired_voxel_size_um` above, which is compared against the raw OME-Zarr
+    # metadata and so really is in micrometres — two knobs, two frames.
+    #
+    # A volume already coarser than this on every axis is left untouched; the
+    # target is never used to manufacture resolution. Reaching a *common*
+    # isotropic grid does mean interpolating up on a single axis for volumes
+    # whose z is coarser than target (32 -> 30 is the worst case in hand, ~7%),
+    # which is the price of every mouse sharing one grid.
+    output_voxel_size_um: float = 30.0
     num_parallel_jobs: int = 4
+    # QC/diagnostic outputs that the alignment GUI never reads: the Slicer FCSVs
+    # (spim/template/ccf), the CCF/bregma xyz_picks, and the CCF-space histology
+    # volumes. Off by default — producing them costs the ANTs point-warps and the
+    # full-volume warps into CCF for no consumer. Turn on for QC/export runs.
+    emit_qc: bool = False
+    # Whether a run that covers less than its manifest asked for may proceed.
+    # ``discover``'s viability gate drops a row with a warning and the run
+    # finishes green over whatever is left, so the default has to be refusal --
+    # see ``coverage.py`` for the session that was lost this way. Mirrors the
+    # trigger capsule's ``--allow-partial`` so both layers enforce one policy.
+    allow_partial: bool = False
 
     @model_validator(mode="after")
     def _resolve_relative_paths(self) -> PipelineConfig:
@@ -213,10 +258,10 @@ class AssetInfo:
     """SmartSPIM asset discovery results."""
 
     asset_path: Path
+    asset_uri: str | None
     zarr_volumes: ZarrPaths
     pipeline_registration_chains: PipelineRegistrationInfo
     registration_dir_path: Path
-    registration_in_ccf_precomputed: Path
 
 
 @dataclass(frozen=True)
@@ -243,15 +288,108 @@ class ProcessResult:
 
 
 @dataclass(frozen=True)
+class ManifestColumn:
+    """One column of the manifest CSV contract.
+
+    Parameters
+    ----------
+    name : str
+        Canonical column name.
+    required : bool
+        Whether a manifest without it (or any of its *aliases*) is invalid.
+        Optional columns must never be demanded: every manifest predating a
+        column has to keep working unchanged, which is the whole reason new
+        columns are added optional.
+    aliases : tuple[str, ...]
+        Older names still accepted for the same field, most-preferred first.
+        Satisfying any one of them satisfies the column.
+    description : str
+        What the column pins, for error messages and docs.
+    """
+
+    name: str
+    required: bool
+    aliases: tuple[str, ...] = ()
+    description: str = ""
+
+    @property
+    def accepted_names(self) -> tuple[str, ...]:
+        """Every column name that satisfies this field, canonical first."""
+        return (self.name, *self.aliases)
+
+
+#: The manifest CSV contract, in one place.
+#:
+#: Both the parser (:meth:`ManifestRow.from_series`) and the pre-flight
+#: validator read this, so "which columns are required" cannot drift between
+#: what a run accepts and what validation reports.
+MANIFEST_COLUMNS: tuple[ManifestColumn, ...] = (
+    ManifestColumn("mouseid", required=True, description="Mouse identifier; one per manifest."),
+    ManifestColumn("sorted_recording", required=True, description="Spike-sorting folder name."),
+    ManifestColumn("probe_file", required=True, description="Annotation file basename, no extension."),
+    ManifestColumn(
+        "histology_track_id",
+        required=True,
+        aliases=("probe_id",),
+        description="Neuroglancer layer / histology track identifier.",
+    ),
+    ManifestColumn(
+        "ephys_collection",
+        required=True,
+        aliases=("probe_name",),
+        description="ALF/ephys output collection, from the Open Ephys stream.",
+    ),
+    ManifestColumn("annotation_format", required=False, description="Annotation format; defaults to json."),
+    ManifestColumn(
+        "logical_probe",
+        required=False,
+        description="Physical probe identity; split-stream collections share one.",
+    ),
+    ManifestColumn(
+        "histology_shank",
+        required=False,
+        aliases=("probe_shank",),
+        description="0-based physical/histology shank index.",
+    ),
+    ManifestColumn(
+        "ephys_shank",
+        required=False,
+        aliases=("probe_shank",),
+        description="0-based shank index within the ephys collection.",
+    ),
+    ManifestColumn(
+        "surface_finding",
+        required=False,
+        description="Separate surface-finding recording to merge blocks from.",
+    ),
+    ManifestColumn(
+        "registration_asset",
+        required=False,
+        description=(
+            "Path to a registration directory holding the ls_to_template_SyN_* "
+            "transforms to use instead of the stitched asset's own. Per-brain."
+        ),
+    ),
+)
+
+#: Columns whose absence invalidates a manifest, canonical name first.
+REQUIRED_MANIFEST_COLUMNS: tuple[ManifestColumn, ...] = tuple(c for c in MANIFEST_COLUMNS if c.required)
+
+#: Columns a manifest may omit entirely. Adding one here must never break a
+#: manifest written before it existed.
+OPTIONAL_MANIFEST_COLUMNS: tuple[ManifestColumn, ...] = tuple(c for c in MANIFEST_COLUMNS if not c.required)
+
+
+@dataclass(frozen=True)
 class ManifestRow:
     """A single row from the manifest CSV.
 
     Parameters
     ----------
     probe_id : str
-        Probe identifier.
+        Legacy alias for ``histology_track_id``.
     probe_name : str
-        Subfolder name for GUI artifacts.
+        Legacy alias for ``ephys_collection``.
     probe_file : str
         Basename of the annotation file (no extension).
     sorted_recording : str
@@ -261,9 +399,27 @@ class ManifestRow:
     annotation_format : str
         Annotation file format (default ``"json"``).
     probe_shank : int | None
-        0-based shank index.
+        Legacy alias for both ``histology_shank`` and ``ephys_shank``.
+    histology_track_id : str | None
+        Neuroglancer layer / histology track identifier.
+    logical_probe : str | None
+        Physical/logical probe identity. Multiple ephys collections may share
+        this value for split-stream probes.
+    ephys_collection : str | None
+        ALF/ephys output collection folder, derived from the Open Ephys stream.
+    histology_shank : int | None
+        0-based physical/histology shank index.
+    ephys_shank : int | None
+        0-based shank index within ``ephys_collection``.
     surface_finding : Path | None
         Optional surface-finding file path fragment.
+    registration_asset : Path | None
+        Optional path to a registration directory, relative to ``data_root``,
+        holding the ``ls_to_template_SyN_*`` transforms to use instead of the
+        stitched asset's own (e.g. ``SmartSPIM_750108_reg/ccf_Ex_639_Em_667``).
+        Per-*brain*, not per-probe: like ``mouseid`` it is replicated across
+        rows, and discovery reads the first non-empty value. Empty leaves the
+        stitched asset's registration in use.
     row_index : int | None
         Row index from the CSV for provenance.
     """
@@ -275,8 +431,32 @@ class ManifestRow:
     mouseid: str
     annotation_format: str = "json"
     probe_shank: int | None = None
+    histology_track_id: str | None = None
+    logical_probe: str | None = None
+    ephys_collection: str | None = None
+    histology_shank: int | None = None
+    ephys_shank: int | None = None
     surface_finding: Path | None = None
+    registration_asset: Path | None = None
     row_index: int | None = None
+
+    def __post_init__(self) -> None:
+        """Populate new explicit fields from legacy manifest aliases."""
+        histology_track_id = self.histology_track_id or self.probe_id
+        ephys_collection = self.ephys_collection or self.probe_name
+        logical_probe = self.logical_probe or ephys_collection
+        histology_shank = self.histology_shank if self.histology_shank is not None else self.probe_shank
+        ephys_shank = (
+            self.ephys_shank
+            if self.ephys_shank is not None
+            else (self.probe_shank if self.probe_shank is not None else histology_shank)
+        )
+
+        object.__setattr__(self, "histology_track_id", histology_track_id)
+        object.__setattr__(self, "ephys_collection", ephys_collection)
+        object.__setattr__(self, "logical_probe", logical_probe)
+        object.__setattr__(self, "histology_shank", histology_shank)
+        object.__setattr__(self, "ephys_shank", ephys_shank)
 
     @property
     def recording_id(self) -> str:
@@ -285,7 +465,7 @@ class ManifestRow:
 
     def gui_folder(self, outputs: OutputDirs) -> Path:
         """Per-recording GUI output folder."""
-        return outputs.tracks_root.parent / self.recording_id / self.probe_name
+        return outputs.tracks_root.parent / self.recording_id / str(self.ephys_collection)
 
     @classmethod
     def from_series(cls, s: pd.Series[Any]) -> ManifestRow:
@@ -297,17 +477,45 @@ class ManifestRow:
             except Exception:
                 return None
 
+        def opt_int_from(*names: str) -> int | None:
+            for name in names:
+                value = opt_int(s.get(name))
+                if value is not None:
+                    return value
+            return None
+
+        def opt_str_from(*names: str, default: str | None = None) -> str:
+            for name in names:
+                value = s.get(name)
+                if pd.notna(value) and str(value) != "":
+                    return str(value)
+            if default is not None:
+                return default
+            return ""
+
         def opt_path(x: Any) -> Path | None:
             return Path(str(x)) if pd.notna(x) and str(x) else None
 
+        histology_track_id = opt_str_from("histology_track_id", "probe_id")
+        ephys_collection = opt_str_from("ephys_collection", "probe_name")
+        logical_probe = opt_str_from("logical_probe", default=ephys_collection)
+        histology_shank = opt_int_from("histology_shank", "probe_shank")
+        ephys_shank = opt_int_from("ephys_shank", "probe_shank", "histology_shank")
+
         return cls(
-            probe_id=str(s.get("probe_id")),
-            probe_name=str(s.get("probe_name")),
+            probe_id=histology_track_id,
+            probe_name=ephys_collection,
             probe_file=str(s.get("probe_file")),
             sorted_recording=str(s.get("sorted_recording")),
             mouseid=str(s.get("mouseid")),
             annotation_format=str(s.get("annotation_format", "json")).lower(),
             probe_shank=opt_int(s.get("probe_shank")),
+            histology_track_id=histology_track_id,
+            logical_probe=logical_probe,
+            ephys_collection=ephys_collection,
+            histology_shank=histology_shank,
+            ephys_shank=ephys_shank,
             surface_finding=opt_path(s.get("surface_finding")),
+            registration_asset=opt_path(s.get("registration_asset")),
             row_index=int(s.name) if hasattr(s, "name") else None,  # type: ignore[call-overload]
         )

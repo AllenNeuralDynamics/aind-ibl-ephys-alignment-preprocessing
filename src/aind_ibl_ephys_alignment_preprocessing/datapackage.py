@@ -1,0 +1,894 @@
+"""Datapackage for preprocessing pipeline outputs."""
+
+from __future__ import annotations
+
+import logging
+import shutil
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+from aind_ibl_ephys_alignment_preprocessing.types import (
+    AssetInfo,
+    ManifestRow,
+    OutputDirs,
+    PipelineConfig,
+    ProcessResult,
+)
+
+logger = logging.getLogger(__name__)
+
+SchemaVersion = Literal["4.1.0"]
+SCHEMA_VERSION: SchemaVersion = "4.1.0"
+# Why 3.0.0: 2.x stored filesystem locations as strings. 3.0.0 changes every
+# datapackage path into a reference object ``{asset, path}``, where
+# ``asset=None`` means datapackage-local and external assets are resolved via
+# the ``external_assets`` registry plus consumer/producers runtime policy.
+#
+# Why 4.1.0: drops ``histology.ccf_space.registration``. It was a reorientation
+# of the upstream ``moved_ls_to_ccf.nii.gz`` -- a pass-through of a file the
+# producer neither derived nor validated against, and which no consumer ever
+# read. Removing a field is normally breaking, but this one was never consumed,
+# so it is treated as a defect fix rather than a contract change.
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models mirroring the datapackage.json schema
+# ---------------------------------------------------------------------------
+
+
+class PathReference(BaseModel, frozen=True):
+    """A path inside either the datapackage asset or an external asset."""
+
+    asset: str | None
+    path: str = Field(min_length=1)
+
+
+class ExternalAsset(BaseModel, frozen=True):
+    """External asset descriptor used to resolve path references."""
+
+    role: str
+    name: str
+    id: str | None = None
+    uri: str | None = None
+    checksum: str | None = None
+    provenance: dict[str, Any] | None = None
+
+
+class TransformPaths(BaseModel, frozen=True):
+    """References to the ANTs transform chain files."""
+
+    image_to_template_affine: PathReference
+    image_to_template_warp: PathReference
+    template_to_ccf_affine: PathReference
+    template_to_ccf_warp: PathReference
+
+
+class ImageSpaceHistology(BaseModel, frozen=True):
+    """References to image-space histology volumes."""
+
+    registration: PathReference
+    #: Grid geometry of the *pipeline* domain -- the frame the stored ANTs
+    #: transforms were trained in -- as a JSON sidecar rather than a volume.
+    #:
+    #: Through 3.2.0 this shipped as ``histology_registration_pipeline.nrrd``
+    #: alongside the sidecar. That volume was voxel-identical to ``registration``
+    #: and differed only in origin, and no consumer ever read its pixels: the one
+    #: use maps voxel indices to physical points, which needs only the header.
+    #: 4.0.0 drops it. The bump is major because the GUI gates on the major
+    #: version, so an older reader refuses the package outright instead of
+    #: failing to find a file it was told to open.
+    #:
+    #: Rehydrate as a 1x1x1 stub -- ``TransformContinuousIndexToPhysicalPoint``
+    #: is arithmetic with no bounds check, so a stub answers for any index while
+    #: the full grid would cost tens of megabytes for nothing. ``size_ijk`` is
+    #: what verifies the base/pipeline pairing: it must equal the ``registration``
+    #: volume's size, because an index is handed between the two frames.
+    registration_pipeline_geometry: PathReference
+    ccf_template: PathReference
+    labels: PathReference
+    additional_channels: list[PathReference] = []
+
+
+class CcfSpaceHistology(BaseModel, frozen=True):
+    """References to CCF-space histology volumes.
+
+    Carries only the additional channels, which are genuinely warped into CCF.
+    Through 4.0.0 this also held ``registration``: a reorientation of the
+    upstream ``moved_ls_to_ccf.nii.gz`` that no consumer ever read.
+    """
+
+    additional_channels: list[PathReference] = []
+
+
+class HistologyPaths(BaseModel, frozen=True):
+    """Histology output paths grouped by coordinate space.
+
+    ``ccf_space`` (histology volumes warped into CCF) is a QC output the GUI
+    never reads; it is omitted (``None``) unless the pipeline ran with
+    ``emit_qc``.
+    """
+
+    image_space: ImageSpaceHistology
+    ccf_space: CcfSpaceHistology | None = None
+
+
+class XyzPicks(BaseModel, frozen=True):
+    """References to xyz-picks JSON files for one shank (or whole probe).
+
+    ``ccf`` is a QC output the alignment GUI never reads (it recomputes CCF from
+    ``image_space`` + the transforms). It is omitted (``None``) unless the
+    pipeline ran with ``emit_qc``.
+    """
+
+    ccf: PathReference | None = None
+    image_space: PathReference
+    histology_track_id: str | None = None
+    histology_shank: int | None = None
+    ephys_shank: int | None = None
+    shank: int | None = None
+
+
+class ChannelTablePaths(BaseModel, frozen=True):
+    """References to the producer-owned ephys channel geometry table."""
+
+    local_coordinates: PathReference
+    raw_ind: PathReference
+    contact_id: PathReference | None = None
+    shank_ind: PathReference
+
+
+class ProbeEntry(BaseModel, frozen=True):
+    """Manifest entry for one ephys collection within a recording session.
+
+    Uniquely identified by the ``(recording_id, ephys_collection)`` pair from
+    the parent dict path. ``logical_probe`` may be shared by multiple ephys
+    collections when the acquisition split one physical probe into streams.
+    """
+
+    probe_id: str
+    logical_probe: str | None = None
+    ephys_collection: str | None = None
+    num_shanks: int
+    ephys: PathReference | None = None
+    channel_table: ChannelTablePaths | None = None
+    xyz_picks: list[XyzPicks]
+
+
+class DataPackageError(Exception):
+    """Raised when a datapackage references paths that are missing on disk."""
+
+
+# File the GUI loads first from each ephys collection dir (load_data_local.py).
+# Its presence is the load-bearing signal that ``ephys`` points at a real ALF
+# collection rather than an empty/wrong directory.
+_REQUIRED_EPHYS_FILE = "channels.localCoordinates.npy"
+
+
+class ReferenceResolver:
+    """Resolve datapackage path references using local runtime policy."""
+
+    def __init__(
+        self,
+        *,
+        datapackage_dir: Path,
+        external_assets: Mapping[str, ExternalAsset],
+        asset_roots: Iterable[Path] | None = None,
+        asset_overrides: Mapping[str, Path] | None = None,
+    ) -> None:
+        self.datapackage_dir = Path(datapackage_dir)
+        self.external_assets = external_assets
+        self.asset_roots = [Path(p) for p in asset_roots or []]
+        self.asset_overrides = {str(k): Path(v) for k, v in (asset_overrides or {}).items()}
+
+    def resolve(self, ref: PathReference) -> Path | None:
+        """Return a local path for *ref*, or ``None`` if its asset is unknown."""
+        if ref.asset is None:
+            return self.datapackage_dir / ref.path
+
+        asset = self.external_assets.get(ref.asset)
+        if asset is None:
+            return None
+
+        for key in (ref.asset, asset.name):
+            if key and key in self.asset_overrides:
+                return self.asset_overrides[key] / ref.path
+
+        for root in self.asset_roots:
+            for asset_key in (asset.name, asset.id):
+                if asset_key:
+                    candidate = root / asset_key / ref.path
+                    if candidate.exists():
+                        return candidate
+        return None
+
+
+class DataPackage(BaseModel, frozen=True):
+    """Top-level datapackage for preprocessing outputs."""
+
+    schema_version: SchemaVersion
+    mouse_id: str
+    platform: str
+    external_assets: dict[str, ExternalAsset]
+    transforms: TransformPaths
+    histology: HistologyPaths
+    # Nested ``recording_id -> ephys_collection -> ProbeEntry``. Per-shank
+    # rows collapse into ``ProbeEntry.xyz_picks``.
+    probes: dict[str, dict[str, ProbeEntry]]
+
+    def referenced_files(self) -> list[PathReference]:
+        """Every *file* reference this datapackage points at.
+
+        Excludes ``ephys`` entries, which are directories (see
+        :meth:`referenced_ephys_dirs`).
+        """
+        paths: list[PathReference] = [
+            self.transforms.image_to_template_affine,
+            self.transforms.image_to_template_warp,
+            self.transforms.template_to_ccf_affine,
+            self.transforms.template_to_ccf_warp,
+            self.histology.image_space.registration,
+            self.histology.image_space.registration_pipeline_geometry,
+            self.histology.image_space.ccf_template,
+            self.histology.image_space.labels,
+            *self.histology.image_space.additional_channels,
+        ]
+        if self.histology.ccf_space is not None:
+            paths.extend(self.histology.ccf_space.additional_channels)
+        for recording in self.probes.values():
+            for probe in recording.values():
+                if probe.channel_table is not None:
+                    paths.append(probe.channel_table.local_coordinates)
+                    paths.append(probe.channel_table.raw_ind)
+                    if probe.channel_table.contact_id is not None:
+                        paths.append(probe.channel_table.contact_id)
+                    paths.append(probe.channel_table.shank_ind)
+                for xp in probe.xyz_picks:
+                    if xp.ccf is not None:
+                        paths.append(xp.ccf)
+                    paths.append(xp.image_space)
+        return paths
+
+    def referenced_ephys_dirs(self) -> list[PathReference]:
+        """Ephys collection directory references (one per probe with ephys)."""
+        return [
+            probe.ephys for recording in self.probes.values() for probe in recording.values() if probe.ephys is not None
+        ]
+
+    def missing_paths(
+        self,
+        root: Path,
+        *,
+        asset_roots: Iterable[Path] | None = None,
+        asset_overrides: Mapping[str, Path] | None = None,
+    ) -> list[str]:
+        """Return referenced paths that do not exist.
+
+        *root* is the directory that will hold ``datapackage.json``; all stored
+        local paths are relative to it. External paths are resolved via
+        ``external_assets`` plus *asset_roots*/*asset_overrides*. Each ``ephys``
+        entry must be a directory containing ``channels.localCoordinates.npy``
+        (what the GUI loads first), so a wrong ephys directory is reported
+        rather than passing silently.
+        """
+        root = Path(root)
+        missing: list[str] = []
+        resolver = ReferenceResolver(
+            datapackage_dir=root,
+            external_assets=self.external_assets,
+            asset_roots=list(asset_roots or []),
+            asset_overrides=dict(asset_overrides or {}),
+        )
+        for ref in self.referenced_files():
+            resolved = resolver.resolve(ref)
+            if resolved is None or not resolved.exists():
+                missing.append(_display_ref(ref))
+        for ref in self.referenced_ephys_dirs():
+            ephys = resolver.resolve(ref)
+            if ephys is None or not ephys.is_dir():
+                missing.append(f"{_display_ref(ref)}/ (ephys directory)")
+            elif not (ephys / _REQUIRED_EPHYS_FILE).is_file():
+                missing.append(f"{_display_ref(ref)}/{_REQUIRED_EPHYS_FILE}")
+        return sorted(missing)
+
+    def validate_paths(
+        self,
+        root: Path,
+        *,
+        asset_roots: Iterable[Path] | None = None,
+        asset_overrides: Mapping[str, Path] | None = None,
+    ) -> None:
+        """Raise :class:`DataPackageError` if any referenced path is missing.
+
+        Parameters
+        ----------
+        root : Path
+            Directory where ``datapackage.json`` will be written.
+        """
+        missing = self.missing_paths(root, asset_roots=asset_roots, asset_overrides=asset_overrides)
+        if missing:
+            listing = "\n  ".join(missing)
+            raise DataPackageError(
+                f"datapackage for mouse {self.mouse_id!r} references "
+                f"{len(missing)} path(s) not found under {root}:\n  {listing}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Builder
+# ---------------------------------------------------------------------------
+
+
+def build_datapackage(
+    mouse_id: str,
+    manifest_rows: list[ManifestRow],
+    results: list[ProcessResult],
+    asset_info: AssetInfo,
+    outputs: OutputDirs,
+    config: PipelineConfig,
+) -> DataPackage:
+    """Construct a :class:`DataPackage` from pipeline state.
+
+    Parameters
+    ----------
+    mouse_id : str
+        Mouse identifier.
+    manifest_rows : list[ManifestRow]
+        All rows from the input manifest CSV.
+    results : list[ProcessResult]
+        Per-probe processing outcomes (parallel to *manifest_rows*).
+    asset_info : AssetInfo
+        Discovered SmartSPIM asset metadata.
+    outputs : OutputDirs
+        Output directory tree.
+    config : PipelineConfig
+        Pipeline configuration (for transform paths and flags).
+    """
+    # The manifest lives alongside the mouse output root.
+    manifest_root = outputs.histology_img.parent
+
+    external_assets = _build_external_assets(asset_info, config)
+    transforms = _build_transforms(asset_info, config, manifest_root)
+    histology = _build_histology(outputs, manifest_root, config)
+    probes = _build_probes(manifest_rows, results, outputs, manifest_root, config)
+
+    return DataPackage(
+        schema_version=SCHEMA_VERSION,
+        mouse_id=mouse_id,
+        platform=_detect_platform(config),
+        external_assets=external_assets,
+        transforms=transforms,
+        histology=histology,
+        probes=probes,
+    )
+
+
+def _registration_asset_root(asset_info: AssetInfo, config: PipelineConfig) -> Path | None:
+    """Return the override asset root, or ``None`` when the registration is in-asset.
+
+    Derived rather than carried as a flag: a registration directory that is not
+    under the stitched asset can only have come from the manifest's
+    ``registration_asset`` column, and its first path component under
+    ``data_root`` is the asset that was mounted.
+    """
+    reg_dir = asset_info.registration_dir_path
+    if asset_info.asset_path in reg_dir.parents:
+        return None
+    try:
+        relative = reg_dir.relative_to(config.data_root)
+    except ValueError:
+        return None
+    return config.data_root / relative.parts[0]
+
+
+def _build_transforms(asset_info: AssetInfo, config: PipelineConfig, manifest_root: Path) -> TransformPaths:
+    reg_dir = asset_info.registration_dir_path
+    tmpl_dir = config.template_to_ccf_dir
+    # Point the image->template pair at whichever asset actually holds them, so
+    # a datapackage records the registration it was built from rather than the
+    # one the stitched asset happens to carry.
+    override_root = _registration_asset_root(asset_info, config)
+    reg_asset = "registration" if override_root is not None else "smartspim"
+    reg_root = override_root if override_root is not None else asset_info.asset_path
+    return TransformPaths(
+        image_to_template_affine=_external_ref(
+            reg_asset,
+            reg_dir / "ls_to_template_SyN_0GenericAffine.mat",
+            reg_root,
+        ),
+        image_to_template_warp=_external_ref(
+            reg_asset,
+            reg_dir / "ls_to_template_SyN_1InverseWarp.nii.gz",
+            reg_root,
+        ),
+        template_to_ccf_affine=_external_ref(
+            "spim_template_to_ccf",
+            tmpl_dir / "syn_0GenericAffine.mat",
+            tmpl_dir,
+        ),
+        template_to_ccf_warp=_external_ref(
+            "spim_template_to_ccf",
+            tmpl_dir / "syn_1InverseWarp.nii.gz",
+            tmpl_dir,
+        ),
+    )
+
+
+def _build_external_assets(asset_info: AssetInfo, config: PipelineConfig) -> dict[str, ExternalAsset]:
+    platform = _detect_platform(config)
+    assets = {
+        "smartspim": ExternalAsset(
+            role="smartspim_registration",
+            name=asset_info.asset_path.name,
+            uri=asset_info.asset_uri,
+            provenance={"mounted_at": str(asset_info.asset_path), "on": platform},
+        ),
+        "spim_template_to_ccf": ExternalAsset(
+            role="template_to_ccf",
+            name=config.template_to_ccf_dir.name,
+            provenance={"mounted_at": str(config.template_to_ccf_dir), "on": platform},
+        ),
+    }
+    # Only present when the manifest pinned a registration outside the stitched
+    # asset. Recording *which* one was used is the main thing the override buys
+    # over overwriting `image_atlas_alignment/` in place.
+    override_root = _registration_asset_root(asset_info, config)
+    if override_root is not None:
+        assets["registration"] = ExternalAsset(
+            role="registration_override",
+            name=override_root.name,
+            provenance={
+                "mounted_at": str(override_root),
+                "registration_dir": str(asset_info.registration_dir_path),
+                "on": platform,
+            },
+        )
+    return assets
+
+
+def _detect_platform(config: PipelineConfig) -> str:
+    """Best-effort platform descriptor for error messages and provenance."""
+    if config.data_root == Path("/data") or config.data_root.as_posix().startswith("/data/"):
+        return "code_ocean"
+    return "local"
+
+
+def _local_ref(path: Path, root: Path) -> PathReference:
+    """Return a datapackage-local path reference."""
+    return PathReference(asset=None, path=path.relative_to(root).as_posix())
+
+
+def _external_ref(asset: str, path: Path, asset_root: Path) -> PathReference:
+    """Return a path reference inside an external asset root."""
+    return PathReference(asset=asset, path=path.relative_to(asset_root).as_posix())
+
+
+def _display_ref(ref: PathReference) -> str:
+    """Human-readable reference for validation errors."""
+    return ref.path if ref.asset is None else f"{ref.asset}:{ref.path}"
+
+
+def producer_asset_overrides(asset_info: AssetInfo, config: PipelineConfig) -> dict[str, Path]:
+    """Local asset locations available during producer-side validation."""
+    return {
+        "smartspim": asset_info.asset_path,
+        asset_info.asset_path.name: asset_info.asset_path,
+        "spim_template_to_ccf": config.template_to_ccf_dir,
+        config.template_to_ccf_dir.name: config.template_to_ccf_dir,
+    }
+
+
+def _build_histology(outputs: OutputDirs, manifest_root: Path, config: PipelineConfig) -> HistologyPaths:
+    img_dir = outputs.histology_img
+    ccf_dir = outputs.histology_ccf
+
+    # Image-space additional channels (Ex_\d+_Em_\d+.nrrd)
+    img_additional = sorted(
+        (_local_ref(p, manifest_root) for p in img_dir.glob("Ex_*_Em_*.nrrd")),
+        key=lambda ref: ref.path,
+    )
+
+    # CCF-space histology is a QC-only output the GUI never reads; omit it unless
+    # the pipeline ran with emit_qc (in which case it was warped + written).
+    ccf_space: CcfSpaceHistology | None = None
+    if config.emit_qc:
+        ccf_additional = sorted(
+            (
+                _local_ref(p, manifest_root)
+                for p in ccf_dir.glob("histology_*.nrrd")
+                # Guard against a stale registration volume from a pre-4.1.0 run
+                # being misfiled as an additional channel.
+                if p.name != "histology_registration.nrrd"
+            ),
+            key=lambda ref: ref.path,
+        )
+        ccf_space = CcfSpaceHistology(additional_channels=ccf_additional)
+
+    return HistologyPaths(
+        image_space=ImageSpaceHistology(
+            registration=_local_ref(img_dir / "histology_registration.nrrd", manifest_root),
+            registration_pipeline_geometry=_local_ref(img_dir / "histology_registration_pipeline.json", manifest_root),
+            ccf_template=_local_ref(img_dir / "ccf_in_mouse.nrrd", manifest_root),
+            labels=_local_ref(img_dir / "labels_in_mouse.nrrd", manifest_root),
+            additional_channels=img_additional,
+        ),
+        ccf_space=ccf_space,
+    )
+
+
+def _build_probes(
+    manifest_rows: list[ManifestRow],
+    results: list[ProcessResult],
+    outputs: OutputDirs,
+    manifest_root: Path,
+    config: PipelineConfig,
+) -> dict[str, dict[str, ProbeEntry]]:
+    # Build lookup of successful probe_ids
+    successful = {r.probe_id for r in results if r.wrote_files}
+
+    # Group rows by (recording_id, ephys_collection) — the ephys collection is
+    # the ALF output folder created by aind-ephys-ibl-gui-conversion. Rows that
+    # differ only in ephys_shank collapse into one entry's xyz_picks list. The
+    # same collection label under two recording_ids stays distinct.
+    groups: dict[tuple[str, str], list[ManifestRow]] = defaultdict(list)
+    for row in manifest_rows:
+        if _row_histology_track_id(row) in successful:
+            groups[(row.recording_id, _row_ephys_collection(row))].append(row)
+
+    probes: dict[str, dict[str, ProbeEntry]] = {}
+    for (recording_id, ephys_collection), rows in groups.items():
+        logical_probes = {_row_logical_probe(r) for r in rows}
+        if len(logical_probes) != 1:
+            raise ValueError(
+                "Rows for one ephys_collection must share logical_probe: "
+                f"{recording_id}/{ephys_collection} has {sorted(logical_probes)}"
+            )
+
+        # All rows in a group share the ephys collection folder (the group key
+        # is (recording_id, ephys_collection)).
+        first_row = rows[0]
+        ephys_dir = first_row.gui_folder(outputs)
+
+        # Drop probes whose ephys was requested but never produced. Bad upstream
+        # spike sorting leaves the ALF collection without a channels table:
+        # aind-ephys-ibl-gui-conversion writes ``sorting_error.txt`` into the
+        # collection folder and skips it, so ``channels.localCoordinates.npy``
+        # (what the GUI loads first) never appears. Emitting ephys/channel_table
+        # references to that missing table would trip datapackage validation at
+        # write time and abort the whole mouse; instead drop just this probe and
+        # warn, so every well-sorted probe still ships.
+        if not config.skip_ephys and not (ephys_dir / _REQUIRED_EPHYS_FILE).is_file():
+            logger.warning(
+                "Dropping probe %s/%s from datapackage: ephys output missing "
+                "(%s not found in %s); likely failed spike sorting upstream",
+                recording_id,
+                ephys_collection,
+                _REQUIRED_EPHYS_FILE,
+                ephys_dir,
+            )
+            continue
+
+        ephys_shanks = {s for s in (_row_ephys_shank(r) for r in rows) if s is not None}
+        num_shanks = len(ephys_shanks) if ephys_shanks else 1
+
+        # Build xyz_picks list
+        xyz_picks_list: list[XyzPicks] = []
+        for row in rows:
+            gui_folder = row.gui_folder(outputs)
+            histology_shank = _row_histology_shank(row)
+            ephys_shank = _row_ephys_shank(row)
+            gui_ccf, gui_img, shank = _xyz_pick_names(histology_shank=histology_shank, ephys_shank=ephys_shank)
+
+            xyz_picks_list.append(
+                XyzPicks(
+                    ccf=(_local_ref(gui_folder / gui_ccf, manifest_root) if config.emit_qc else None),
+                    image_space=_local_ref(gui_folder / gui_img, manifest_root),
+                    histology_track_id=_row_histology_track_id(row),
+                    histology_shank=histology_shank,
+                    ephys_shank=ephys_shank,
+                    shank=shank,
+                )
+            )
+
+        # Ephys path (same for all shanks of an ephys collection). The
+        # conversion writes the ALF collection (spikes/clusters/channels.*)
+        # directly into gui_folder -- NOT a "spikes" subdirectory.
+        ephys_path = _local_ref(ephys_dir, manifest_root) if not config.skip_ephys else None
+        contact_id_path = ephys_dir / "channels.contactId.npy"
+        channel_table = (
+            ChannelTablePaths(
+                local_coordinates=_local_ref(
+                    ephys_dir / "channels.localCoordinates.npy",
+                    manifest_root,
+                ),
+                raw_ind=_local_ref(ephys_dir / "channels.rawInd.npy", manifest_root),
+                contact_id=_local_ref(contact_id_path, manifest_root) if contact_id_path.is_file() else None,
+                shank_ind=_local_ref(ephys_dir / "channels.shankInd.npy", manifest_root),
+            )
+            if not config.skip_ephys
+            else None
+        )
+
+        probes.setdefault(recording_id, {})[ephys_collection] = ProbeEntry(
+            probe_id=_row_histology_track_id(first_row),
+            logical_probe=_row_logical_probe(first_row),
+            ephys_collection=ephys_collection,
+            num_shanks=num_shanks,
+            ephys=ephys_path,
+            channel_table=channel_table,
+            xyz_picks=xyz_picks_list,
+        )
+
+    return probes
+
+
+def _row_histology_track_id(row: ManifestRow) -> str:
+    return str(getattr(row, "histology_track_id", None) or row.probe_id)
+
+
+def _row_logical_probe(row: ManifestRow) -> str:
+    return str(getattr(row, "logical_probe", None) or getattr(row, "ephys_collection", None) or row.probe_name)
+
+
+def _row_ephys_collection(row: ManifestRow) -> str:
+    return str(getattr(row, "ephys_collection", None) or row.probe_name)
+
+
+def _row_histology_shank(row: ManifestRow) -> int | None:
+    value = getattr(row, "histology_shank", None)
+    if value is None:
+        value = getattr(row, "probe_shank", None)
+    return int(value) if value is not None else None
+
+
+def _row_ephys_shank(row: ManifestRow) -> int | None:
+    value = getattr(row, "ephys_shank", None)
+    if value is None:
+        value = getattr(row, "probe_shank", None)
+    return int(value) if value is not None else None
+
+
+def _xyz_pick_names(
+    *,
+    histology_shank: int | None,
+    ephys_shank: int | None,
+) -> tuple[str, str, int | None]:
+    """Return CCF/image-space xyz-pick filenames and legacy 1-based shank."""
+    file_shank = histology_shank if histology_shank is not None else ephys_shank
+    if file_shank is None:
+        return "xyz_picks.json", "xyz_picks_image_space.json", None
+    shank_id = int(file_shank) + 1
+    shank = int(ephys_shank) + 1 if ephys_shank is not None else shank_id
+    return f"xyz_picks_shank{shank_id}.json", f"xyz_picks_shank{shank_id}_image_space.json", shank
+
+
+def infer_process_results_from_outputs(
+    manifest_rows: list[ManifestRow], outputs: OutputDirs, *, emit_qc: bool = True
+) -> list[ProcessResult]:
+    """Infer per-row success from existing xyz-pick outputs.
+
+    This is intentionally lightweight: it does not rerun histology or ephys
+    work. It is used to regenerate ``datapackage.json`` after schema/contract
+    changes when the expensive preprocessing outputs already exist.
+
+    The **image-space** pick is what the GUI reads and is written on every run;
+    the CCF pick is QC output and is not written when ``emit_qc`` is off. So the
+    CCF file may only be required when QC was requested -- demanding it
+    unconditionally marks every row unsuccessful on a ``qc=0`` run, which empties
+    ``successful`` in :func:`_build_probes` and ships a datapackage with no
+    probes at all despite every stream having been processed.
+
+    Parameters
+    ----------
+    manifest_rows : list[ManifestRow]
+        Rows to infer results for.
+    outputs : OutputDirs
+        Output directory tree holding the existing picks.
+    emit_qc : bool, default True
+        Whether the run that produced *outputs* emitted QC files. When False the
+        CCF pick is not expected. Defaults to True so a caller that has no
+        config still gets the strict, historical check.
+
+    Returns
+    -------
+    list[ProcessResult]
+        One result per row, in input order.
+    """
+    results: list[ProcessResult] = []
+    for row in manifest_rows:
+        gui_folder = row.gui_folder(outputs)
+        ccf_name, img_name, _ = _xyz_pick_names(
+            histology_shank=_row_histology_shank(row),
+            ephys_shank=_row_ephys_shank(row),
+        )
+        wrote_files = (gui_folder / img_name).is_file() and (not emit_qc or (gui_folder / ccf_name).is_file())
+        results.append(
+            ProcessResult(
+                probe_id=_row_histology_track_id(row),
+                recording_id=row.recording_id,
+                wrote_files=wrote_files,
+                skipped_reason=None if wrote_files else "existing xyz-picks outputs not found",
+            )
+        )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Fan-in: merge the pipeline's per-node output trees
+# ---------------------------------------------------------------------------
+
+
+def merge_pipeline_outputs(data_root: Path, results_root: Path, mouse_id: str) -> Path:
+    """Union-merge every mounted upstream ``<mouse_id>/`` tree into *results_root*.
+
+    The fan-in step of the Code Ocean pipeline. The ``pack`` node mounts the
+    histology node's captured results and one indexed folder per ephys fan-out
+    node under ``/data``; each carries the same ``<mouse_id>/`` top-level layout
+    but writes **disjoint** sub-paths -- histology writes ``ccf_space_histology/``,
+    ``image_space_histology/``, ``track_data/`` and the per-probe
+    ``xyz_picks*.json``; each ephys node writes the ALF ``spikes``/``clusters``/
+    ``channels`` arrays under its own ``<recording_id>/<probe_name>/``. This
+    collects them into one ``results_root/<mouse_id>/`` tree so
+    :func:`infer_process_results_from_outputs` and :func:`build_datapackage` see
+    the complete output.
+
+    The merge is layout-agnostic: it locates the mouse tree wherever Code Ocean
+    mounted it (asset child, or one level deeper under "Generate indexed
+    folders") rather than assuming a fixed depth, so it is unaffected by how the
+    Collect edge is configured. Because the writers are disjoint, a genuine
+    file-level overlap across sources is unexpected and is logged as a warning
+    (last writer wins); a stale per-source ``datapackage.json`` is ignored -- the
+    ``pack`` node regenerates it.
+
+    Parameters
+    ----------
+    data_root : Path
+        Mount holding the upstream captured-result assets (``/data`` in a
+        pipeline). Searched to a small depth for directories named *mouse_id*.
+    results_root : Path
+        Destination root; the merged tree is written to
+        ``results_root/<mouse_id>/``.
+    mouse_id : str
+        Mouse identifier -- the top-level directory name shared by every source.
+
+    Returns
+    -------
+    pathlib.Path
+        The merged ``results_root/<mouse_id>`` directory.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no ``<mouse_id>/`` tree is found under *data_root*.
+    """
+    data_root = Path(data_root)
+    destination = Path(results_root) / mouse_id
+    sources = _find_mouse_output_trees(data_root, mouse_id, exclude=destination)
+    if not sources:
+        raise FileNotFoundError(
+            f"No {mouse_id!r} output tree found under {data_root} to pack. Expected the "
+            "histology and ephys nodes' captured results mounted there."
+        )
+
+    destination.mkdir(parents=True, exist_ok=True)
+    overlaps: dict[Path, int] = {}
+    for src in sources:
+        logger.info("[pack] merging %s -> %s", src, destination)
+        for rel in _union_copy_tree(src, destination):
+            overlaps[rel] = overlaps.get(rel, 0) + 1
+    for rel, count in overlaps.items():
+        if rel.name == "datapackage.json":
+            continue  # regenerated by pack; a stale per-node copy is expected to lose
+        logger.warning("[pack] %s written by multiple nodes (%d overlaps); last writer wins", rel, count)
+    logger.info("[pack] merged %d output tree(s) for mouse %s", len(sources), mouse_id)
+    return destination
+
+
+def _find_mouse_output_trees(
+    data_root: Path, mouse_id: str, *, exclude: Path | None = None, max_depth: int = 3
+) -> list[Path]:
+    """Find every directory named *mouse_id* under *data_root* (to *max_depth*).
+
+    Code Ocean mounts each upstream asset as a direct child of ``/data`` and may
+    add one "indexed folders" level, so the mouse tree can sit at depth 0-3.
+    Results are deduplicated by resolved path and sorted for determinism;
+    *exclude* (typically the merge destination) is skipped so an in-place
+    ``results_root`` under ``data_root`` is never merged into itself.
+    """
+    exclude_resolved = exclude.resolve() if exclude is not None else None
+    seen: set[Path] = set()
+    found: list[Path] = []
+    for depth in range(max_depth + 1):
+        pattern = "/".join(["*"] * depth + [mouse_id]) if depth else mouse_id
+        for candidate in data_root.glob(pattern):
+            if not candidate.is_dir():
+                continue
+            resolved = candidate.resolve()
+            if resolved == exclude_resolved or resolved in seen:
+                continue
+            seen.add(resolved)
+            found.append(candidate)
+    return sorted(found)
+
+
+def _union_copy_tree(src: Path, dest: Path) -> list[Path]:
+    """Copy *src* into *dest*, returning the relative paths that already existed.
+
+    Directories are merged; files are copied with metadata (:func:`shutil.copy2`).
+    A returned path is a genuine cross-source overlap -- the destination file was
+    written by an earlier source -- which the caller surfaces as a warning.
+    """
+    overlaps: list[Path] = []
+    for path in sorted(src.rglob("*")):
+        rel = path.relative_to(src)
+        target = dest / rel
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if target.exists():
+            overlaps.append(rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+    return overlaps
+
+
+# ---------------------------------------------------------------------------
+# I/O
+# ---------------------------------------------------------------------------
+
+
+def write_datapackage(
+    dp: DataPackage,
+    output_dir: Path,
+    *,
+    validate: bool = True,
+    asset_roots: Iterable[Path] | None = None,
+    asset_overrides: Mapping[str, Path] | None = None,
+) -> Path:
+    """Write *dp* as ``datapackage.json`` in *output_dir*.
+
+    Parameters
+    ----------
+    dp : DataPackage
+        The datapackage to serialize.
+    output_dir : Path
+        Directory to write ``datapackage.json`` into. All paths in *dp* are
+        relative to this directory.
+    validate : bool
+        When True (default), verify every path *dp* references exists under
+        *output_dir* or the configured external asset locations before
+        writing, raising :class:`DataPackageError` on any miss. This turns a
+        well-typed but dangling manifest (e.g. an ephys dir pointing at a
+        nonexistent subdirectory) into a loud failure at write time instead of
+        a runtime error in the GUI. Set False to serialize without touching the
+        filesystem (round-trip tests, fixtures).
+
+    Returns
+    -------
+    Path
+        The path of the written file.
+    """
+    if validate:
+        dp.validate_paths(output_dir, asset_roots=asset_roots, asset_overrides=asset_overrides)
+    path = output_dir / "datapackage.json"
+    path.write_text(dp.model_dump_json(indent=2))
+    return path
+
+
+def load_datapackage(path: Path) -> DataPackage:
+    """Load and validate a ``datapackage.json`` file.
+
+    Parameters
+    ----------
+    path : Path
+        Path to the JSON file.
+
+    Returns
+    -------
+    DataPackage
+        Validated manifest.
+    """
+    return DataPackage.model_validate_json(path.read_text())

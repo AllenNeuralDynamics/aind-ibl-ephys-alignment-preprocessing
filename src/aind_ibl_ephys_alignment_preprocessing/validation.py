@@ -19,11 +19,17 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow, ReferencePaths
+from aind_ibl_ephys_alignment_preprocessing.types import (
+    OPTIONAL_MANIFEST_COLUMNS,
+    REQUIRED_MANIFEST_COLUMNS,
+    ManifestRow,
+    ReferencePaths,
+)
 
 if TYPE_CHECKING:
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
@@ -31,7 +37,20 @@ if TYPE_CHECKING:
 
 def _norm_shank_series(s: pd.Series[Any]) -> pd.Series[Any]:
     """Treat NaN/None as a sentinel so duplicates behave predictably."""
-    return s.fillna(-1).astype(int)
+    return pd.to_numeric(s.replace("", pd.NA), errors="coerce").fillna(-1).astype(int)
+
+
+def _coalesce_manifest_column(df: pd.DataFrame, names: tuple[str, ...]) -> pd.Series[Any]:
+    """Return the first non-null manifest column among *names*."""
+    out = pd.Series(pd.NA, index=df.index, dtype="object")
+    for name in names:
+        if name not in df.columns:
+            continue
+        values = df[name]
+        present = values.notna() & (values.astype(str) != "")
+        mask = out.isna() & present
+        out.loc[mask] = values.loc[mask]
+    return out
 
 
 @dataclass(frozen=True)
@@ -194,31 +213,77 @@ class PipelineValidator:
                         severity="warning",
                     )
 
+    def _validate_required_column_group(
+        self,
+        df: pd.DataFrame,
+        names: tuple[str, ...],
+        label: str,
+        category: str,
+    ) -> None:
+        """Validate that at least one alias column exists and is populated."""
+        present_names = [name for name in names if name in df.columns]
+        if not present_names:
+            self._add_result(
+                False,
+                category,
+                f"{label}_required",
+                f"Missing required column; expected one of: {', '.join(names)}",
+            )
+            return
+
+        values = _coalesce_manifest_column(df, names)
+        null_count = values.isna().sum()
+        if null_count:
+            self._add_result(
+                False,
+                category,
+                f"{label}_nulls",
+                f"Column group '{label}' has {null_count} null/empty values",
+                severity="warning",
+            )
+        else:
+            self._add_result(
+                True,
+                category,
+                f"{label}_required",
+                f"Column group '{label}' present via {tuple(present_names)}",
+                severity="info",
+            )
+
     def _validate_uniqueness_constraints(self, df: pd.DataFrame, category: str) -> None:
         """Check uniqueness constraints and recording-id multiplicity."""
+        df = df.copy()
         if "recording_id" not in df.columns and "sorted_recording" in df.columns:
             df = df.assign(
                 recording_id=df["sorted_recording"].astype(str).str.split("_sorted", n=1, expand=True)[0],
             )
 
-        shank_col = "probe_shank"
-        if shank_col not in df.columns:
-            df[shank_col] = None
-        df["_probe_shank_norm"] = _norm_shank_series(df[shank_col])
+        df["_histology_track_id"] = _coalesce_manifest_column(df, ("histology_track_id", "probe_id"))
+        df["_ephys_collection"] = _coalesce_manifest_column(df, ("ephys_collection", "probe_name"))
+        df["_histology_shank_norm"] = _norm_shank_series(
+            _coalesce_manifest_column(df, ("histology_shank", "probe_shank"))
+        )
+        df["_ephys_shank_norm"] = _norm_shank_series(_coalesce_manifest_column(df, ("ephys_shank", "probe_shank")))
 
-        if {"mouseid", "probe_id"}.issubset(df.columns):
+        if {"mouseid", "_histology_track_id"}.issubset(df.columns):
             self._add_unique_violation_results(
                 df,
-                subset=["mouseid", "probe_id", "_probe_shank_norm"],
-                label="bregma_xyz (mouseid, probe_id, probe_shank)",
+                subset=["mouseid", "_histology_track_id", "_histology_shank_norm"],
+                label="bregma_xyz (mouseid, histology_track_id, histology_shank)",
                 category=category,
             )
 
-        if {"recording_id", "probe_name"}.issubset(df.columns):
+        if {"recording_id", "_ephys_collection"}.issubset(df.columns):
             self._add_unique_violation_results(
                 df,
-                subset=["recording_id", "probe_name", "_probe_shank_norm"],
-                label="GUI (recording_id, probe_name, probe_shank)",
+                subset=["recording_id", "_ephys_collection", "_histology_shank_norm"],
+                label="GUI files (recording_id, ephys_collection, histology_shank)",
+                category=category,
+            )
+            self._add_unique_violation_results(
+                df,
+                subset=["recording_id", "_ephys_collection", "_ephys_shank_norm"],
+                label="ephys shanks (recording_id, ephys_collection, ephys_shank)",
                 category=category,
             )
 
@@ -243,9 +308,6 @@ class PipelineValidator:
                     severity="warning",
                 )
 
-        if "_probe_shank_norm" in df.columns:
-            df.drop(columns=["_probe_shank_norm"], inplace=True)
-
     def validate_manifest_structure(self) -> None:
         """Validate manifest CSV file structure and required columns."""
         category = "Manifest CSV"
@@ -264,8 +326,11 @@ class PipelineValidator:
             return
         self._add_result(True, category, "readable", f"Manifest CSV readable ({len(df)} rows)", severity="info")
 
-        required_cols = ["mouseid", "sorted_recording", "probe_file", "probe_id", "probe_name"]
-        missing_cols = [col for col in required_cols if col not in df.columns]
+        # Driven by the declarative contract so what a run accepts and what
+        # validation demands cannot drift apart. Optional columns are never
+        # required: a manifest written before a column existed stays valid.
+        simple = [c for c in REQUIRED_MANIFEST_COLUMNS if not c.aliases]
+        missing_cols = [c.name for c in simple if c.name not in df.columns]
         if missing_cols:
             self._add_result(
                 False, category, "required_columns", f"Missing required columns: {', '.join(missing_cols)}"
@@ -274,8 +339,23 @@ class PipelineValidator:
             self._add_result(True, category, "required_columns", "All required columns present", severity="info")
 
         self._validate_mouseid_consistency(df, category)
-        self._validate_null_columns(df, required_cols, category)
+        self._validate_null_columns(df, [c.name for c in simple], category)
+        for column in REQUIRED_MANIFEST_COLUMNS:
+            if column.aliases:
+                self._validate_required_column_group(df, column.accepted_names, column.name, category)
+        self._report_optional_columns(df, category)
         self._validate_uniqueness_constraints(df, category)
+
+    def _report_optional_columns(self, df: pd.DataFrame, category: str) -> None:
+        """Note which optional columns are in play; never fail on their absence."""
+        present = [c.name for c in OPTIONAL_MANIFEST_COLUMNS if any(n in df.columns for n in c.accepted_names)]
+        self._add_result(
+            True,
+            category,
+            "optional_columns",
+            f"Optional columns present: {', '.join(present)}" if present else "No optional columns used",
+            severity="info",
+        )
 
     # -- Category 3: Reference Data --------------------------------------------
 
@@ -362,7 +442,18 @@ class PipelineValidator:
                     else:
                         self._add_result(False, category, "omezarr_dir", f"OME-Zarr directory not found: {zarr_path}")
 
-                    reg_dir = asset_path / "image_atlas_alignment"
+                    # The manifest may pin the registration to another asset, in
+                    # which case it names the directory itself and the glob is a
+                    # level shallower. Reuse discovery's resolution so validation
+                    # cannot look somewhere the run will not.
+                    from aind_ibl_ephys_alignment_preprocessing.discovery import resolve_registration_dir
+
+                    try:
+                        reg_dir, override_channel = resolve_registration_dir(self.config, asset_path)
+                    except (FileNotFoundError, ValueError) as e:
+                        self._add_result(False, category, "registration_dir", str(e))
+                        reg_dir, override_channel = asset_path / "image_atlas_alignment", None
+                    pattern = "" if override_channel is not None else "*/"
                     if reg_dir.exists():
                         self._add_result(
                             True,
@@ -371,25 +462,8 @@ class PipelineValidator:
                             f"Registration directory exists: {reg_dir}",
                             severity="info",
                         )
-                        ccf_files = list(reg_dir.glob("*/moved_ls_to_ccf.nii.gz"))
-                        if ccf_files:
-                            self._add_result(
-                                True,
-                                category,
-                                "precomputed_registration",
-                                f"Found precomputed CCF registration: {ccf_files[0]}",
-                                severity="info",
-                            )
-                        else:
-                            self._add_result(
-                                False,
-                                category,
-                                "precomputed_registration",
-                                f"Precomputed registration (moved_ls_to_ccf.nii.gz) not found in {reg_dir}",
-                            )
-
-                        affine_files = list(reg_dir.glob("*/*_0GenericAffine.mat"))
-                        warp_files = list(reg_dir.glob("*/*_1InverseWarp.nii.gz"))
+                        affine_files = list(reg_dir.glob(f"{pattern}*_0GenericAffine.mat"))
+                        warp_files = list(reg_dir.glob(f"{pattern}*_1InverseWarp.nii.gz"))
                         if affine_files and warp_files:
                             self._add_result(
                                 True,
@@ -419,6 +493,45 @@ class PipelineValidator:
             )
 
     # -- Category 5: Per-probe Files -------------------------------------------
+
+    def _validate_sorting_output(self, mr: ManifestRow, recording_folder: Path | None, category: str) -> None:
+        """Warn when a probe has no postprocessed spike-sorting output.
+
+        When the analyzer is absent -- the usual sign of failed upstream
+        sorting -- the pipeline skips both histology and ephys for the probe
+        and drops it from the datapackage. We surface it as a warning (not an
+        error) so the omission is expected rather than a surprise at the end of
+        the run. A ``None`` ``recording_folder`` (the sorted asset could not be
+        located at all) is treated the same as absent output.
+        See :func:`~aind_ibl_ephys_alignment_preprocessing.ephys.has_sorting_output`.
+        """
+        from aind_ibl_ephys_alignment_preprocessing.ephys import has_sorting_output
+
+        collection = str(mr.ephys_collection)
+        item = f"{mr.probe_id}_sorting"
+
+        if has_sorting_output(recording_folder, collection):
+            self._add_result(
+                True,
+                category,
+                item,
+                f"Postprocessed sorting output found for '{collection}'",
+                severity="info",
+            )
+        else:
+            where = (
+                f"{recording_folder / 'postprocessed'}" if recording_folder is not None else "(sorted asset not found)"
+            )
+            self._add_result(
+                False,
+                category,
+                item,
+                f"No postprocessed sorting output for ephys collection '{collection}' "
+                f"under {where}; probe will be skipped "
+                "(histology + ephys) and dropped from the datapackage "
+                "(likely failed spike sorting)",
+                severity="warning",
+            )
 
     def validate_per_probe_files(self) -> None:
         """Validate that per-probe annotation files and ephys data exist."""
@@ -462,8 +575,10 @@ class PipelineValidator:
                     )
 
             if not self.config.skip_ephys:
-                recording_folder = self.config.data_root / mr.sorted_recording
-                if recording_folder.exists():
+                from aind_ibl_ephys_alignment_preprocessing.ephys import find_session_dir
+
+                recording_folder = find_session_dir(self.config.data_root, str(mr.sorted_recording))
+                if recording_folder is not None:
                     self._add_result(
                         True,
                         category,
@@ -473,29 +588,36 @@ class PipelineValidator:
                     )
                 else:
                     self._add_result(
-                        False, category, f"{mr.probe_id}_ephys", f"Ephys folder not found: {recording_folder}"
+                        False, category, f"{mr.probe_id}_ephys", f"Ephys folder not found for {mr.sorted_recording}"
                     )
 
-                # The runtime strips ``_sorted...`` from the sorted-asset path to locate the raw
-                # session, then expects ``ecephys_clipped/*/*/structure.oebin`` underneath. Probe
-                # for it here so a misnamed/empty asset fails pre-flight rather than 10 ephys
-                # subprocesses deep with a buried OpenEphys ValueError.
-                session_folder = self.config.data_root / mr.sorted_recording.split("_sorted")[0]
-                clipped = next(
-                    (
-                        p
-                        for p in (session_folder / "ecephys_clipped", session_folder / "ecephys" / "ecephys_clipped")
-                        if p.is_dir()
-                    ),
-                    None,
-                )
+                # The runtime resolves the raw session by NAME (recording_id =
+                # sorted_recording minus the ``_sorted...`` suffix), walking /data so raw and
+                # sorted need not be siblings, then expects
+                # ``ecephys_clipped/*/*/structure.oebin`` underneath. Probe for it here so a
+                # misnamed/empty asset fails pre-flight rather than 10 ephys subprocesses deep
+                # with a buried OpenEphys ValueError.
+                session_folder = find_session_dir(self.config.data_root, mr.recording_id)
+                clipped = None
+                if session_folder is not None:
+                    clipped = next(
+                        (
+                            p
+                            for p in (
+                                session_folder / "ecephys_clipped",
+                                session_folder / "ecephys" / "ecephys_clipped",
+                            )
+                            if p.is_dir()
+                        ),
+                        None,
+                    )
                 if clipped is None:
                     self._add_result(
                         False,
                         category,
                         f"{mr.probe_id}_ephys_clipped",
-                        f"No ecephys_clipped/ under {session_folder} (looked at "
-                        "ecephys_clipped/ and ecephys/ecephys_clipped/)",
+                        f"No ecephys_clipped/ for raw session {mr.recording_id} "
+                        "(looked at ecephys_clipped/ and ecephys/ecephys_clipped/)",
                     )
                 elif not any(clipped.glob("*/*/*/structure.oebin")):
                     self._add_result(
@@ -514,8 +636,12 @@ class PipelineValidator:
                         severity="info",
                     )
 
+                self._validate_sorting_output(mr, recording_folder, category)
+
             if mr.surface_finding is not None:
-                surface_path = self.config.data_root / mr.surface_finding
+                from aind_ibl_ephys_alignment_preprocessing.ephys import resolve_surface_finding
+
+                surface_path = resolve_surface_finding(self.config.data_root, mr.surface_finding)
                 if surface_path.exists():
                     self._add_result(
                         True,

@@ -10,28 +10,35 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-import ants
 import pandas as pd
 from aind_zarr_utils.zarr import _open_zarr
 
-from aind_ibl_ephys_alignment_preprocessing._async.concurrency import Limits, io_to_thread_on, to_thread_logged
+from aind_ibl_ephys_alignment_preprocessing._async.concurrency import Limits, to_thread_logged
 from aind_ibl_ephys_alignment_preprocessing._async.ephys import (
     _asyncio_exception_handler,
     run_manifest_subprocess_sync,
 )
 from aind_ibl_ephys_alignment_preprocessing._async.histology import (
-    copy_registration_channel_ccf_reorient_async,
     process_additional_channels_pipeline_async,
     transform_ccf_labels_to_image_space_async,
     transform_ccf_to_image_space_async,
     write_registration_channel_images_async,
+)
+from aind_ibl_ephys_alignment_preprocessing._timing import timed
+from aind_ibl_ephys_alignment_preprocessing.datapackage import (
+    build_datapackage,
+    producer_asset_overrides,
+    write_datapackage,
 )
 from aind_ibl_ephys_alignment_preprocessing.discovery import (
     determine_desired_level,
     find_asset_info,
     prepare_result_dirs,
 )
-from aind_ibl_ephys_alignment_preprocessing.manifest import build_datapackage, write_datapackage
+from aind_ibl_ephys_alignment_preprocessing.histology import (
+    ants_domain_stub,
+    ants_warp_domain,
+)
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
     PipelineConfig,
@@ -54,34 +61,40 @@ async def _create_volumes_async(
     zarr_metadata: dict[str, Any],
     limits: Limits,
     scratch_root: Path,
-    desired_voxel_size_um: float = 25.0,
+    desired_voxel_size_um: float,
+    output_voxel_size_um: float,
+    *,
+    emit_qc: bool = False,
 ) -> None:
-    """Create all volume outputs (registration channel + additional + CCF transforms)."""
+    """Create all volume outputs (registration channel + additional + CCF transforms).
+
+    The volumes are resampled onto one isotropic ``output_voxel_size_um`` grid as
+    they are read, so the CCF template and label warps -- whose fixed image is the
+    registration channel -- inherit that grid rather than needing a second
+    resample of their own.
+    """
     logger.info("[Histology] Starting volume processing")
     level = determine_desired_level(zarr_metadata, desired_voxel_size_um=desired_voxel_size_um)
     num_additional = len(asset_info.zarr_volumes.additional)
     logger.info(
         "[Histology] Processing registration channel (level %d) + %d additional channel(s)", level, num_additional
     )
-    raw_img_path, pipeline_img_path = await write_registration_channel_images_async(
-        asset_info, out, limits, level=level, opened_zarr=(node, zarr_metadata)
+    raw_img_path, base_header, pipeline_header, warp_dtype = await write_registration_channel_images_async(
+        asset_info,
+        out,
+        limits,
+        level=level,
+        output_voxel_size_um=output_voxel_size_um,
+        opened_zarr=(node, zarr_metadata),
     )
-    logger.info(
-        "[Histology] Registration channel export complete: raw=%s, pipeline=%s",
-        raw_img_path.name,
-        pipeline_img_path.name,
-    )
-    async with asyncio.TaskGroup() as tg:
-        pipeline_img_ants_task = tg.create_task(
-            io_to_thread_on(limits, str(pipeline_img_path), ants.image_read, str(pipeline_img_path), pixeltype=None),
-            name="load-ants-pipeline-img",
-        )
-        raw_img_ants_task = tg.create_task(
-            io_to_thread_on(limits, str(raw_img_path), ants.image_read, str(raw_img_path), pixeltype=None),
-            name="load-ants-raw-img",
-        )
-    pipeline_img_ants = pipeline_img_ants_task.result()
-    raw_img_ants = raw_img_ants_task.result()
+    logger.info("[Histology] Registration channel export complete: raw=%s", raw_img_path.name)
+    # Both ANTs images are geometry carriers. `fixed` sets the warp's output grid
+    # *and* its pixel type, so it is built at full extent with the volume's own
+    # dtype; the domain-repair image is read only for spacing/origin/direction, so
+    # one voxel suffices. Neither is read back from disk.
+    with timed("histology.ants_domain"):
+        pipeline_img_ants = ants_warp_domain(pipeline_header, "registration-pipeline", warp_dtype)
+        raw_img_ants = ants_domain_stub(base_header, "registration")
     logger.info(
         "[Histology] Starting parallel processing: %d additional channel(s), CCF template + labels transforms",
         num_additional,
@@ -89,7 +102,15 @@ async def _create_volumes_async(
     async with asyncio.TaskGroup() as tg:
         tg.create_task(
             process_additional_channels_pipeline_async(
-                pipeline_img_ants, asset_info, ref_imgs, out, limits, scratch_root=scratch_root, level=level
+                pipeline_img_ants,
+                asset_info,
+                ref_imgs,
+                out,
+                limits,
+                scratch_root=scratch_root,
+                level=level,
+                output_voxel_size_um=output_voxel_size_um,
+                emit_qc=emit_qc,
             ),
             name="process-additional-channels",
         )
@@ -178,6 +199,8 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
                 limits,
                 scratch_root=scratch_root,
                 desired_voxel_size_um=config.desired_voxel_size_um,
+                output_voxel_size_um=config.output_voxel_size_um,
+                emit_qc=config.emit_qc,
             ),
             name=f"create-volumes-{mouse_id}",
         )
@@ -203,10 +226,6 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
             name=f"process-manifest-subprocess-{mouse_id}",
         )
 
-        tg.create_task(
-            copy_registration_channel_ccf_reorient_async(asset_info, out, limits),
-            name=f"copy-ccf-registration-{mouse_id}",
-        )
     logger.info("[Orchestrator] All parallel tasks completed")
     manifest_pool.shutdown(wait=True)
     processed_results: list[ProcessResult] = manifest_task.result()
@@ -216,7 +235,12 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
 
     manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
     dp = build_datapackage(mouse_id, manifest_rows, processed_results, asset_info, out, config)
-    dp_path = write_datapackage(dp, config.results_root / mouse_id)
-    logger.info("[Orchestrator] Wrote datapackage manifest to %s", dp_path)
+    dp_path = write_datapackage(
+        dp,
+        config.results_root / mouse_id,
+        asset_roots=[config.data_root],
+        asset_overrides=producer_asset_overrides(asset_info, config),
+    )
+    logger.info("[Orchestrator] Wrote datapackage to %s", dp_path)
 
     return processed_results

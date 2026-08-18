@@ -21,6 +21,7 @@ from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     to_thread_logged,
 )
 from aind_ibl_ephys_alignment_preprocessing._async.probes import process_manifest_row_safe_async
+from aind_ibl_ephys_alignment_preprocessing.ephys import find_session_dir, has_sorting_output
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     ManifestRow,
@@ -88,14 +89,38 @@ async def process_manifest_async(
     if config.skip_ephys:
         logger.info("[Manifest] Ephys processing disabled via skip_ephys flag")
 
-    row_tasks: list[tuple[ManifestRow, asyncio.Task[ProcessResult]]] = []
+    row_tasks: list[tuple[ManifestRow, asyncio.Task[ProcessResult] | None]] = []
     logger.info("[Manifest] Creating parallel tasks for all %d probe(s)", num_probes)
     async with asyncio.TaskGroup() as tg:
         for _, row in manifest_df.iterrows():
             mr = ManifestRow.from_series(row)
+
+            # Skip probes whose upstream spike sorting failed: without
+            # postprocessed output the ephys conversion produces nothing usable,
+            # so the histology track would be dropped from the datapackage
+            # anyway. Skipping here avoids the per-probe coordinate transforms.
+            if not config.skip_ephys and not has_sorting_output(
+                find_session_dir(config.data_root, str(mr.sorted_recording)), str(mr.ephys_collection)
+            ):
+                logger.warning(
+                    "Skipping probe %s/%s: no spike-sorting output (bad sorting); histology and ephys skipped",
+                    mr.recording_id,
+                    mr.ephys_collection,
+                )
+                row_tasks.append((mr, None))
+                continue
+
             t = tg.create_task(
                 process_manifest_row_safe_async(
-                    mr, asset_info, raw_img_stub, raw_img_stub_buggy, ibl_atlas, out, limits, config.data_root
+                    mr,
+                    asset_info,
+                    raw_img_stub,
+                    raw_img_stub_buggy,
+                    ibl_atlas,
+                    out,
+                    limits,
+                    config.data_root,
+                    emit_qc=config.emit_qc,
                 ),
                 name=f"probe-{mr.probe_id}-{mr.recording_id}",
             )
@@ -115,7 +140,15 @@ async def process_manifest_async(
 
     processed_results: list[ProcessResult] = []
     for mr, rt in row_tasks:
-        result = rt.result()
+        if rt is None:
+            result = ProcessResult(
+                probe_id=mr.probe_id,
+                recording_id=mr.recording_id,
+                wrote_files=False,
+                skipped_reason="no spike-sorting output (bad sorting)",
+            )
+        else:
+            result = rt.result()
         processed_results.append(result)
         if not result.wrote_files:
             logger.warning("Did not write files for %s: %s", mr.sorted_recording, result.skipped_reason)

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
 
 import ants
 import SimpleITK as sitk
+from aind_anatomical_utils.anatomical_volume import AnatomicalHeader
 from aind_registration_utils.annotations import expand_compacted_image
 from ants.core import ANTsImage
 from ants.utils import to_sitk
+from numpy.typing import DTypeLike
 
 from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     Limits,
@@ -19,6 +22,14 @@ from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     to_thread_logged,
 )
 from aind_ibl_ephys_alignment_preprocessing._constants import _BLESSED_DIRECTION
+from aind_ibl_ephys_alignment_preprocessing._timing import timed
+from aind_ibl_ephys_alignment_preprocessing.histology import (
+    _blessed_header,
+    _mirror_pipeline_grid,
+    _narrow_dtype,
+    image_geometry,
+    resample_to_isotropic,
+)
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     OutputDirs,
@@ -63,36 +74,24 @@ async def convert_img_to_direction_and_write_async(
     dst_path: Path | str,
     limits: Limits,
     direction: str = _BLESSED_DIRECTION,
-) -> None:
-    """Async convert image orientation and write to disk."""
+) -> dict[str, Any]:
+    """Async convert image orientation and write to disk.
+
+    Returns
+    -------
+    dict
+        The written image's geometry, per :func:`image_geometry`.
+    """
+    name = Path(dst_path).name
     logger.info("[Histology] Converting image for %s to %s orientation", dst_path, direction)
-    img_oriented = await to_thread_logged(sitk.DICOMOrient, img, direction)
+    with timed("histology.reorient", volume=name):
+        img_oriented = await to_thread_logged(sitk.DICOMOrient, img, direction)
     logger.info("[Histology] Writing image for %s to disk", dst_path)
-    await io_to_thread_on(limits, str(dst_path), sitk.WriteImage, img_oriented, str(dst_path), useCompression=True)
+    with timed("histology.write", volume=name) as record:
+        await io_to_thread_on(limits, str(dst_path), sitk.WriteImage, img_oriented, str(dst_path), useCompression=True)
+        record["mvox"] = int(np.prod(img_oriented.GetSize()) // 10**6)
     logger.info("[Histology] Done writing image for %s to disk", dst_path)
-
-
-async def copy_registration_channel_ccf_reorient_async(
-    asset_info: AssetInfo,
-    outputs: OutputDirs,
-    limits: Limits,
-) -> None:
-    """Async copy precomputed CCF registration to results."""
-    logger.info("[CCF Copy] Copying precomputed CCF registration to results")
-    if not asset_info.registration_in_ccf_precomputed.exists():
-        raise FileNotFoundError(
-            f"Precomputed registration in CCF not found: {asset_info.registration_in_ccf_precomputed}"
-        )
-    ccf_img = await io_to_thread_on(
-        limits,
-        str(asset_info.registration_in_ccf_precomputed),
-        sitk.ReadImage,
-        str(asset_info.registration_in_ccf_precomputed),
-    )
-    logger.info("[CCF Copy] Read precomputed CCF registration image")
-    ccf_img_dest = str(outputs.histology_ccf / "histology_registration.nrrd")
-    await convert_img_to_direction_and_write_async(ccf_img, ccf_img_dest, limits)
-    logger.info("[CCF Copy] Completed: histology_registration.nrrd in CCF space")
+    return image_geometry(img_oriented)
 
 
 async def write_registration_channel_images_async(
@@ -101,9 +100,13 @@ async def write_registration_channel_images_async(
     limits: Limits,
     *,
     level: int = 3,
+    output_voxel_size_um: float,
     opened_zarr: tuple[Any, dict[str, Any]] | None = None,
-) -> tuple[Path, Path]:
-    """Async write registration-channel outputs to CCF and image space."""
+) -> tuple[Path, AnatomicalHeader, AnatomicalHeader, DTypeLike]:
+    """Async write the registration channel; return the grids the warps need.
+
+    See :func:`aind_ibl_ephys_alignment_preprocessing.histology.write_registration_channel_images`.
+    """
     from aind_zarr_utils.pipeline_transformed import base_and_pipeline_zarr_to_sitk
     from aind_zarr_utils.zarr import _open_zarr
 
@@ -111,34 +114,44 @@ async def write_registration_channel_images_async(
     zarr_name = Path(reg_zarr).stem
     logger.info("[Histology] Reading registration channel from zarr: %s at level %d", zarr_name, level)
     if opened_zarr is None:
-        zarr_node, zarr_metadata = await to_thread_logged(_open_zarr, reg_zarr)
+        with timed("histology.zarr_open", volume=zarr_name):
+            zarr_node, zarr_metadata = await to_thread_logged(_open_zarr, reg_zarr)
     else:
         zarr_node, zarr_metadata = opened_zarr
 
     metadata = asset_info.zarr_volumes.metadata
     processing = asset_info.zarr_volumes.processing
-    raw_img, pipeline_raw_img = await to_thread_logged(
-        base_and_pipeline_zarr_to_sitk,
-        reg_zarr,
-        metadata,
-        processing,
-        level=level,
-        opened_zarr=(zarr_node, zarr_metadata),
-    )
+    with timed("histology.zarr_read", volume=zarr_name, level=level) as record:
+        raw_img, pipeline_raw_img = await to_thread_logged(
+            base_and_pipeline_zarr_to_sitk,
+            reg_zarr,
+            metadata,
+            processing,
+            level=level,
+            opened_zarr=(zarr_node, zarr_metadata),
+        )
+        record["mvox"] = int(np.prod(raw_img.GetSize()) // 10**6)
     logger.info("[Histology] Registration channel loaded: raw + pipeline-transformed images")
+    with timed("histology.resample", volume=zarr_name):
+        resampled = resample_to_isotropic(raw_img, output_voxel_size_um, "registration")
+        pipeline_header = _mirror_pipeline_grid(pipeline_raw_img, raw_img, resampled)
+        base_header = AnatomicalHeader.from_sitk(resampled)
+        warp_dtype = sitk.GetArrayViewFromImage(resampled).dtype
+        del pipeline_raw_img, raw_img
+        raw_img = resampled
     raw_img_dst = outputs.histology_img / "histology_registration.nrrd"
-    bugged_img_dst = outputs.histology_img / "histology_registration_pipeline.nrrd"
     logger.info("[Histology] Registration channel conversion to %s + write started", _BLESSED_DIRECTION)
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(
-            convert_img_to_direction_and_write_async(raw_img, raw_img_dst, limits),
-            name="write-registration-raw",
-        )
-        tg.create_task(
-            convert_img_to_direction_and_write_async(pipeline_raw_img, bugged_img_dst, limits),
-            name="write-registration-pipeline",
-        )
-    return raw_img_dst, bugged_img_dst
+    await convert_img_to_direction_and_write_async(raw_img, raw_img_dst, limits)
+    del raw_img
+    # The pipeline volume is not written: nothing reads its pixels, and the only
+    # consumer of its geometry maps indices to physical points. The sidecar
+    # carries that, and the warps take their domain from the header directly.
+    geometry_dst = outputs.histology_img / "histology_registration_pipeline.json"
+    geometry_dst.write_text(
+        json.dumps(image_geometry(_blessed_header(pipeline_header, "registration-pipeline")), indent=2)
+    )
+    logger.info("[Histology] Wrote pipeline-image geometry sidecar: %s", geometry_dst.name)
+    return raw_img_dst, base_header, pipeline_header, warp_dtype
 
 
 async def apply_ccf_inverse_tx_then_fix_domain_async(
@@ -152,15 +165,20 @@ async def apply_ccf_inverse_tx_then_fix_domain_async(
     """Async version of CCF inverse transform with domain repair."""
     pt_tx_str = asset_info.pipeline_registration_chains.pt_tx_str
     pt_tx_inverted = asset_info.pipeline_registration_chains.pt_tx_inverted
+    interpolator = str(kwargs.get("interpolator", "linear"))
+    # ``timed`` is a *sync* context manager, so it cannot share the ``async
+    # with``. Nesting it inside the semaphore is also what we want: it then
+    # measures the warp rather than the wait for a registration slot.
     async with limits.registration:
-        ccf_img_in_hist_space: ANTsImage = await to_thread_logged(
-            ants.apply_transforms,
-            fixed=pipeline_space_fixed_img,
-            moving=ccf_space_img_moving,
-            transformlist=pt_tx_str,
-            whichtoinvert=pt_tx_inverted,
-            **kwargs,
-        )
+        with timed("histology.warp", interpolator=interpolator):
+            ccf_img_in_hist_space: ANTsImage = await to_thread_logged(
+                ants.apply_transforms,
+                fixed=pipeline_space_fixed_img,
+                moving=ccf_space_img_moving,
+                transformlist=pt_tx_str,
+                whichtoinvert=pt_tx_inverted,
+                **kwargs,
+            )
     ccf_img_in_hist_space.set_spacing(correct_hist_domain_img.spacing)
     ccf_img_in_hist_space.set_origin(correct_hist_domain_img.origin)
     ccf_img_in_hist_space.set_direction(correct_hist_domain_img.direction)
@@ -187,6 +205,7 @@ async def transform_ccf_to_image_space_async(
     ccf_in_hist_img_path = outputs.histology_img / "ccf_in_mouse.nrrd"
     ccf_in_hist_sitk = await to_thread_logged(to_sitk, ccf_in_hist_img)
     del ccf_in_hist_img
+    ccf_in_hist_sitk = _narrow_dtype(ccf_in_hist_sitk, sitk.sitkUInt16, "ccf_in_mouse")
     await convert_img_to_direction_and_write_async(ccf_in_hist_sitk, ccf_in_hist_img_path, limits)
     logger.info("[CCF Transform] Completed: %s", ccf_in_hist_img_path.name)
 
@@ -219,6 +238,7 @@ async def transform_ccf_labels_to_image_space_async(
     ccf_labels_sitk = await to_thread_logged(to_sitk, ccf_labels_in_hist_img)
     del ccf_labels_in_hist_img
     ccf_labels_expanded = expand_compacted_image(ccf_labels_sitk, unq_vals)
+    ccf_labels_expanded = _narrow_dtype(ccf_labels_expanded, sitk.sitkInt32, "labels_in_mouse")
     ccf_labels_in_hist_img_path = outputs.histology_img / "labels_in_mouse.nrrd"
     await convert_img_to_direction_and_write_async(ccf_labels_expanded, ccf_labels_in_hist_img_path, limits)
     logger.info("[CCF Labels] Completed: %s", ccf_labels_in_hist_img_path.name)
@@ -233,17 +253,33 @@ async def process_additional_channel_pipeline_async(
     limits: Limits,
     scratch_root: Path,
     level: int = 3,
+    *,
+    output_voxel_size_um: float,
+    emit_qc: bool = False,
 ) -> None:
-    """Async process a single additional OME-Zarr channel."""
+    """Async process a single additional OME-Zarr channel.
+
+    Writes the image-space channel NRRD always; the CCF-space warp (GUI-unused
+    QC) only when *emit_qc* is True.
+    """
     from aind_zarr_utils.zarr import zarr_to_sitk
 
     ch_str = Path(zarr_path).stem
     logger.info("[Channel %s] Starting processing", ch_str)
-    img_raw = await to_thread_logged(zarr_to_sitk, zarr_path, asset_info.zarr_volumes.metadata, level=level)
+    with timed("histology.zarr_read", volume=ch_str, level=level) as record:
+        img_raw = await to_thread_logged(zarr_to_sitk, zarr_path, asset_info.zarr_volumes.metadata, level=level)
+        record["mvox"] = int(np.prod(img_raw.GetSize()) // 10**6)
     logger.info("[Channel %s] read from zarr complete", ch_str)
+    with timed("histology.resample", volume=ch_str):
+        img_raw = resample_to_isotropic(img_raw, output_voxel_size_um, ch_str)
     channel_dst = outputs.histology_img / f"{ch_str}.nrrd"
     await convert_img_to_direction_and_write_async(img_raw, channel_dst, limits)
     logger.info("[Channel %s] converted to %s and written to disk", ch_str, _BLESSED_DIRECTION)
+
+    if not emit_qc:
+        logger.info("[Channel %s] Completed (image-space only; QC off)", ch_str)
+        return
+
     ants_hist_img = await io_to_thread_on(limits, str(channel_dst), ants.image_read, str(channel_dst), pixeltype=None)
     logger.info("[Channel %s] read into ANTs complete", ch_str)
     ants.copy_image_info(pipeline_histology_space_img, ants_hist_img)
@@ -280,6 +316,9 @@ async def process_additional_channels_pipeline_async(
     limits: Limits,
     scratch_root: Path,
     level: int = 3,
+    *,
+    output_voxel_size_um: float,
+    emit_qc: bool = False,
 ) -> None:
     """Async dispatch all additional channels in parallel."""
     async with asyncio.TaskGroup() as tg:
@@ -295,6 +334,8 @@ async def process_additional_channels_pipeline_async(
                     limits,
                     scratch_root=scratch_root,
                     level=level,
+                    output_voxel_size_um=output_voxel_size_um,
+                    emit_qc=emit_qc,
                 ),
                 name=f"channel-{ch_name}",
             )
