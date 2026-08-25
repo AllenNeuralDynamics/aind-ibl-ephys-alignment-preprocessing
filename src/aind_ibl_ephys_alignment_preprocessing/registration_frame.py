@@ -46,11 +46,16 @@ REGISTRATION_SIDECAR_NAMES = (
 #: resampling is not what discriminates.
 #:
 #: The residual on the far bound is one coarse voxel of downsample truncation plus
-#: half the spacing difference (``bbox`` is voxel-*center*) -- tens of microns
-#: against a signal of millimetres. Two voxels of the coarser grid clears it by a
-#: factor of a hundred. Comparing all six bounds rather than just the zero corner
-#: keeps this independent of that origin convention, and still catches a sidecar
-#: paired with an altogether different volume.
+#: half the spacing difference (``bbox`` is voxel-*center*). Measured once on
+#: 776259, sidecar against the shipped volumes: 19, 4 and 14 um. At a 32 um
+#: sidecar this tolerance is 64 um, so it sits a few times above that residual and
+#: ~200x below the 12 mm it must catch -- comfortable, but the margin above a true
+#: match is single-digit, so widen this rather than loosening the check if a real
+#: asset ever grazes it.
+#:
+#: Comparing all six bounds rather than just the zero corner keeps this
+#: independent of that origin convention, and still catches a sidecar paired with
+#: an altogether different volume.
 DOMAIN_TOLERANCE_VOXELS = 2.0
 
 _AXES = ("L", "P", "S")
