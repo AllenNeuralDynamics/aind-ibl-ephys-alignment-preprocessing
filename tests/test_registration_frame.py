@@ -27,8 +27,8 @@ from aind_ibl_ephys_alignment_preprocessing.registration_frame import (  # noqa:
 #: The SPIM-native box 776259's override was registered in, in LPS mm.
 NATIVE_BBOX = {"L": (-13.579, 0.0), "P": (0.0, 16.114), "S": (-7.664, 0.0)}
 
-#: The same brain as the pipeline anchors it -- the offset that made every
-#: channel land outside the CCF box.
+#: The same brain placed as the pipeline anchors it. Illustrative rather than
+#: measured -- what matters is the ~12 mm displacement, and that no bound is 0.
 PIPELINE_BBOX = {"L": (-1.511, 12.068), "P": (-1.5, 14.614), "S": (-9.164, 1.5)}
 
 

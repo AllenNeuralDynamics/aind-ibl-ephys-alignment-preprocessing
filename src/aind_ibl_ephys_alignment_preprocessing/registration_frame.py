@@ -34,12 +34,23 @@ REGISTRATION_SIDECAR_NAMES = (
     "transform_information.json",
 )
 
-#: Domain agreement is checked in voxels, not in floating-point epsilon. The two
-#: candidate frames are ~12 mm apart, while a genuine match is off by well under a
-#: voxel: the sidecar's grid is the volume the registration ran on, the image here
-#: has been resampled to another resolution, and ``bbox`` is voxel-*center*, so
-#: even identical physical extents differ by half the spacing difference per side.
-#: Two voxels of the coarser grid separates those scales by a factor of a hundred.
+#: Domain agreement is checked in voxels, not in floating-point epsilon, because
+#: the sidecar's grid is the volume the registration ran on and the image here is
+#: a different resolution of the same acquisition.
+#:
+#: Resampling moves the *extent*, never the *placement*: a zarr stub's default
+#: origin is ``(0, 0, 0)`` at every level (``aind_zarr_utils.zarr``, origin_type
+#: "none"), so one bbox bound per axis is exactly 0 whatever level was read, and
+#: only the far bound carries the level. The pipeline-anchored frame moves that
+#: zero corner by ~12 mm, which is the thing being detected. So what varies with
+#: resampling is not what discriminates.
+#:
+#: The residual on the far bound is one coarse voxel of downsample truncation plus
+#: half the spacing difference (``bbox`` is voxel-*center*) -- tens of microns
+#: against a signal of millimetres. Two voxels of the coarser grid clears it by a
+#: factor of a hundred. Comparing all six bounds rather than just the zero corner
+#: keeps this independent of that origin convention, and still catches a sidecar
+#: paired with an altogether different volume.
 DOMAIN_TOLERANCE_VOXELS = 2.0
 
 _AXES = ("L", "P", "S")
