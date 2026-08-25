@@ -123,3 +123,26 @@ def test_bbox_uses_a_domain_the_sidecar_can_round_trip():
     domain = _domain_of(_stub())
     assert isinstance(domain, Domain)
     assert isinstance(domain.bbox, BBox)
+
+
+def test_an_eightfold_downsample_still_agrees():
+    """The campaign's real case: sidecar at pyramid level 3, stub at level 0.
+
+    Both grids pin voxel 0's centre at the origin, so their far bounds differ by
+    ``s_coarse - s_fine`` -- 14 um for 776259's 16 um sidecar. Pinned here because
+    the tolerance is sized against that number, not measured against an asset.
+    """
+    from aind_ibl_ephys_alignment_preprocessing.registration_frame import DOMAIN_TOLERANCE_VOXELS
+
+    s_coarse = 0.016
+    s_fine = s_coarse / 8
+    worst_case = (s_coarse - s_fine) + s_coarse  # + up to one coarse voxel of truncation
+    assert DOMAIN_TOLERANCE_VOXELS * s_coarse > worst_case * 2, "tolerance has lost its headroom"
+
+
+def test_a_millimetre_scale_offset_is_never_within_tolerance(tmp_path):
+    """The margin that matters: the signal is ~200x the threshold."""
+    shifted = {axis: (lo + 1.0, hi + 1.0) for axis, (lo, hi) in NATIVE_BBOX.items()}
+    _write_sidecar(tmp_path, _domain_of(_stub(bbox=shifted)))
+    with pytest.raises(ValueError, match="disagrees with the anatomical image"):
+        resolve_registration_frame(tmp_path, _stub(bbox=NATIVE_BBOX))

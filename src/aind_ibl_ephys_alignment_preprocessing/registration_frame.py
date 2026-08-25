@@ -45,18 +45,23 @@ REGISTRATION_SIDECAR_NAMES = (
 #: zero corner by ~12 mm, which is the thing being detected. So what varies with
 #: resampling is not what discriminates.
 #:
-#: The residual on the far bound is one coarse voxel of downsample truncation plus
-#: half the spacing difference (``bbox`` is voxel-*center*). Measured once on
-#: 776259, sidecar against the shipped volumes: 19, 4 and 14 um. At a 32 um
-#: sidecar this tolerance is 64 um, so it sits a few times above that residual and
-#: ~200x below the 12 mm it must catch -- comfortable, but the margin above a true
-#: match is single-digit, so widen this rather than loosening the check if a real
-#: asset ever grazes it.
+#: The far bound's disagreement is computable rather than empirical. Both grids
+#: pin voxel 0's *centre* at the origin, so for ``N * s_fine == n * s_coarse`` the
+#: bounds are ``(N-1) * s_fine`` and ``(n-1) * s_coarse`` -- a difference of
+#: exactly ``s_coarse - s_fine``, plus up to one coarse voxel when the downsample
+#: does not divide evenly. That bound is just under two coarse voxels, so two is
+#: the threshold with no headroom (1.07x on the campaign's own grids); four gives
+#: 2.1x while still sitting ~190x below the millimetres it must catch.
+#:
+#: Converting to voxel *edges* does not remove this -- centre-pinned grids are
+#: neither centre- nor corner-aligned across levels. An exact check means building
+#: the comparison stub at the sidecar's own level, which is only possible when the
+#: registration read a raw pyramid level.
 #:
 #: Comparing all six bounds rather than just the zero corner keeps this
 #: independent of that origin convention, and still catches a sidecar paired with
 #: an altogether different volume.
-DOMAIN_TOLERANCE_VOXELS = 2.0
+DOMAIN_TOLERANCE_VOXELS = 4.0
 
 _AXES = ("L", "P", "S")
 
