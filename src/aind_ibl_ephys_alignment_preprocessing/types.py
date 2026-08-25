@@ -12,6 +12,8 @@ import ants
 import pandas as pd
 from pydantic import BaseModel, model_validator
 
+from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS
+
 logger = logging.getLogger(__name__)
 
 
@@ -262,6 +264,38 @@ class AssetInfo:
     zarr_volumes: ZarrPaths
     pipeline_registration_chains: PipelineRegistrationInfo
     registration_dir_path: Path
+
+    @property
+    def has_registration_override(self) -> bool:
+        """Whether the registration lives outside the stitched asset.
+
+        Derived rather than stored: a registration directory that is not under
+        the asset can only have come from the manifest's ``registration_asset``.
+        """
+        return self.asset_path not in self.registration_dir_path.parents
+
+    def point_chain(self) -> tuple[list[str], list[bool]]:
+        """Return the individual->CCF point chain, honoring a registration override.
+
+        ``pipeline_registration_chains`` resolves both halves from the stitched
+        asset's ``processing.json``, so its individual->template half is the
+        registration the override exists to replace. Substituting by basename
+        rather than by position keeps this correct if the chain's length or order
+        ever changes upstream.
+
+        Returns
+        -------
+        tuple[list[str], list[bool]]
+            Transform paths and their inversion flags, in application order.
+        """
+        chains = self.pipeline_registration_chains
+        if not self.has_registration_override:
+            return chains.pt_tx_str, chains.pt_tx_inverted
+        substituted = [
+            str(self.registration_dir_path / Path(path).name) if Path(path).name in REGISTRATION_TRANSFORMS else path
+            for path in chains.pt_tx_str
+        ]
+        return substituted, chains.pt_tx_inverted
 
 
 @dataclass(frozen=True)

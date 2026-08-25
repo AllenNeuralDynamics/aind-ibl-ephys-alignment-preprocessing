@@ -37,6 +37,7 @@ from aind_ibl_ephys_alignment_preprocessing.histology import (
     write_registration_channel_images,
 )
 from aind_ibl_ephys_alignment_preprocessing.probes import process_manifest_row
+from aind_ibl_ephys_alignment_preprocessing.registration_frame import resolve_registration_frame
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
     PipelineConfig,
@@ -76,6 +77,17 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     node, zarr_metadata = _open_zarr(asset_info.zarr_volumes.registration)
     level = determine_desired_level(zarr_metadata, desired_voxel_size_um=config.desired_voxel_size_um)
 
+    # Header-only stubs, and one frame decision for the whole run: every CCF
+    # product below enters the same image-to-template transform, so they must all
+    # agree on the frame it expects its input in.
+    raw_img_stub, raw_img_stub_buggy, _ = base_and_pipeline_anatomical_stub(
+        asset_info.zarr_volumes.registration,
+        asset_info.zarr_volumes.metadata,
+        asset_info.zarr_volumes.processing,
+        opened_zarr=(node, zarr_metadata),
+    )
+    reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub)
+
     raw_img_path, base_header, pipeline_header, warp_dtype = write_registration_channel_images(
         asset_info,
         out,
@@ -101,15 +113,8 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
         output_voxel_size_um=config.output_voxel_size_um,
         emit_qc=config.emit_qc,
     )
-    transform_ccf_to_image_space(asset_info, ref_imgs, raw_img_ants, pipeline_img_ants, out)
-    transform_ccf_labels_to_image_space(asset_info, ref_paths, raw_img_ants, pipeline_img_ants, out)
-
-    raw_img_stub, raw_img_stub_buggy, _ = base_and_pipeline_anatomical_stub(
-        asset_info.zarr_volumes.registration,
-        asset_info.zarr_volumes.metadata,
-        asset_info.zarr_volumes.processing,
-        opened_zarr=(node, zarr_metadata),
-    )
+    transform_ccf_to_image_space(asset_info, ref_imgs, raw_img_ants, pipeline_img_ants, out, reg_frame)
+    transform_ccf_labels_to_image_space(asset_info, ref_paths, raw_img_ants, pipeline_img_ants, out, reg_frame)
 
     processed_recordings: set[str] = set()
     processed_results: list[ProcessResult] = []
@@ -151,6 +156,7 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
             ibl_atlas,
             out,
             config.data_root,
+            reg_frame,
             emit_qc=config.emit_qc,
         )
         processed_results.append(result)

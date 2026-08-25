@@ -20,6 +20,8 @@ from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     io_to_thread_on,
     to_thread_logged,
 )
+from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS
+from aind_ibl_ephys_alignment_preprocessing.registration_frame import RegistrationFrame
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     ManifestRow,
@@ -49,6 +51,7 @@ async def process_manifest_row_async(
     outputs: OutputDirs,
     limits: Limits,
     data_root: Path,
+    frame: RegistrationFrame,
     *,
     emit_qc: bool = False,
 ) -> ProcessResult:
@@ -68,7 +71,7 @@ async def process_manifest_row_async(
     hist_stub : sitk.Image
         Histology stub with correct domain.
     hist_stub_buggy : sitk.Image
-        Histology stub in pipeline (buggy) domain.
+        Histology stub on the pipeline's anchored geometry.
     ibl_atlas : AllenAtlas
         Allen atlas for CCF-to-bregma conversion.
     outputs : OutputDirs
@@ -77,6 +80,8 @@ async def process_manifest_row_async(
         Concurrency limits.
     data_root : Path
         Root directory for input data.
+    frame : RegistrationFrame
+        Whether the image-to-template transform expects pipeline-anchored input.
 
     Returns
     -------
@@ -151,6 +156,7 @@ async def process_manifest_row_async(
             p_ccf=p_ccf,
             gui_ccf=gui_ccf,
             limits=limits,
+            frame=frame,
         )
 
     logger.info("[Probe %s] Completed", row.probe_id)
@@ -175,10 +181,11 @@ async def _write_qc_probe_outputs_async(
     p_ccf: Path,
     gui_ccf: str,
     limits: Limits,
+    frame: RegistrationFrame,
 ) -> None:
     """QC outputs the GUI never reads: SPIM/template/CCF FCSVs + CCF/bregma picks.
 
-    Requires the two ANTs point-warps (via ``hist_stub_buggy``) and ``ibl_atlas``.
+    Requires the two ANTs point-warps and ``ibl_atlas``.
     """
     anno_zarr = asset_info.zarr_volumes.registration
     metadata = asset_info.zarr_volumes.metadata
@@ -193,24 +200,26 @@ async def _write_qc_probe_outputs_async(
         direction="LPS",
     )
 
-    probe_pt_dict_buggy, _ = await to_thread_logged(
-        neuroglancer_annotations_to_anatomical,
-        ng_data,
-        anno_zarr,
-        metadata,
-        layer_names=[probe_id],
-        stub_image=hist_stub_buggy,
-    )
-    probe_pts_buggy = probe_pt_dict_buggy[probe_id]
+    # Points must enter the ANTs chain in the frame the transform was trained in;
+    # only a pipeline transform wants them re-gridded onto the anchored geometry.
+    if frame.regrid_to_pipeline:
+        probe_pt_dict_regridded, _ = await to_thread_logged(
+            neuroglancer_annotations_to_anatomical,
+            ng_data,
+            anno_zarr,
+            metadata,
+            layer_names=[probe_id],
+            stub_image=hist_stub_buggy,
+        )
+        pts_in_tx_frame = probe_pt_dict_regridded[probe_id]
+    else:
+        pts_in_tx_frame = probe_pts
 
     # Image -> Template
-    tx_list_pt_template = [
-        str(asset_info.registration_dir_path / "ls_to_template_SyN_0GenericAffine.mat"),
-        str(asset_info.registration_dir_path / "ls_to_template_SyN_1InverseWarp.nii.gz"),
-    ]
+    tx_list_pt_template = [str(asset_info.registration_dir_path / name) for name in REGISTRATION_TRANSFORMS]
     pts_template = await to_thread_logged(
         apply_ants_transforms_to_point_arr,
-        probe_pts_buggy,
+        pts_in_tx_frame,
         tx_list_pt_template,
         whichtoinvert=[True, False],
     )
@@ -224,11 +233,12 @@ async def _write_qc_probe_outputs_async(
     )
 
     # Template -> CCF
+    pt_tx_str, pt_tx_inverted = asset_info.point_chain()
     pts_ccf = await to_thread_logged(
         apply_ants_transforms_to_point_arr,
-        probe_pts_buggy,
-        asset_info.pipeline_registration_chains.pt_tx_str,
-        whichtoinvert=asset_info.pipeline_registration_chains.pt_tx_inverted,
+        pts_in_tx_frame,
+        pt_tx_str,
+        whichtoinvert=pt_tx_inverted,
     )
     await io_to_thread_on(
         limits,
@@ -264,13 +274,14 @@ async def process_manifest_row_limit_async(
     outputs: OutputDirs,
     limits: Limits,
     data_root: Path,
+    frame: RegistrationFrame,
     *,
     emit_qc: bool = False,
 ) -> ProcessResult:
     """Rate-limited wrapper around :func:`process_manifest_row_async`."""
     async with limits.manifest_rows:
         return await process_manifest_row_async(
-            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root, emit_qc=emit_qc
+            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root, frame, emit_qc=emit_qc
         )
 
 
@@ -283,13 +294,14 @@ async def process_manifest_row_safe_async(
     outputs: OutputDirs,
     limits: Limits,
     data_root: Path,
+    frame: RegistrationFrame,
     *,
     emit_qc: bool = False,
 ) -> ProcessResult:
     """Error-catching wrapper that converts exceptions to :class:`ProcessResult`."""
     try:
         return await process_manifest_row_limit_async(
-            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root, emit_qc=emit_qc
+            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root, frame, emit_qc=emit_qc
         )
     except Exception as e:
         logger.exception("Row failed: probe=%s recording=%s", row.probe_id, row.recording_id)

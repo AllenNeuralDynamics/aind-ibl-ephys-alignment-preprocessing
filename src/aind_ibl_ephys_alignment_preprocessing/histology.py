@@ -21,6 +21,7 @@ from ants.utils import to_sitk
 from numpy.typing import DTypeLike
 
 from aind_ibl_ephys_alignment_preprocessing._constants import _BLESSED_DIRECTION
+from aind_ibl_ephys_alignment_preprocessing.registration_frame import RegistrationFrame
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     OutputDirs,
@@ -587,40 +588,50 @@ def apply_ccf_inverse_tx_then_fix_domain(
     pipeline_space_fixed_img: ANTsImage,
     correct_hist_domain_img: ANTsImage,
     asset_info: AssetInfo,
+    frame: RegistrationFrame,
     **kwargs: Any,
 ) -> ANTsImage:
-    """Apply inverse pipeline (CCF -> histology) transform then repair image domain.
+    """Resample a CCF-space image into histology space, in the frame the transform expects.
+
+    A pipeline transform expects its input on the anchored geometry, so the
+    resample runs there and the header is relabelled afterwards -- the grid is
+    right, only its declared placement is the pipeline's. When a sidecar
+    documents the transform's own domain there is nothing to relabel: the
+    resample runs on the real histology grid directly.
 
     Parameters
     ----------
     ccf_space_img_moving : ANTsImage
         Image in CCF/template space to move into histology space.
     pipeline_space_fixed_img : ANTsImage
-        Image in the pipeline's (buggy) histology space.
+        Histology geometry as the pipeline anchors it.
     correct_hist_domain_img : ANTsImage
         Reference histology image with correct spacing/origin/direction.
     asset_info : AssetInfo
-        Pipeline registration chain paths.
+        Registration chain paths.
+    frame : RegistrationFrame
+        Whether the transform expects pipeline-anchored input.
     **kwargs
         Forwarded to ``ants.apply_transforms``.
 
     Returns
     -------
     ANTsImage
-        Transformed image with corrected spatial domain.
+        Transformed image on the histology grid.
     """
-    pt_tx_str = asset_info.pipeline_registration_chains.pt_tx_str
-    pt_tx_inverted = asset_info.pipeline_registration_chains.pt_tx_inverted
+    pt_tx_str, pt_tx_inverted = asset_info.point_chain()
+    fixed = pipeline_space_fixed_img if frame.regrid_to_pipeline else correct_hist_domain_img
     ccf_space_img_in_hist_space: ANTsImage = ants.apply_transforms(
-        fixed=pipeline_space_fixed_img,
+        fixed=fixed,
         moving=ccf_space_img_moving,
         transformlist=pt_tx_str,
         whichtoinvert=pt_tx_inverted,
         **kwargs,
     )
-    ccf_space_img_in_hist_space.set_spacing(correct_hist_domain_img.spacing)
-    ccf_space_img_in_hist_space.set_origin(correct_hist_domain_img.origin)
-    ccf_space_img_in_hist_space.set_direction(correct_hist_domain_img.direction)
+    if frame.regrid_to_pipeline:
+        ccf_space_img_in_hist_space.set_spacing(correct_hist_domain_img.spacing)
+        ccf_space_img_in_hist_space.set_origin(correct_hist_domain_img.origin)
+        ccf_space_img_in_hist_space.set_direction(correct_hist_domain_img.direction)
     return ccf_space_img_in_hist_space
 
 
@@ -658,6 +669,7 @@ def transform_ccf_to_image_space(
     raw_hist_img: ANTsImage,
     pipeline_hist_domain_img: ANTsImage,
     outputs: OutputDirs,
+    frame: RegistrationFrame,
 ) -> None:
     """Transform CCF template into native image space.
 
@@ -670,15 +682,18 @@ def transform_ccf_to_image_space(
     raw_hist_img : ANTsImage
         Histology image with correct spatial domain.
     pipeline_hist_domain_img : ANTsImage
-        Histology image in pipeline (buggy) domain.
+        Histology geometry as the pipeline anchors it.
     outputs : OutputDirs
         Output directory tree.
+    frame : RegistrationFrame
+        Whether the transform expects pipeline-anchored input.
     """
     ccf_in_hist_img = apply_ccf_inverse_tx_then_fix_domain(
         refs.ccf_25,
         pipeline_space_fixed_img=pipeline_hist_domain_img,
         correct_hist_domain_img=raw_hist_img,
         asset_info=asset_info,
+        frame=frame,
     )
     ccf_in_hist_img_path = outputs.histology_img / "ccf_in_mouse.nrrd"
     ccf_in_hist_sitk = to_sitk(ccf_in_hist_img)
@@ -693,6 +708,7 @@ def transform_ccf_labels_to_image_space(
     raw_hist_img: ANTsImage,
     pipeline_hist_domain_img: ANTsImage,
     outputs: OutputDirs,
+    frame: RegistrationFrame,
 ) -> None:
     """Transform lateralized CCF labels into native image space.
 
@@ -705,9 +721,11 @@ def transform_ccf_labels_to_image_space(
     raw_hist_img : ANTsImage
         Histology image with correct spatial domain.
     pipeline_hist_domain_img : ANTsImage
-        Histology image in pipeline (buggy) domain.
+        Histology geometry as the pipeline anchors it.
     outputs : OutputDirs
         Output directory tree.
+    frame : RegistrationFrame
+        Whether the transform expects pipeline-anchored input.
     """
     ccf_labels_lateralized_25 = ants.image_read(
         str(ref_paths.ccf_labels_lateralized_25),
@@ -719,6 +737,7 @@ def transform_ccf_labels_to_image_space(
         pipeline_space_fixed_img=pipeline_hist_domain_img,
         correct_hist_domain_img=raw_hist_img,
         asset_info=asset_info,
+        frame=frame,
         interpolator="genericLabel",
     )
     del ccf_labels_lateralized_25

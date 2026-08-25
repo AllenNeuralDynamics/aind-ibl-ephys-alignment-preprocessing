@@ -16,6 +16,7 @@ from aind_zarr_utils.pipeline_transformed import (
     pipeline_transforms_local_paths,
 )
 
+from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     OutputDirs,
@@ -27,12 +28,6 @@ if TYPE_CHECKING:
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
 
 logger = logging.getLogger(__name__)
-
-#: Transforms a registration directory must supply, whichever asset it lives in.
-REGISTRATION_TRANSFORMS = (
-    "ls_to_template_SyN_0GenericAffine.mat",
-    "ls_to_template_SyN_1InverseWarp.nii.gz",
-)
 
 
 def manifest_registration_override(config: PipelineConfig) -> Path | None:

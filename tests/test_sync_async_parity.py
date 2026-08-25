@@ -70,3 +70,41 @@ def test_both_ccf_paths_narrow_their_dtypes():
         ahistology.transform_ccf_labels_to_image_space_async,
     ):
         assert "_narrow_dtype" in _calls(fn), fn.__name__
+
+
+def test_both_ccf_paths_branch_on_the_registration_frame():
+    """The re-grid is a compensation for the pipeline's anchoring, not a step.
+
+    Applying it to an off-pipeline transform is the defect that put 776259's
+    channels outside the atlas, so neither spelling may hard-code it.
+    """
+    for fn in (
+        histology.apply_ccf_inverse_tx_then_fix_domain,
+        ahistology.apply_ccf_inverse_tx_then_fix_domain_async,
+    ):
+        source = _calls(fn)
+        assert "frame.regrid_to_pipeline" in source, fn.__name__
+        # The header repair is meaningless once the resample ran on the real grid.
+        assert source.count("set_origin") == 1, fn.__name__
+
+
+def test_both_ccf_paths_honor_a_registration_override():
+    """``pipeline_registration_chains`` names the registration being replaced."""
+    for fn in (
+        histology.apply_ccf_inverse_tx_then_fix_domain,
+        ahistology.apply_ccf_inverse_tx_then_fix_domain_async,
+    ):
+        source = _calls(fn)
+        assert "point_chain()" in source, fn.__name__
+        assert "pipeline_registration_chains" not in source, fn.__name__
+
+
+def test_both_probe_paths_branch_and_honor_the_override():
+    from aind_ibl_ephys_alignment_preprocessing import probes
+    from aind_ibl_ephys_alignment_preprocessing._async import probes as aprobes
+
+    for fn in (probes._write_qc_probe_outputs, aprobes._write_qc_probe_outputs_async):
+        source = _calls(fn)
+        assert "frame.regrid_to_pipeline" in source, fn.__name__
+        assert "point_chain()" in source, fn.__name__
+        assert "pipeline_registration_chains" not in source, fn.__name__

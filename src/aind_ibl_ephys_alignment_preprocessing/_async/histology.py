@@ -30,6 +30,7 @@ from aind_ibl_ephys_alignment_preprocessing.histology import (
     image_geometry,
     resample_to_isotropic,
 )
+from aind_ibl_ephys_alignment_preprocessing.registration_frame import RegistrationFrame
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     OutputDirs,
@@ -160,11 +161,12 @@ async def apply_ccf_inverse_tx_then_fix_domain_async(
     correct_hist_domain_img: ANTsImage,
     asset_info: AssetInfo,
     limits: Limits,
+    frame: RegistrationFrame,
     **kwargs: Any,
 ) -> ANTsImage:
-    """Async version of CCF inverse transform with domain repair."""
-    pt_tx_str = asset_info.pipeline_registration_chains.pt_tx_str
-    pt_tx_inverted = asset_info.pipeline_registration_chains.pt_tx_inverted
+    """Async twin of :func:`~...histology.apply_ccf_inverse_tx_then_fix_domain`."""
+    pt_tx_str, pt_tx_inverted = asset_info.point_chain()
+    fixed = pipeline_space_fixed_img if frame.regrid_to_pipeline else correct_hist_domain_img
     interpolator = str(kwargs.get("interpolator", "linear"))
     # ``timed`` is a *sync* context manager, so it cannot share the ``async
     # with``. Nesting it inside the semaphore is also what we want: it then
@@ -173,15 +175,16 @@ async def apply_ccf_inverse_tx_then_fix_domain_async(
         with timed("histology.warp", interpolator=interpolator):
             ccf_img_in_hist_space: ANTsImage = await to_thread_logged(
                 ants.apply_transforms,
-                fixed=pipeline_space_fixed_img,
+                fixed=fixed,
                 moving=ccf_space_img_moving,
                 transformlist=pt_tx_str,
                 whichtoinvert=pt_tx_inverted,
                 **kwargs,
             )
-    ccf_img_in_hist_space.set_spacing(correct_hist_domain_img.spacing)
-    ccf_img_in_hist_space.set_origin(correct_hist_domain_img.origin)
-    ccf_img_in_hist_space.set_direction(correct_hist_domain_img.direction)
+    if frame.regrid_to_pipeline:
+        ccf_img_in_hist_space.set_spacing(correct_hist_domain_img.spacing)
+        ccf_img_in_hist_space.set_origin(correct_hist_domain_img.origin)
+        ccf_img_in_hist_space.set_direction(correct_hist_domain_img.direction)
     return ccf_img_in_hist_space
 
 
@@ -192,6 +195,7 @@ async def transform_ccf_to_image_space_async(
     pipeline_hist_domain_img: ANTsImage,
     outputs: OutputDirs,
     limits: Limits,
+    frame: RegistrationFrame,
 ) -> None:
     """Async transform CCF template into native image space."""
     logger.info("[CCF Transform] Starting CCF template -> image space transform")
@@ -201,6 +205,7 @@ async def transform_ccf_to_image_space_async(
         correct_hist_domain_img=raw_hist_img,
         asset_info=asset_info,
         limits=limits,
+        frame=frame,
     )
     ccf_in_hist_img_path = outputs.histology_img / "ccf_in_mouse.nrrd"
     ccf_in_hist_sitk = await to_thread_logged(to_sitk, ccf_in_hist_img)
@@ -217,6 +222,7 @@ async def transform_ccf_labels_to_image_space_async(
     pipeline_hist_domain_img: ANTsImage,
     outputs: OutputDirs,
     limits: Limits,
+    frame: RegistrationFrame,
 ) -> None:
     """Async transform lateralized CCF labels into native image space."""
     logger.info("[CCF Labels] Starting CCF labels -> image space transform")
@@ -232,6 +238,7 @@ async def transform_ccf_labels_to_image_space_async(
         correct_hist_domain_img=raw_hist_img,
         asset_info=asset_info,
         limits=limits,
+        frame=frame,
         interpolator="genericLabel",
     )
     del ccf_labels_lateralized_25

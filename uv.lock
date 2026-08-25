@@ -76,6 +76,7 @@ version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "aind-anatomical-utils" },
+    { name = "aind-ants-transform-sidecar" },
     { name = "aind-code-ocean-pipeline-utils" },
     { name = "aind-ephys-ibl-gui-conversion" },
     { name = "aind-registration-utils" },
@@ -135,6 +136,7 @@ types = [
 [package.metadata]
 requires-dist = [
     { name = "aind-anatomical-utils", specifier = ">=0.4" },
+    { name = "aind-ants-transform-sidecar" },
     { name = "aind-code-ocean-pipeline-utils", specifier = ">=0.4" },
     { name = "aind-ephys-ibl-gui-conversion", git = "https://github.com/AllenNeuralDynamics/aind-ephys-ibl-gui-conversion.git?branch=feat%2Fephys-geometry-contract" },
     { name = "aind-registration-utils", specifier = ">=0.4" },

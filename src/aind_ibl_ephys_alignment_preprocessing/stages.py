@@ -419,6 +419,10 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
     from aind_ibl_ephys_alignment_preprocessing._async.pipeline import _create_volumes_async
     from aind_ibl_ephys_alignment_preprocessing._async.probes import process_manifest_row_safe_async
     from aind_ibl_ephys_alignment_preprocessing.discovery import find_asset_info
+    from aind_ibl_ephys_alignment_preprocessing.registration_frame import (
+        RegistrationFrame,
+        resolve_registration_frame,
+    )
     from aind_ibl_ephys_alignment_preprocessing.types import ReferencePaths, ReferenceVolumes
 
     async def _coords(
@@ -429,6 +433,7 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
         ibl_atlas: Any,
         out: Any,
         limits: Limits,
+        frame: RegistrationFrame,
     ) -> list[ProcessResult]:
         """Convert every probe row's coordinates concurrently (no ephys).
 
@@ -451,6 +456,7 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
                         out,
                         limits,
                         config.data_root,
+                        frame,
                         emit_qc=config.emit_qc,
                     )
                 )
@@ -509,6 +515,10 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
         raw_img_stub, raw_img_stub_buggy, _ = stub_task.result()
         ibl_atlas = atlas_task.result()
 
+        # One decision shared by volumes and coords: both enter the same
+        # image-to-template transform, so they cannot disagree about its frame.
+        reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub)
+
         # Volumes (use the zarr node) run concurrently with per-probe coords
         # (use the stubs + atlas) and the emit_qc-gated CCF-space copy.
         async with asyncio.TaskGroup() as tg:
@@ -521,6 +531,7 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
                     node,
                     zarr_metadata,
                     limits,
+                    reg_frame,
                     scratch_root=scratch_root,
                     desired_voxel_size_um=config.desired_voxel_size_um,
                     output_voxel_size_um=config.output_voxel_size_um,
@@ -529,7 +540,7 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
                 name=f"histology-volumes-{mouse_id}",
             )
             coords_task = tg.create_task(
-                _coords(manifest_df, asset_info, raw_img_stub, raw_img_stub_buggy, ibl_atlas, out, limits),
+                _coords(manifest_df, asset_info, raw_img_stub, raw_img_stub_buggy, ibl_atlas, out, limits, reg_frame),
                 name=f"histology-coords-{mouse_id}",
             )
 

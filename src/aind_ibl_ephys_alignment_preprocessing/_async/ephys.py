@@ -22,6 +22,7 @@ from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
 )
 from aind_ibl_ephys_alignment_preprocessing._async.probes import process_manifest_row_safe_async
 from aind_ibl_ephys_alignment_preprocessing.ephys import find_session_dir, has_sorting_output
+from aind_ibl_ephys_alignment_preprocessing.registration_frame import RegistrationFrame
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     ManifestRow,
@@ -47,6 +48,7 @@ async def process_manifest_async(
     config: PipelineConfig,
     ephys: EphysCoordinator,
     limits: Limits,
+    frame: RegistrationFrame,
 ) -> list[ProcessResult]:
     """Async manifest processing: all probes + ephys in parallel.
 
@@ -70,6 +72,8 @@ async def process_manifest_async(
         Ephys coordinator for single-flight dedup.
     limits : Limits
         Concurrency limits.
+    frame : RegistrationFrame
+        Whether the image-to-template transform expects pipeline-anchored input.
 
     Returns
     -------
@@ -120,6 +124,7 @@ async def process_manifest_async(
                     out,
                     limits,
                     config.data_root,
+                    frame,
                     emit_qc=config.emit_qc,
                 ),
                 name=f"probe-{mr.probe_id}-{mr.recording_id}",
@@ -172,6 +177,7 @@ def run_manifest_subprocess_sync(
     ref_paths: ReferencePaths,
     out: OutputDirs,
     config: PipelineConfig,
+    frame: RegistrationFrame,
     max_ephys: int | None,
     max_manifest_rows: int | None,
     max_scratch: int | None,
@@ -224,7 +230,7 @@ def run_manifest_subprocess_sync(
         try:
             logger.info("[Subprocess] Starting manifest processing")
             result = await process_manifest_async(
-                manifest_df, asset_info, ibl_atlas, out, node, zarr_metadata, config, ephys, limits
+                manifest_df, asset_info, ibl_atlas, out, node, zarr_metadata, config, ephys, limits, frame
             )
             return result
         finally:

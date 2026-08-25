@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import SimpleITK as sitk
 from aind_anatomical_utils.coordinate_systems import convert_coordinate_system
@@ -13,7 +14,10 @@ from aind_registration_utils.ants import apply_ants_transforms_to_point_arr
 from aind_s3_cache.json_utils import get_json
 from aind_zarr_utils.neuroglancer import neuroglancer_annotations_to_anatomical
 from iblatlas.atlas import AllenAtlas
+from numpy.typing import NDArray
 
+from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS
+from aind_ibl_ephys_alignment_preprocessing.registration_frame import RegistrationFrame
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     ManifestRow,
@@ -32,6 +36,7 @@ def process_manifest_row(
     ibl_atlas: AllenAtlas,
     outputs: OutputDirs,
     data_root: Path,
+    frame: RegistrationFrame,
     *,
     emit_qc: bool = False,
 ) -> ProcessResult:
@@ -52,8 +57,8 @@ def process_manifest_row(
     hist_stub : sitk.Image
         Histology stub image with correct domain.
     hist_stub_buggy : sitk.Image
-        Histology stub image in pipeline (buggy) domain. Only used when
-        *emit_qc* is True.
+        Histology stub on the pipeline's anchored geometry. Only used when
+        *emit_qc* is True, and only when *frame* calls for the re-grid.
     ibl_atlas : AllenAtlas
         Allen atlas instance for CCF-to-bregma conversion. Only used when
         *emit_qc* is True.
@@ -61,6 +66,8 @@ def process_manifest_row(
         Output directory tree.
     data_root : Path
         Root directory for input data.
+    frame : RegistrationFrame
+        Whether the image-to-template transform expects pipeline-anchored input.
     emit_qc : bool
         Produce the GUI-unused QC outputs (FCSVs + CCF/bregma picks).
 
@@ -120,6 +127,7 @@ def process_manifest_row(
             outputs=outputs,
             gui_folder=gui_folder,
             shank_suffix=shank_suffix,
+            frame=frame,
         )
 
     return ProcessResult(
@@ -135,46 +143,52 @@ def _write_qc_probe_outputs(
     asset_info: AssetInfo,
     ng_data: dict,  # type: ignore[type-arg]
     probe_id: str,
-    probe_pts: object,
+    probe_pts: NDArray[Any],
     hist_stub_buggy: sitk.Image,
     ibl_atlas: AllenAtlas,
     outputs: OutputDirs,
     gui_folder: Path,
     shank_suffix: str,
+    frame: RegistrationFrame,
 ) -> None:
     """Write GUI-unused QC outputs: SPIM/template/CCF FCSVs + CCF/bregma xyz-picks.
 
-    These require the two ANTs point-warps (via ``hist_stub_buggy``) and the
-    ``ibl_atlas``; nothing in the alignment workflow reads them.
+    These require the two ANTs point-warps and the ``ibl_atlas``; nothing in the
+    alignment workflow reads them.
     """
     # SPIM FCSV (no warp)
     create_slicer_fcsv(str(outputs.spim / f"{probe_id}.fcsv"), probe_pts, direction="LPS")
 
-    # Image -> Template (points) via buggy pipeline transform
-    probe_pt_dict_buggy, _ = neuroglancer_annotations_to_anatomical(
-        ng_data,
-        asset_info.zarr_volumes.registration,
-        asset_info.zarr_volumes.metadata,
-        layer_names=[probe_id],
-        stub_image=hist_stub_buggy,
-    )
-    probe_pts_buggy = probe_pt_dict_buggy[probe_id]
-    tx_list_pt_template = [
-        str(asset_info.registration_dir_path / "ls_to_template_SyN_0GenericAffine.mat"),
-        str(asset_info.registration_dir_path / "ls_to_template_SyN_1InverseWarp.nii.gz"),
-    ]
+    # Points must enter the ANTs chain in the frame the transform was trained in.
+    # A pipeline transform expects the anchored geometry, so the annotations are
+    # re-read against that stub; a transform with a documented domain gets the
+    # points as they already are.
+    if frame.regrid_to_pipeline:
+        probe_pt_dict_regridded, _ = neuroglancer_annotations_to_anatomical(
+            ng_data,
+            asset_info.zarr_volumes.registration,
+            asset_info.zarr_volumes.metadata,
+            layer_names=[probe_id],
+            stub_image=hist_stub_buggy,
+        )
+        pts_in_tx_frame = probe_pt_dict_regridded[probe_id]
+    else:
+        pts_in_tx_frame = probe_pts
+
+    tx_list_pt_template = [str(asset_info.registration_dir_path / name) for name in REGISTRATION_TRANSFORMS]
     pts_template = apply_ants_transforms_to_point_arr(
-        probe_pts_buggy,
+        pts_in_tx_frame,
         tx_list_pt_template,
         whichtoinvert=[True, False],
     )
     create_slicer_fcsv(str(outputs.template / f"{probe_id}.fcsv"), pts_template, direction="LPS")
 
     # Template -> CCF (points)
+    pt_tx_str, pt_tx_inverted = asset_info.point_chain()
     pts_ccf = apply_ants_transforms_to_point_arr(
-        probe_pts_buggy,
-        asset_info.pipeline_registration_chains.pt_tx_str,
-        whichtoinvert=asset_info.pipeline_registration_chains.pt_tx_inverted,
+        pts_in_tx_frame,
+        pt_tx_str,
+        whichtoinvert=pt_tx_inverted,
     )
     create_slicer_fcsv(str(outputs.ccf / f"{probe_id}.fcsv"), pts_ccf, direction="LPS")
 

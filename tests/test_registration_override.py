@@ -230,6 +230,85 @@ def test_override_records_which_registration_was_used(tmp_path):
     assert transforms.template_to_ccf_affine.asset == "spim_template_to_ccf"
 
 
+# --- the point chain the CCF outputs actually use ---------------------------
+
+#: A pipeline point chain as ``pipeline_transforms_local_paths`` returns it:
+#: the individual->template half, cached locally from the stitched asset, then
+#: the template->CCF half.
+CACHED_CHAIN = [
+    "/cache/smartspim/ls_to_template_SyN_0GenericAffine.mat",
+    "/cache/smartspim/ls_to_template_SyN_1InverseWarp.nii.gz",
+    "/cache/template/spim_template_to_ccf_syn_0GenericAffine_25.mat",
+    "/cache/template/spim_template_to_ccf_syn_1InverseWarp_25.nii.gz",
+]
+CHAIN_INVERTED = [True, False, True, False]
+
+
+def _asset_info_with_chain(asset_path: Path, reg_dir: Path):
+    from aind_ibl_ephys_alignment_preprocessing.types import AssetInfo, PipelineRegistrationInfo, ZarrPaths
+
+    return AssetInfo(
+        asset_path=asset_path,
+        asset_uri="s3://bucket/SmartSPIM_750108",
+        zarr_volumes=ZarrPaths(registration="z.zarr", additional=[], metadata={}, processing={}),
+        pipeline_registration_chains=PipelineRegistrationInfo(
+            pt_tx_str=list(CACHED_CHAIN),
+            pt_tx_inverted=list(CHAIN_INVERTED),
+            img_tx_str=[],
+            img_tx_inverted=[],
+        ),
+        registration_dir_path=reg_dir,
+    )
+
+
+def test_without_an_override_the_point_chain_is_the_pipelines(tmp_path):
+    asset = tmp_path / "SmartSPIM_750108"
+    info = _asset_info_with_chain(asset, asset / "image_atlas_alignment" / "Ex_561_Em_600")
+    assert not info.has_registration_override
+    paths, inverted = info.point_chain()
+    assert paths == CACHED_CHAIN
+    assert inverted == CHAIN_INVERTED
+
+
+def test_an_override_replaces_only_the_individual_half(tmp_path):
+    """The CCF outputs were built on the registration the override exists to replace."""
+    asset = tmp_path / "SmartSPIM_750108"
+    reg_dir = tmp_path / "reg" / "ccf_Ex_639_Em_667"
+    info = _asset_info_with_chain(asset, reg_dir)
+    assert info.has_registration_override
+    paths, inverted = info.point_chain()
+    assert paths[:2] == [
+        str(reg_dir / "ls_to_template_SyN_0GenericAffine.mat"),
+        str(reg_dir / "ls_to_template_SyN_1InverseWarp.nii.gz"),
+    ]
+    # template->CCF is unrelated to which individual registration was used.
+    assert paths[2:] == CACHED_CHAIN[2:]
+    assert inverted == CHAIN_INVERTED
+
+
+def test_substitution_is_by_name_not_position(tmp_path):
+    """Robust to the upstream chain growing, shrinking, or reordering."""
+    from aind_ibl_ephys_alignment_preprocessing.types import AssetInfo, PipelineRegistrationInfo, ZarrPaths
+
+    asset = tmp_path / "SmartSPIM_750108"
+    reg_dir = tmp_path / "reg" / "ccf_Ex_639_Em_667"
+    reordered = [CACHED_CHAIN[2], CACHED_CHAIN[0], CACHED_CHAIN[3], CACHED_CHAIN[1]]
+    info = AssetInfo(
+        asset_path=asset,
+        asset_uri=None,
+        zarr_volumes=ZarrPaths(registration="z.zarr", additional=[], metadata={}, processing={}),
+        pipeline_registration_chains=PipelineRegistrationInfo(
+            pt_tx_str=reordered, pt_tx_inverted=[False] * 4, img_tx_str=[], img_tx_inverted=[]
+        ),
+        registration_dir_path=reg_dir,
+    )
+    paths, _ = info.point_chain()
+    assert paths[0] == CACHED_CHAIN[2]
+    assert paths[1] == str(reg_dir / "ls_to_template_SyN_0GenericAffine.mat")
+    assert paths[2] == CACHED_CHAIN[3]
+    assert paths[3] == str(reg_dir / "ls_to_template_SyN_1InverseWarp.nii.gz")
+
+
 # --- the manifest CSV contract ---------------------------------------------
 
 
