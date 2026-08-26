@@ -157,7 +157,7 @@ async def write_registration_channel_images_async(
 
 async def apply_ccf_inverse_tx_then_fix_domain_async(
     ccf_space_img_moving: ANTsImage,
-    pipeline_space_fixed_img: ANTsImage,
+    fixed_img: ANTsImage,
     correct_hist_domain_img: ANTsImage,
     asset_info: AssetInfo,
     limits: Limits,
@@ -165,8 +165,12 @@ async def apply_ccf_inverse_tx_then_fix_domain_async(
     **kwargs: Any,
 ) -> ANTsImage:
     """Async twin of :func:`~...histology.apply_ccf_inverse_tx_then_fix_domain`."""
+    if int(np.prod(fixed_img.shape)) <= 1:
+        raise ValueError(
+            f"fixed_img is a {fixed_img.shape} header stub; ants.apply_transforms would emit a "
+            "single-voxel volume. Build it with ants_warp_domain, not ants_domain_stub."
+        )
     pt_tx_str, pt_tx_inverted = asset_info.point_chain()
-    fixed = pipeline_space_fixed_img if frame.regrid_to_pipeline else correct_hist_domain_img
     interpolator = str(kwargs.get("interpolator", "linear"))
     # ``timed`` is a *sync* context manager, so it cannot share the ``async
     # with``. Nesting it inside the semaphore is also what we want: it then
@@ -175,7 +179,7 @@ async def apply_ccf_inverse_tx_then_fix_domain_async(
         with timed("histology.warp", interpolator=interpolator):
             ccf_img_in_hist_space: ANTsImage = await to_thread_logged(
                 ants.apply_transforms,
-                fixed=fixed,
+                fixed=fixed_img,
                 moving=ccf_space_img_moving,
                 transformlist=pt_tx_str,
                 whichtoinvert=pt_tx_inverted,
@@ -192,7 +196,7 @@ async def transform_ccf_to_image_space_async(
     asset_info: AssetInfo,
     refs: ReferenceVolumes,
     raw_hist_img: ANTsImage,
-    pipeline_hist_domain_img: ANTsImage,
+    fixed_img: ANTsImage,
     outputs: OutputDirs,
     limits: Limits,
     frame: RegistrationFrame,
@@ -201,7 +205,7 @@ async def transform_ccf_to_image_space_async(
     logger.info("[CCF Transform] Starting CCF template -> image space transform")
     ccf_in_hist_img = await apply_ccf_inverse_tx_then_fix_domain_async(
         refs.ccf_25,
-        pipeline_space_fixed_img=pipeline_hist_domain_img,
+        fixed_img=fixed_img,
         correct_hist_domain_img=raw_hist_img,
         asset_info=asset_info,
         limits=limits,
@@ -219,7 +223,7 @@ async def transform_ccf_labels_to_image_space_async(
     asset_info: AssetInfo,
     ref_paths: ReferencePaths,
     raw_hist_img: ANTsImage,
-    pipeline_hist_domain_img: ANTsImage,
+    fixed_img: ANTsImage,
     outputs: OutputDirs,
     limits: Limits,
     frame: RegistrationFrame,
@@ -234,7 +238,7 @@ async def transform_ccf_labels_to_image_space_async(
     unq_vals = np.load(str(ref_paths.ccf_labels_lateralized_25_unq_vals))["unique_labels"]
     ccf_labels_in_hist_img = await apply_ccf_inverse_tx_then_fix_domain_async(
         ccf_labels_lateralized_25,
-        pipeline_space_fixed_img=pipeline_hist_domain_img,
+        fixed_img=fixed_img,
         correct_hist_domain_img=raw_hist_img,
         asset_info=asset_info,
         limits=limits,

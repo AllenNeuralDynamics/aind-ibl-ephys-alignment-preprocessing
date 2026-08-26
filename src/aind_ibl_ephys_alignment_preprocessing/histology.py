@@ -585,7 +585,7 @@ def process_additional_channels_pipeline(
 
 def apply_ccf_inverse_tx_then_fix_domain(
     ccf_space_img_moving: ANTsImage,
-    pipeline_space_fixed_img: ANTsImage,
+    fixed_img: ANTsImage,
     correct_hist_domain_img: ANTsImage,
     asset_info: AssetInfo,
     frame: RegistrationFrame,
@@ -593,20 +593,23 @@ def apply_ccf_inverse_tx_then_fix_domain(
 ) -> ANTsImage:
     """Resample a CCF-space image into histology space, in the frame the transform expects.
 
-    A pipeline transform expects its input on the anchored geometry, so the
-    resample runs there and the header is relabelled afterwards -- the grid is
-    right, only its declared placement is the pipeline's. When a sidecar
-    documents the transform's own domain there is nothing to relabel: the
-    resample runs on the real histology grid directly.
+    *fixed_img* must already be the full-extent domain for that frame -- the
+    pipeline's anchored geometry when re-gridding, the volume's own otherwise.
+    A pipeline transform's output then carries the anchored header, so it is
+    relabelled afterwards from *correct_hist_domain_img*; the grid is right and
+    only its declared placement is the pipeline's. Honoring a sidecar leaves
+    nothing to relabel.
 
     Parameters
     ----------
     ccf_space_img_moving : ANTsImage
         Image in CCF/template space to move into histology space.
-    pipeline_space_fixed_img : ANTsImage
-        Histology geometry as the pipeline anchors it.
+    fixed_img : ANTsImage
+        Full-extent output domain, in the frame *frame* selected. Its size and
+        pixel type become the output's, so a header stub will not do.
     correct_hist_domain_img : ANTsImage
-        Reference histology image with correct spacing/origin/direction.
+        Carries the volume's true spacing/origin/direction for the relabel. Read
+        for its header only, so a stub is fine.
     asset_info : AssetInfo
         Registration chain paths.
     frame : RegistrationFrame
@@ -618,11 +621,22 @@ def apply_ccf_inverse_tx_then_fix_domain(
     -------
     ANTsImage
         Transformed image on the histology grid.
+
+    Raises
+    ------
+    ValueError
+        If *fixed_img* is a header stub. ``ants.apply_transforms`` takes the
+        output size from ``fixed``, so a 1x1x1 domain silently yields a
+        single-voxel volume rather than failing.
     """
+    if int(np.prod(fixed_img.shape)) <= 1:
+        raise ValueError(
+            f"fixed_img is a {fixed_img.shape} header stub; ants.apply_transforms would emit a "
+            "single-voxel volume. Build it with ants_warp_domain, not ants_domain_stub."
+        )
     pt_tx_str, pt_tx_inverted = asset_info.point_chain()
-    fixed = pipeline_space_fixed_img if frame.regrid_to_pipeline else correct_hist_domain_img
     ccf_space_img_in_hist_space: ANTsImage = ants.apply_transforms(
-        fixed=fixed,
+        fixed=fixed_img,
         moving=ccf_space_img_moving,
         transformlist=pt_tx_str,
         whichtoinvert=pt_tx_inverted,
@@ -667,7 +681,7 @@ def transform_ccf_to_image_space(
     asset_info: AssetInfo,
     refs: ReferenceVolumes,
     raw_hist_img: ANTsImage,
-    pipeline_hist_domain_img: ANTsImage,
+    fixed_img: ANTsImage,
     outputs: OutputDirs,
     frame: RegistrationFrame,
 ) -> None:
@@ -681,8 +695,8 @@ def transform_ccf_to_image_space(
         Reference volumes.
     raw_hist_img : ANTsImage
         Histology image with correct spatial domain.
-    pipeline_hist_domain_img : ANTsImage
-        Histology geometry as the pipeline anchors it.
+    fixed_img : ANTsImage
+        Full-extent output domain in the frame *frame* selected.
     outputs : OutputDirs
         Output directory tree.
     frame : RegistrationFrame
@@ -690,7 +704,7 @@ def transform_ccf_to_image_space(
     """
     ccf_in_hist_img = apply_ccf_inverse_tx_then_fix_domain(
         refs.ccf_25,
-        pipeline_space_fixed_img=pipeline_hist_domain_img,
+        fixed_img=fixed_img,
         correct_hist_domain_img=raw_hist_img,
         asset_info=asset_info,
         frame=frame,
@@ -706,7 +720,7 @@ def transform_ccf_labels_to_image_space(
     asset_info: AssetInfo,
     ref_paths: ReferencePaths,
     raw_hist_img: ANTsImage,
-    pipeline_hist_domain_img: ANTsImage,
+    fixed_img: ANTsImage,
     outputs: OutputDirs,
     frame: RegistrationFrame,
 ) -> None:
@@ -720,8 +734,8 @@ def transform_ccf_labels_to_image_space(
         Reference data paths.
     raw_hist_img : ANTsImage
         Histology image with correct spatial domain.
-    pipeline_hist_domain_img : ANTsImage
-        Histology geometry as the pipeline anchors it.
+    fixed_img : ANTsImage
+        Full-extent output domain in the frame *frame* selected.
     outputs : OutputDirs
         Output directory tree.
     frame : RegistrationFrame
@@ -734,7 +748,7 @@ def transform_ccf_labels_to_image_space(
     unq_vals = np.load(str(ref_paths.ccf_labels_lateralized_25_unq_vals))["unique_labels"]
     ccf_labels_in_hist_img = apply_ccf_inverse_tx_then_fix_domain(
         ccf_labels_lateralized_25,
-        pipeline_space_fixed_img=pipeline_hist_domain_img,
+        fixed_img=fixed_img,
         correct_hist_domain_img=raw_hist_img,
         asset_info=asset_info,
         frame=frame,

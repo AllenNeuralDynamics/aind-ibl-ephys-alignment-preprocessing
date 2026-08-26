@@ -517,7 +517,9 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
 
         # One decision shared by volumes and coords: both enter the same
         # image-to-template transform, so they cannot disagree about its frame.
-        reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub, native_size)
+        reg_frame = resolve_registration_frame(
+            asset_info.registration_dir_path, raw_img_stub, raw_img_stub_buggy, native_size
+        )
 
         # Volumes (use the zarr node) run concurrently with per-probe coords
         # (use the stubs + atlas) and the emit_qc-gated CCF-space copy.

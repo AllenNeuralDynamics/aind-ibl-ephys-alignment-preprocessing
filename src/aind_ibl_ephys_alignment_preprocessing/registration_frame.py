@@ -34,33 +34,15 @@ REGISTRATION_SIDECAR_NAMES = (
     "transform_information.json",
 )
 
-#: Domain agreement is checked in voxels, not in floating-point epsilon, because
-#: the sidecar's grid is the volume the registration ran on and the image here is
-#: a different resolution of the same acquisition.
-#:
-#: Resampling moves the *extent*, never the *placement*: a zarr stub's default
-#: origin is ``(0, 0, 0)`` at every level (``aind_zarr_utils.zarr``, origin_type
-#: "none"), so one bbox bound per axis is exactly 0 whatever level was read, and
-#: only the far bound carries the level. The pipeline-anchored frame moves that
-#: zero corner by ~12 mm, which is the thing being detected. So what varies with
-#: resampling is not what discriminates.
-#:
-#: The far bound's disagreement is computable rather than empirical. Both grids
-#: pin voxel 0's *centre* at the origin, so for ``N * s_fine == n * s_coarse`` the
-#: bounds are ``(N-1) * s_fine`` and ``(n-1) * s_coarse`` -- a difference of
-#: exactly ``s_coarse - s_fine``, plus up to one coarse voxel when the downsample
-#: does not divide evenly. That bound is just under two coarse voxels, so two is
-#: the threshold with no headroom (1.07x on the campaign's own grids); four gives
-#: 2.1x while still sitting ~190x below the millimetres it must catch.
-#:
-#: Converting to voxel *edges* does not remove this -- centre-pinned grids are
-#: neither centre- nor corner-aligned across levels. An exact check means building
-#: the comparison stub at the sidecar's own level, which is only possible when the
-#: registration read a raw pyramid level.
-#:
-#: Comparing all six bounds rather than just the zero corner keeps this
-#: independent of that origin convention, and still catches a sidecar paired with
-#: an altogether different volume.
+#: Floor for the plausibility check, in mm. The frame is chosen by which candidate
+#: is *nearer*, so this decides nothing -- it only rejects a sidecar that belongs to
+#: some other volume. Set well above any legitimate resampling disagreement (tens of
+#: microns) and well below the millimetres that separate the two frames.
+DOMAIN_SANITY_MM = 1.0
+
+#: Voxel-scaled companion to :data:`DOMAIN_SANITY_MM`, so a registration run at a
+#: very coarse resolution is not judged against a floor finer than its own grid.
+#: The larger of the two applies.
 DOMAIN_TOLERANCE_VOXELS = 4.0
 
 _AXES = ("L", "P", "S")
@@ -74,7 +56,8 @@ class RegistrationFrame:
     ----------
     regrid_to_pipeline : bool
         Re-grid points onto the pipeline's anchored geometry before the ANTs
-        chain. False when a sidecar documents the transform's own domain.
+        chain. False when a sidecar shows the transform was trained in the
+        volume's own frame.
     reason : str
         Human-readable justification, recorded in logs.
     sidecar_path : Path or None
@@ -107,24 +90,32 @@ def find_registration_sidecar(registration_dir: Path) -> Path | None:
 
 
 def resolve_registration_frame(
-    registration_dir: Path, moving_image: sitk.Image, size_ijk: tuple[int, int, int]
+    registration_dir: Path,
+    native_image: sitk.Image,
+    pipeline_image: sitk.Image,
+    size_ijk: tuple[int, int, int],
 ) -> RegistrationFrame:
     """Decide whether points need the pipeline re-grid before the ANTs chain.
+
+    The choice is made *relatively* -- which of the two candidate frames the
+    sidecar's declared domain is nearer to -- so no threshold decides it and a
+    mis-sized tolerance cannot pick the wrong frame. The absolute check that
+    follows only asks whether the winner is plausible at all, which is what
+    catches a sidecar paired with a different volume.
 
     Parameters
     ----------
     registration_dir : Path
         Directory holding the image-to-template transforms.
-    moving_image : sitk.Image
-        The anatomical image the points are expressed in. Only origin, spacing
-        and direction are read from it.
+    native_image, pipeline_image : sitk.Image
+        The anatomical geometry as the volume's own header gives it, and as the
+        pipeline's anchoring overlay gives it. Only origin, spacing and
+        direction are read.
     size_ijk : tuple[int, int, int]
-        Voxel counts in SimpleITK (x, y, z) order. Required rather than taken
-        from *moving_image*, because the anatomical images here are header-only
-        stubs: ``AnatomicalHeader.as_sitk_stub`` returns a 1x1x1 image, whose own
-        ``GetSize`` would collapse the domain to a single point and fail every
-        comparison. ``base_and_pipeline_anatomical_stub`` returns this alongside
-        the stubs.
+        Voxel counts in SimpleITK (x, y, z) order, shared by both. Required
+        rather than read from the images: these are header-only stubs, and
+        ``AnatomicalHeader.as_sitk_stub`` returns a 1x1x1 image whose own
+        ``GetSize`` would collapse each domain to a point.
 
     Returns
     -------
@@ -134,10 +125,10 @@ def resolve_registration_frame(
     Raises
     ------
     ValueError
-        If a sidecar is present but declares no ``moving_domain``, or declares
-        one that disagrees with *moving_image*. Neither has a safe recovery:
-        falling back to the re-grid would apply the pipeline's compensation to a
-        transform that is not the pipeline's, which is the original defect.
+        If a sidecar declares no ``moving_domain``, or declares one that matches
+        neither candidate. Neither has a safe recovery: falling back to the
+        re-grid would apply the pipeline's compensation to a transform that is
+        not the pipeline's, which is the original defect.
     """
     sidecar_path = find_registration_sidecar(registration_dir)
     if sidecar_path is None:
@@ -147,38 +138,72 @@ def resolve_registration_frame(
         )
 
     sidecar = load_package(sidecar_path.read_text())
-    if sidecar.moving_domain is None:
+    moving = sidecar.moving_domain
+    if moving is None:
         raise ValueError(
             f"{sidecar_path} declares no moving_domain. A sidecar means the transform is off-pipeline, "
             "so the pipeline re-grid would be wrong, but without a domain there is nothing to honor "
             "instead. Regenerate the sidecar."
         )
 
-    image_domain = _domain_from_image(moving_image, size_ijk)
-    deltas = _bbox_deltas(sidecar.moving_domain, image_domain)
-    tolerance = DOMAIN_TOLERANCE_VOXELS * max(max(sidecar.moving_domain.spacing_LPS), max(image_domain.spacing_LPS))
-    if max(abs(d) for d in deltas.values()) > tolerance:
+    candidates = {
+        "native": _domain_from_image(native_image, size_ijk),
+        "pipeline": _domain_from_image(pipeline_image, size_ijk),
+    }
+    distances = {name: _bbox_distance(moving, d) for name, d in candidates.items()}
+    winner = min(distances, key=lambda name: distances[name])
+
+    # Both frames describe the same acquisition, so an exact tie means the
+    # anchoring overlay was a no-op and the branches are indistinguishable.
+    tolerance = _sanity_tolerance(moving, candidates[winner])
+    if distances[winner] > tolerance:
         raise ValueError(
-            f"{sidecar_path} moving_domain disagrees with the anatomical image it is paired with.\n"
-            f"  sidecar bbox: {_format_bbox(sidecar.moving_domain)}\n"
-            f"  image bbox:   {_format_bbox(image_domain)}\n"
-            f"  deltas (mm):  {_format_deltas(deltas)}\n"
-            f"  tolerance:    {tolerance:.6g} mm ({DOMAIN_TOLERANCE_VOXELS} voxels)\n"
+            f"{sidecar_path} moving_domain matches neither frame of the anatomical image it is paired with.\n"
+            f"  sidecar bbox:  {_format_bbox(moving)}\n"
+            f"  native bbox:   {_format_bbox(candidates['native'])}  (off by {distances['native']:.4g} mm)\n"
+            f"  pipeline bbox: {_format_bbox(candidates['pipeline'])}  (off by {distances['pipeline']:.4g} mm)\n"
+            f"  plausible within {tolerance:.4g} mm\n"
             "Either the transform was computed on a different volume, or the sidecar is stale."
         )
 
     reason = (
-        f"{sidecar_path.name} declares the transform's own domain "
-        f"(max bbox delta {max(abs(d) for d in deltas.values()):.6g} mm, tolerance {tolerance:.6g} mm); "
-        "honoring it instead of re-gridding"
+        f"{sidecar_path.name} moving_domain is nearest the {winner} frame "
+        f"(native {distances['native']:.4g} mm, pipeline {distances['pipeline']:.4g} mm; "
+        f"plausible within {tolerance:.4g} mm)"
     )
     logger.info("Registration frame: %s", reason)
-    return RegistrationFrame(regrid_to_pipeline=False, reason=reason, sidecar_path=sidecar_path)
+    return RegistrationFrame(
+        regrid_to_pipeline=winner == "pipeline",
+        reason=reason,
+        sidecar_path=sidecar_path,
+    )
 
 
 def _domain_from_image(image: sitk.Image, size_ijk: tuple[int, int, int]) -> Domain:
     """Describe *image*'s physical extent in the sidecar's own vocabulary."""
     return ImageDomainAxisAligned.from_header(ImageHeader.from_sitk(image, size_ijk)).to_sidecar()
+
+
+def _bbox_distance(left: Domain, right: Domain) -> float:
+    """Largest disagreement between two domains' voxel-center bboxes, in mm.
+
+    Shape is deliberately not compared: the sidecar's grid is the resolution the
+    registration ran at, which legitimately differs from any volume here.
+    """
+    return max(abs(v) for v in _bbox_deltas(left, right).values())
+
+
+def _sanity_tolerance(left: Domain, right: Domain) -> float:
+    """How far apart two domains of the same volume may legitimately sit, in mm.
+
+    Both grids pin voxel 0's *centre* at the origin, so for ``N * s_fine ==
+    n * s_coarse`` the far bounds differ by exactly ``s_coarse - s_fine``, plus up
+    to one coarse voxel when the downsample does not divide evenly -- just under
+    two coarse voxels. This is no longer what picks the frame, so it is set well
+    above that bound; it exists to reject a sidecar belonging to another volume.
+    """
+    coarsest = max(max(left.spacing_LPS), max(right.spacing_LPS))
+    return max(DOMAIN_SANITY_MM, DOMAIN_TOLERANCE_VOXELS * coarsest)
 
 
 def _bbox_deltas(left: Domain, right: Domain) -> dict[str, float]:
@@ -197,8 +222,3 @@ def _format_bbox(domain: Domain) -> str:
     return " ".join(
         f"{axis} [{getattr(domain.bbox, axis)[0]:.4g}, {getattr(domain.bbox, axis)[1]:.4g}]" for axis in _AXES
     )
-
-
-def _format_deltas(deltas: dict[str, float]) -> str:
-    """Render per-bound deltas in a stable order."""
-    return " ".join(f"{name}={value:+.4g}" for name, value in deltas.items())

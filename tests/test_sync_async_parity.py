@@ -86,6 +86,9 @@ def test_both_ccf_paths_branch_on_the_registration_frame():
         assert "frame.regrid_to_pipeline" in source, fn.__name__
         # The header repair is meaningless once the resample ran on the real grid.
         assert source.count("set_origin") == 1, fn.__name__
+        # ants.apply_transforms takes the output size from `fixed`, so a header
+        # stub yields a single-voxel volume with no error. Both paths refuse one.
+        assert "header stub" in source, fn.__name__
 
 
 def test_both_ccf_paths_honor_a_registration_override():

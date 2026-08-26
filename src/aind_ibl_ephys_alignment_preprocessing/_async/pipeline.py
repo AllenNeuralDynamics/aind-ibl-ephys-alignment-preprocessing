@@ -101,6 +101,12 @@ async def _create_volumes_async(
     with timed("histology.ants_domain"):
         pipeline_img_ants = ants_warp_domain(pipeline_header, "registration-pipeline", warp_dtype)
         raw_img_ants = ants_domain_stub(base_header, "registration")
+        # The warp's ``fixed`` sets the output grid, so it must be full extent AND in
+        # the frame the transform expects. ``raw_img_ants`` stays a stub: it only
+        # stamps the true header back on after a pipeline-frame warp.
+        ccf_fixed_ants = (
+            pipeline_img_ants if frame.regrid_to_pipeline else ants_warp_domain(base_header, "registration", warp_dtype)
+        )
     logger.info(
         "[Histology] Starting parallel processing: %d additional channel(s), CCF template + labels transforms",
         num_additional,
@@ -121,14 +127,12 @@ async def _create_volumes_async(
             name="process-additional-channels",
         )
         tg.create_task(
-            transform_ccf_to_image_space_async(
-                asset_info, ref_imgs, raw_img_ants, pipeline_img_ants, out, limits, frame
-            ),
+            transform_ccf_to_image_space_async(asset_info, ref_imgs, raw_img_ants, ccf_fixed_ants, out, limits, frame),
             name="transform-ccf-template-to-image",
         )
         tg.create_task(
             transform_ccf_labels_to_image_space_async(
-                asset_info, ref_paths, raw_img_ants, pipeline_img_ants, out, limits, frame
+                asset_info, ref_paths, raw_img_ants, ccf_fixed_ants, out, limits, frame
             ),
             name="transform-ccf-labels-to-image",
         )
@@ -192,15 +196,17 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
     # Decided once, here, and handed to both branches: the volumes and the probe
     # points enter the same image-to-template transform, so they cannot disagree
     # about the frame it expects. The stub is header-only, so this is cheap.
-    raw_img_stub, _, native_size = await to_thread_logged(
+    raw_img_stub, pipeline_img_stub, native_size = await to_thread_logged(
         base_and_pipeline_anatomical_stub,
         asset_info.zarr_volumes.registration,
         asset_info.zarr_volumes.metadata,
         asset_info.zarr_volumes.processing,
         opened_zarr=(node, zarr_metadata),
     )
-    reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub, native_size)
-    del raw_img_stub
+    reg_frame = resolve_registration_frame(
+        asset_info.registration_dir_path, raw_img_stub, pipeline_img_stub, native_size
+    )
+    del raw_img_stub, pipeline_img_stub
 
     skip_ephys_msg = " (ephys disabled)" if config.skip_ephys else ""
     logger.info(

@@ -86,7 +86,9 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
         asset_info.zarr_volumes.processing,
         opened_zarr=(node, zarr_metadata),
     )
-    reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub, native_size)
+    reg_frame = resolve_registration_frame(
+        asset_info.registration_dir_path, raw_img_stub, raw_img_stub_buggy, native_size
+    )
 
     raw_img_path, base_header, pipeline_header, warp_dtype = write_registration_channel_images(
         asset_info,
@@ -99,6 +101,12 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     # it is. Neither is read back from disk.
     pipeline_img_ants = ants_warp_domain(pipeline_header, "registration-pipeline", warp_dtype)
     raw_img_ants = ants_domain_stub(base_header, "registration")
+    # The warp's ``fixed`` sets the output grid, so it must be full extent AND in
+    # the frame the transform expects. ``raw_img_ants`` stays a stub: it only
+    # stamps the true header back on after a pipeline-frame warp.
+    ccf_fixed_ants = (
+        pipeline_img_ants if reg_frame.regrid_to_pipeline else ants_warp_domain(base_header, "registration", warp_dtype)
+    )
 
     scratch_root = Path(config.scratch_root) if config.scratch_root is not None else Path(tempfile.mkdtemp())
     scratch_root.mkdir(parents=True, exist_ok=True)
@@ -113,8 +121,8 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
         output_voxel_size_um=config.output_voxel_size_um,
         emit_qc=config.emit_qc,
     )
-    transform_ccf_to_image_space(asset_info, ref_imgs, raw_img_ants, pipeline_img_ants, out, reg_frame)
-    transform_ccf_labels_to_image_space(asset_info, ref_paths, raw_img_ants, pipeline_img_ants, out, reg_frame)
+    transform_ccf_to_image_space(asset_info, ref_imgs, raw_img_ants, ccf_fixed_ants, out, reg_frame)
+    transform_ccf_labels_to_image_space(asset_info, ref_paths, raw_img_ants, ccf_fixed_ants, out, reg_frame)
 
     processed_recordings: set[str] = set()
     processed_results: list[ProcessResult] = []
