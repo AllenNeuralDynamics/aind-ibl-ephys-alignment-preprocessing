@@ -260,6 +260,108 @@ def test_raw_key_of_accepts_suffixed_upload_and_rejects_derived():
     assert raw_key_of("SmartSPIM_750107_2025-02-19_12-00-00") is None
 
 
+# --- 823993 real data: names without the modality prefix --------------------
+#
+# Pulled 2026-08-26. AIND dropped the modality prefix from data_description
+# names, so a session is `<mouseid>_<date>_<time>` with no `ecephys_` in front,
+# and one raw asset now covers every modality. The prefix used to be the only
+# thing separating the ephys from the behavior products of a session; now only
+# the derived suffix does.
+
+PINNED_823993 = ["823993_2026-04-14_10-56-43_sorted_2026-04-15_12-04-52"]
+NG_ACQ_823993 = "SmartSPIM_823993_2026-05-06_16-49-37"
+KEY_823993 = "823993_2026-04-14_10-56-43"
+
+RAW_823993 = [A("fadd36ec", KEY_823993, ("823993", "raw"))]
+SPIM_823993 = [A("3c992c35", NG_ACQ_823993, ("823993", "SmartSPIM", "raw"))]
+SORTING_823993 = A(
+    "4b782b4b",
+    "823993_2026-04-14_10-56-43_sorted_2026-04-15_12-04-52",
+    ("derived", "ecephys", "823993"),
+    computation="c3da679f",
+    external=True,
+    source_assets=("fadd36ec",),
+)
+# the behavior product of the same session -- shares the recording key exactly
+BEHAVIOR_823993 = A(
+    "29b84e73",
+    "823993_2026-04-14_10-56-43_processed_2026-04-15_08-24-35",
+    ("derived", "behavior", "823993"),
+)
+TAGGED_823993 = [SORTING_823993, BEHAVIOR_823993]
+
+
+def _resolve_823993(raw=None, tagged=None):
+    return resolve(
+        "823993",
+        PINNED_823993,
+        RAW_823993 if raw is None else raw,
+        SPIM_823993,
+        TAGGED_823993 if tagged is None else tagged,
+        NG_ACQ_823993,
+    )
+
+
+def test_823993_prefixless_pin_resolves():
+    res = _resolve_823993()
+    assert res.unresolved == ()
+    assert res.sortings[KEY_823993].id == "4b782b4b"
+    assert res.raw[KEY_823993].id == "fadd36ec"
+    assert res.shrunk_by() == []
+
+
+def test_823993_prefixless_resolution_is_silent():
+    # Both conventions are first-class; the new one must not be warned about.
+    res = _resolve_823993()
+    assert not any("well-formed" in w for w in res.warnings)
+    assert not any("fuzzy" in w for w in res.warnings)
+
+
+def test_823993_behavior_sibling_is_not_mistaken_for_the_raw():
+    # It shares the recording key, so only the `_processed_` suffix rules it out.
+    assert raw_key_of(BEHAVIOR_823993.name) is None
+    res = _resolve_823993()
+    assert "29b84e73" not in {aid for aid, _ in res.data_assets()}
+
+
+def test_823993_behavior_sibling_loses_even_on_the_name_fallback():
+    # With provenance stripped the raw comes from the name search, which is the
+    # path where a same-key behavior asset could win.
+    no_prov = A(
+        SORTING_823993.id,
+        SORTING_823993.name,
+        SORTING_823993.tags,
+        computation=SORTING_823993.computation,
+        external=SORTING_823993.external,
+    )
+    res = _resolve_823993(raw=RAW_823993 + [BEHAVIOR_823993], tagged=[no_prov, BEHAVIOR_823993])
+    assert res.raw[KEY_823993].id == "fadd36ec"
+    assert not any("AMBIGUOUS" in w for w in res.warnings)
+
+
+def test_823993_prefixless_fuzzy_match_tolerates_dropped_recording_time():
+    # The same name drift the prefixed convention has, without the prefix.
+    truncated = A(
+        "9e9e9e9e",
+        "823993_2026-04-14_sorted_2026-04-15_12-04-52",
+        ("derived", "ecephys", "823993"),
+        external=True,
+    )
+    res = _resolve_823993(tagged=[truncated, BEHAVIOR_823993])
+    assert res.sortings[KEY_823993].id == "9e9e9e9e"
+    assert any("fuzzy: name inconsistency" in w for w in res.warnings)
+
+
+def test_raw_key_of_accepts_both_naming_conventions():
+    assert raw_key_of(KEY_823993) == KEY_823993
+    assert raw_key_of(f"ecephys_{KEY_823993}") == KEY_823993
+    assert raw_key_of(f"{KEY_823993}_corrected") == KEY_823993
+    assert raw_key_of(f"{KEY_823993}_sorted_2026-04-15_12-04-52") is None
+    assert raw_key_of(f"{KEY_823993}_processed_2026-04-15_08-24-35") is None
+    assert raw_key_of(f"ecephys_{KEY_823993}_processed_2026-04-15_08-24-35") is None
+    assert raw_key_of(NG_ACQ_823993) is None
+
+
 # --- unit tests on helpers --------------------------------------------------
 
 
@@ -299,6 +401,26 @@ def test_parse_pinned():
         "2026-04-24_13-43-00",
     )
     assert parse_pinned("not_a_sorting") is None
+
+
+def test_parse_pinned_without_modality_prefix():
+    assert parse_pinned("823993_2026-04-14_10-56-43_sorted_2026-04-15_12-04-52") == (
+        "823993_2026-04-14_10-56-43",
+        "2026-04-15_12-04-52",
+    )
+    # a re-upload the sorting was run against still names its recording
+    assert parse_pinned("823993_2026-04-14_10-56-43_corrected_sorted_2026-04-15_12-04-52") == (
+        "823993_2026-04-14_10-56-43",
+        "2026-04-15_12-04-52",
+    )
+
+
+def test_parse_pinned_rejects_bases_that_do_not_name_a_recording():
+    # `_sorted_<ts>` alone is not enough -- the base has to be a recording, which
+    # keeps a re-sorting and a same-shaped non-ephys name out.
+    assert parse_pinned("823993_2026-04-14_10-56-43_sorted_2026-04-15_12-04-52_sorted_2026-05-01_00-00-00") is None
+    assert parse_pinned("SmartSPIM_823993_2026-05-06_16-49-37_sorted_2026-04-15_12-04-52") is None
+    assert parse_pinned("823993_2026-04-14_10-56-43_sorted_2026-04-15") is None
 
 
 def test_sibling_captures_helper():

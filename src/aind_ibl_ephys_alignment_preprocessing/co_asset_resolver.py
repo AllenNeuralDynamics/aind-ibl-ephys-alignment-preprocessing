@@ -10,7 +10,7 @@ Design (verified live against 791094 and 781370 on 2026-07-09):
 
 * **Raw recordings** -- taken from the chosen sorting's ``provenance.data_assets``,
   which names the recording it was produced from. Falls back to a
-  ``name:ecephys_<mouseid>`` search filtered to ``tag:raw`` when a sorting
+  ``name:<mouseid>`` search filtered to ``tag:raw`` when a sorting
   carries no usable provenance, and warns when it does.
 * **SmartSPIM** -- taken from the Neuroglancer image-layer source, which *is* the
   acquisition the tracks were drawn on (unambiguous even when a mouse was imaged
@@ -146,18 +146,22 @@ class AssetResolution:
         return pairs
 
 
-# recording key: "<mouseid>_<date>_<time>" (the identity after the "ecephys_" prefix).
+# recording key: "<mouseid>_<date>_<time>" -- the session identity, which is the
+# whole asset name under the current AIND convention and follows an `ecephys_`
+# prefix under the older one. Both are in use, so the prefix is optional.
 # The suffix is optional because a re-uploaded raw keeps the key and adds to it
 # (`..._corrected`); anchoring the pattern hid those completely.
-_RAW_RE = re.compile(r"^ecephys_(?P<key>\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?P<suffix>_.+)?$")
+_RAW_RE = re.compile(r"^(?:ecephys_)?(?P<key>\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?P<suffix>_.+)?$")
 # Suffixes that mark a *derived* product rather than another upload of the raw.
 # Without this the relaxed pattern above would also accept `..._sorted_<ts>`.
-_DERIVED_SUFFIX_RE = re.compile(r"(?:^|_)(sorted|preprocessed|curated|nwb|oversplit|ccg)(?:[_-]|$)", re.IGNORECASE)
-# a well-formed pinned sorted_recording: ecephys_<key>_sorted_<sort_ts>
-_PINNED_RE = re.compile(
-    r"^ecephys_(?P<key>\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_sorted_"
-    r"(?P<ts>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$"
+# `processed` is the behavior sibling of a session: with the modality prefix gone
+# it shares the recording key with the raw, so only the suffix separates them.
+_DERIVED_SUFFIX_RE = re.compile(
+    r"(?:^|_)(sorted|processed|preprocessed|curated|nwb|oversplit|ccg)(?:[_-]|$)", re.IGNORECASE
 )
+# a pinned sorted_recording is `<raw asset name>_sorted_<sort_ts>`, so the base is
+# whatever names the recording -- validated by _RAW_RE rather than re-spelled here.
+_PINNED_RE = re.compile(r"^(?P<base>.+)_sorted_(?P<ts>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$")
 # extract the SmartSPIM acquisition name from an s3 image-source uri
 _SMARTSPIM_RE = re.compile(r"(SmartSPIM_[^/]+?)/")
 
@@ -215,8 +219,10 @@ def parse_pinned(sorted_recording: str) -> tuple[str, str] | None:
     Parameters
     ----------
     sorted_recording : str
-        A pinned sorting name, e.g.
-        ``ecephys_791094_2025-10-08_16-48-57_sorted_2026-04-24_13-43-00``.
+        A pinned sorting name: the raw asset's name plus ``_sorted_<ts>``, e.g.
+        ``ecephys_791094_2025-10-08_16-48-57_sorted_2026-04-24_13-43-00`` or,
+        without the modality prefix,
+        ``823993_2026-04-14_10-56-43_sorted_2026-04-15_12-04-52``.
 
     Returns
     -------
@@ -224,7 +230,12 @@ def parse_pinned(sorted_recording: str) -> tuple[str, str] | None:
         ``(recording_key, sort_timestamp)`` or None if malformed.
     """
     match = _PINNED_RE.match(sorted_recording)
-    return (match.group("key"), match.group("ts")) if match else None
+    if match is None:
+        return None
+    # The base has to name a recording, which also rejects a re-sorting
+    # (`..._sorted_<ts1>_sorted_<ts2>`): its base carries a derived suffix.
+    key = raw_key_of(match.group("base"))
+    return (key, match.group("ts")) if key is not None else None
 
 
 def _prefer_external(assets: list[CandidateAsset]) -> CandidateAsset:
@@ -316,9 +327,10 @@ def sibling_captures(asset: CandidateAsset, pool: list[CandidateAsset]) -> list[
 def raw_key_of(name: str) -> str | None:
     """Return the recording key an asset name denotes, if it names a raw upload.
 
-    ``None`` for anything that is not an ``ecephys_<key>`` asset, and for the
-    derived products that share the prefix (``..._sorted_<ts>`` and friends),
-    which the relaxed :data:`_RAW_RE` would otherwise accept.
+    ``None`` for anything that does not name a recording session, and for the
+    derived products that share the session name (``..._sorted_<ts>``,
+    ``..._processed_<ts>`` and friends), which the relaxed :data:`_RAW_RE` would
+    otherwise accept.
 
     Parameters
     ----------
@@ -377,7 +389,7 @@ def _resolve_raw(
     recording_keys : set[str]
         Recording keys the run needs a raw asset for.
     raw_candidates : list[CandidateAsset]
-        Result of the ``name:ecephys_<mouseid>`` search -- the fallback pool.
+        Result of the ``name:<mouseid>`` search -- the fallback pool.
     sortings : dict[str, CandidateAsset]
         Resolved sortings, keyed by recording key; the provenance source.
     pool : list[CandidateAsset]
@@ -421,7 +433,7 @@ def _resolve_raw(
 
         hits = by_name_key.get(key, [])
         if not hits:
-            warnings.append(f"{key}: no raw recording asset found (name:ecephys_{mouseid})")
+            warnings.append(f"{key}: no raw recording asset found (name:{mouseid})")
             continue
         chosen = _prefer_external(hits)
         if sorting is not None and sorting.source_assets:
@@ -487,7 +499,7 @@ def _resolve_pinned_sortings(
         date = key.split("_", 1)[1].rsplit("_", 1)[0]  # <mouseid>_<date>_<time> -> <date>
         # recording time is optional because sorting asset names sometimes drop it
         fuzzy = re.compile(
-            rf"^ecephys_{re.escape(mouseid)}_{re.escape(date)}"
+            rf"^(?:ecephys_)?{re.escape(mouseid)}_{re.escape(date)}"
             rf"(?:_\d{{2}}-\d{{2}}-\d{{2}})?_sorted_{re.escape(sort_ts)}$"
         )
         hits = [a for a in tagged_all if fuzzy.match(a.name)]
@@ -541,7 +553,7 @@ def resolve(
         User-pinned ``sorted_recording`` names (one per recording, from the
         manifest / bridge config).
     raw_candidates : list[CandidateAsset]
-        Result of ``name:ecephys_<mouseid>`` (state-ready).
+        Result of ``name:<mouseid>`` (state-ready).
     smartspim_candidates : list[CandidateAsset]
         Result of ``name:SmartSPIM_<mouseid>`` (NOT ``tag:<mouseid>`` -- processed
         SmartSPIM assets are sometimes tagged only ``[smartspim, processed]``).
