@@ -512,12 +512,12 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
                 )
             )
             atlas_task = tg.create_task(to_thread_logged(AllenAtlas, 25, hist_path=ref_paths.ibl_atlas_histology_path))
-        raw_img_stub, raw_img_stub_buggy, _ = stub_task.result()
+        raw_img_stub, raw_img_stub_buggy, native_size = stub_task.result()
         ibl_atlas = atlas_task.result()
 
         # One decision shared by volumes and coords: both enter the same
         # image-to-template transform, so they cannot disagree about its frame.
-        reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub)
+        reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub, native_size)
 
         # Volumes (use the zarr node) run concurrently with per-probe coords
         # (use the stubs + atlas) and the emit_qc-gated CCF-space copy.

@@ -80,13 +80,13 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     # Header-only stubs, and one frame decision for the whole run: every CCF
     # product below enters the same image-to-template transform, so they must all
     # agree on the frame it expects its input in.
-    raw_img_stub, raw_img_stub_buggy, _ = base_and_pipeline_anatomical_stub(
+    raw_img_stub, raw_img_stub_buggy, native_size = base_and_pipeline_anatomical_stub(
         asset_info.zarr_volumes.registration,
         asset_info.zarr_volumes.metadata,
         asset_info.zarr_volumes.processing,
         opened_zarr=(node, zarr_metadata),
     )
-    reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub)
+    reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub, native_size)
 
     raw_img_path, base_header, pipeline_header, warp_dtype = write_registration_channel_images(
         asset_info,

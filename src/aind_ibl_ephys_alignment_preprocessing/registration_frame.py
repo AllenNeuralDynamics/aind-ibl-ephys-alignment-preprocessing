@@ -106,7 +106,9 @@ def find_registration_sidecar(registration_dir: Path) -> Path | None:
     return None
 
 
-def resolve_registration_frame(registration_dir: Path, moving_image: sitk.Image) -> RegistrationFrame:
+def resolve_registration_frame(
+    registration_dir: Path, moving_image: sitk.Image, size_ijk: tuple[int, int, int]
+) -> RegistrationFrame:
     """Decide whether points need the pipeline re-grid before the ANTs chain.
 
     Parameters
@@ -114,8 +116,15 @@ def resolve_registration_frame(registration_dir: Path, moving_image: sitk.Image)
     registration_dir : Path
         Directory holding the image-to-template transforms.
     moving_image : sitk.Image
-        The anatomical image the points are expressed in. Only its header is
-        read, so a stub is enough.
+        The anatomical image the points are expressed in. Only origin, spacing
+        and direction are read from it.
+    size_ijk : tuple[int, int, int]
+        Voxel counts in SimpleITK (x, y, z) order. Required rather than taken
+        from *moving_image*, because the anatomical images here are header-only
+        stubs: ``AnatomicalHeader.as_sitk_stub`` returns a 1x1x1 image, whose own
+        ``GetSize`` would collapse the domain to a single point and fail every
+        comparison. ``base_and_pipeline_anatomical_stub`` returns this alongside
+        the stubs.
 
     Returns
     -------
@@ -145,7 +154,7 @@ def resolve_registration_frame(registration_dir: Path, moving_image: sitk.Image)
             "instead. Regenerate the sidecar."
         )
 
-    image_domain = _domain_from_image(moving_image)
+    image_domain = _domain_from_image(moving_image, size_ijk)
     deltas = _bbox_deltas(sidecar.moving_domain, image_domain)
     tolerance = DOMAIN_TOLERANCE_VOXELS * max(max(sidecar.moving_domain.spacing_LPS), max(image_domain.spacing_LPS))
     if max(abs(d) for d in deltas.values()) > tolerance:
@@ -167,9 +176,9 @@ def resolve_registration_frame(registration_dir: Path, moving_image: sitk.Image)
     return RegistrationFrame(regrid_to_pipeline=False, reason=reason, sidecar_path=sidecar_path)
 
 
-def _domain_from_image(image: sitk.Image) -> Domain:
+def _domain_from_image(image: sitk.Image, size_ijk: tuple[int, int, int]) -> Domain:
     """Describe *image*'s physical extent in the sidecar's own vocabulary."""
-    return ImageDomainAxisAligned.from_header(ImageHeader.from_sitk(image)).to_sidecar()
+    return ImageDomainAxisAligned.from_header(ImageHeader.from_sitk(image, size_ijk)).to_sidecar()
 
 
 def _bbox_deltas(left: Domain, right: Domain) -> dict[str, float]:

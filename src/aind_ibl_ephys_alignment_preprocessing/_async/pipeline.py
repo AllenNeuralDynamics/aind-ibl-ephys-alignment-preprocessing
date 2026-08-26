@@ -192,14 +192,14 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
     # Decided once, here, and handed to both branches: the volumes and the probe
     # points enter the same image-to-template transform, so they cannot disagree
     # about the frame it expects. The stub is header-only, so this is cheap.
-    raw_img_stub, _, _ = await to_thread_logged(
+    raw_img_stub, _, native_size = await to_thread_logged(
         base_and_pipeline_anatomical_stub,
         asset_info.zarr_volumes.registration,
         asset_info.zarr_volumes.metadata,
         asset_info.zarr_volumes.processing,
         opened_zarr=(node, zarr_metadata),
     )
-    reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub)
+    reg_frame = resolve_registration_frame(asset_info.registration_dir_path, raw_img_stub, native_size)
     del raw_img_stub
 
     skip_ephys_msg = " (ephys disabled)" if config.skip_ephys else ""
