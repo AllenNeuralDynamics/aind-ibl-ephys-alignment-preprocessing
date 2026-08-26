@@ -130,6 +130,11 @@ def resolve_registration_frame(
         re-grid would apply the pipeline's compensation to a transform that is
         not the pipeline's, which is the original defect.
     """
+    # A manifest override still gets this branch. Which *asset* holds the
+    # transforms says nothing about which *frame* they were trained in -- a
+    # re-registration run with ``pipeline=True`` would be anchored too -- so the
+    # sidecar is the only evidence, and its absence means the pipeline's
+    # convention. Do not reach for ``has_registration_override`` here.
     sidecar_path = find_registration_sidecar(registration_dir)
     if sidecar_path is None:
         return RegistrationFrame(

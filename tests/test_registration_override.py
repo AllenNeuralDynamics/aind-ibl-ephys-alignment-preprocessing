@@ -485,3 +485,26 @@ def test_find_asset_info_rejects_a_channel_the_brain_does_not_have(tmp_path, mon
     assert "Ex_999_Em_999" in message
     # and it says what the brain does have, so the fix is obvious
     assert DEFAULT_CHANNEL in message and OVERRIDE_CHANNEL in message
+
+
+def test_an_override_without_a_sidecar_is_still_a_pipeline_brain(tmp_path):
+    """Which asset holds the transforms is not evidence about their frame.
+
+    A re-registration run with ``pipeline=True`` would be anchored too, so only
+    the sidecar can say. Absent one, the pipeline's convention applies even
+    though the manifest pinned a separate asset.
+    """
+    from aind_ibl_ephys_alignment_preprocessing.registration_frame import resolve_registration_frame
+
+    sitk = pytest.importorskip("SimpleITK")
+    reg_dir = _registration_dir(tmp_path, "ccf_Ex_639_Em_667")  # transforms, no sidecar
+
+    def header(origin):
+        img = sitk.Image((1, 1, 1), sitk.sitkUInt8)
+        img.SetSpacing((0.0144,) * 3)
+        img.SetOrigin(origin)
+        return img
+
+    frame = resolve_registration_frame(reg_dir, header((0.0, 0.0, 0.0)), header((12.0, 0.0, 0.0)), (944, 1120, 480))
+    assert frame.regrid_to_pipeline
+    assert frame.sidecar_path is None
