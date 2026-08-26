@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "aind-ibl-ephys-alignment-preprocessing"
-version = "0.4.2"
+version = "0.4.3"
 source = { editable = "." }
 dependencies = [
     { name = "aind-anatomical-utils" },
