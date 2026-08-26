@@ -659,13 +659,16 @@ def stage_ephys_launch(config: PipelineConfig) -> list[Path]:
     # *nodes* (fixed slots: /data/sorted), so the asset name -- and thus the
     # manifest's ``sorted_recording`` -- is not in the mount path and cannot be
     # matched by directory basename. Identify the mounted sort by content instead:
-    # its ``data_description.json`` ``input_data_name`` equals ``recording_id``.
+    # the input recording its ``data_description.json`` names equals ``recording_id``.
     sorted_dir = find_sorted_session_dir(config.data_root)
     if sorted_dir is None:
         raise FileNotFoundError(f"[ephys-launch] no spike-sorted asset (spikesorted/) mounted under {config.data_root}")
     mounted_recording_id = read_sorted_input_recording(sorted_dir)
     if mounted_recording_id is None:
-        raise ValueError(f"[ephys-launch] could not read input_data_name from {sorted_dir}/data_description.json")
+        raise ValueError(
+            f"[ephys-launch] {sorted_dir}/data_description.json names no input recording "
+            "(neither source_data nor input_data_name)"
+        )
 
     scoped = [mr for mr in rows if mr.ephys_collection is not None and mr.recording_id == mounted_recording_id]
     distinct_sorts = {str(mr.sorted_recording) for mr in scoped}

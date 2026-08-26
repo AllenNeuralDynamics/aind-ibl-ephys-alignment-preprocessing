@@ -221,15 +221,22 @@ def _write_shank_manifest(path: Path, rows: list[str]) -> None:
     path.write_text("\n".join([_SHANK_HEADER, *rows]) + "\n")
 
 
+def _data_description(input_recording: str, schema: int) -> dict:
+    """A sorted asset's data_description as the given schema generation writes it."""
+    if schema == 2:
+        return {"schema_version": "2.3.0", "source_data": [input_recording]}
+    return {"schema_version": "1.0.4", "input_data_name": input_recording}
+
+
 def _read_coverage(config: SimpleNamespace) -> RunCoverage:
     """Load the coverage record discover wrote."""
     return RunCoverage.read(config.results_root / COVERAGE_FILENAME)
 
 
-def _mount_sorted_for_coverage(root: Path, *, input_recording: str, collection: str) -> None:
+def _mount_sorted_for_coverage(root: Path, *, input_recording: str, collection: str, schema: int = 2) -> None:
     """Mount a spike-sorted asset that names *input_recording* and sorted *collection*."""
     (root / "spikesorted").mkdir(parents=True, exist_ok=True)
-    (root / "data_description.json").write_text(json.dumps({"input_data_name": input_recording}))
+    (root / "data_description.json").write_text(json.dumps(_data_description(input_recording, schema)))
     (root / "postprocessed" / f"experiment1_Neuropix.{collection}-AP_recording1").mkdir(parents=True, exist_ok=True)
 
 
@@ -617,16 +624,17 @@ def test_stage_ephys_namespaces_output_by_unit(tmp_path: Path, monkeypatch: pyte
 # ------------------------------------------------------- stage_ephys_launch --
 
 
-def _mount_sorted(data_root: Path, input_recording: str, *, mount_name: str = "sorted") -> None:
+def _mount_sorted(data_root: Path, input_recording: str, *, mount_name: str = "sorted", schema: int = 2) -> None:
     """Mount a sorted asset under a fixed pipeline slot (name != asset name).
 
     The launcher must resolve it by content: a ``spikesorted`` child marks it as a
-    sorted asset, and ``data_description.json``'s ``input_data_name`` identifies the
-    raw recording it derives from (== ManifestRow.recording_id).
+    sorted asset, and ``data_description.json`` identifies the raw recording it
+    derives from (== ManifestRow.recording_id) -- in ``source_data`` under schema 2,
+    in ``input_data_name`` under schema 1.
     """
     root = data_root / mount_name
     (root / "spikesorted").mkdir(parents=True)
-    (root / "data_description.json").write_text(json.dumps({"input_data_name": input_recording}))
+    (root / "data_description.json").write_text(json.dumps(_data_description(input_recording, schema)))
 
 
 def test_stage_ephys_launch_scopes_to_the_mounted_sort(tmp_path: Path) -> None:
@@ -655,6 +663,41 @@ def test_stage_ephys_launch_scopes_to_the_mounted_sort(tmp_path: Path) -> None:
         cfg = json.loads(path.read_text())
         assert cfg["recording_id"] == "ecephys_A"
         assert cfg["sorted_recording"] == "ecephys_A_sorted_x"
+
+
+@pytest.mark.parametrize("schema", [1, 2])
+def test_stage_ephys_launch_scopes_under_either_data_description_schema(tmp_path: Path, schema: int) -> None:
+    """Both data_description generations identify the mounted sort.
+
+    Reading only schema 1's ``input_data_name`` made this stage *raise* on every
+    schema-2 asset, which is what every newly sorted session now is.
+    """
+    config = _config(tmp_path)
+    _write_manifest(
+        config.manifest_csv,
+        [
+            "823993,823993_A_sorted_x,ng,T1,ProbeA,",
+            "823993,823993_B_sorted_y,ng,T2,ProbeA,",
+        ],
+    )
+    _mount_sorted(config.data_root, "823993_A", schema=schema)
+
+    written = stages.stage_ephys_launch(config)
+
+    assert len(written) == 1
+    assert json.loads(written[0].read_text())["recording_id"] == "823993_A"
+
+
+def test_stage_ephys_launch_raises_when_the_sort_names_no_input_recording(tmp_path: Path) -> None:
+    """Neither field present is still a loud failure -- it cannot scope the manifest."""
+    config = _config(tmp_path)
+    _write_manifest(config.manifest_csv, ["786867,ecephys_A_sorted_x,ng,T1,ProbeA,"])
+    root = config.data_root / "sorted"
+    (root / "spikesorted").mkdir(parents=True)
+    (root / "data_description.json").write_text(json.dumps({"schema_version": "2.3.0"}))
+
+    with pytest.raises(ValueError, match="names no input recording"):
+        stages.stage_ephys_launch(config)
 
 
 def test_stage_ephys_launch_raises_when_no_sorted_mounted(tmp_path: Path) -> None:

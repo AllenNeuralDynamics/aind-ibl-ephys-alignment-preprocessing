@@ -20,10 +20,19 @@ def _mkdir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
-def _mount_sorted(root: Path, *, input_recording: str | None) -> Path:
-    """Create a spike-sorted asset mount (spikesorted/ marker + data_description)."""
+def _mount_sorted(root: Path, *, input_recording: str | None, schema: int = 2) -> Path:
+    """Create a spike-sorted asset mount (spikesorted/ marker + data_description).
+
+    *schema* selects which data_description generation names the input recording:
+    2 writes the ``source_data`` list, 1 the scalar ``input_data_name``.
+    """
     _mkdir(root / "spikesorted")
-    payload = {} if input_recording is None else {"input_data_name": input_recording}
+    if input_recording is None:
+        payload: dict = {}
+    elif schema == 2:
+        payload = {"schema_version": "2.3.0", "source_data": [input_recording]}
+    else:
+        payload = {"schema_version": "1.0.4", "input_data_name": input_recording}
     (root / "data_description.json").write_text(json.dumps(payload))
     return root
 
@@ -262,11 +271,12 @@ def test_find_sorted_session_dirs_survives_a_mount_name_that_drops_the_recording
     The published capture was named ``ecephys_791094_2025-10-09_sorted_...`` while the
     manifest pinned ``..._14-26-31_sorted_...``. Looking the directory up by pin found
     nothing, so all 10 probes of that session were written off as unsorted and the run
-    still exited 0. Keying on ``input_data_name`` is immune to the discrepancy.
+    still exited 0. Keying on the input recording is immune to the discrepancy.
     """
     _mount_sorted(
         tmp_path / "ecephys_791094_2025-10-09_sorted_2026-04-23_14-11-00",
         input_recording="ecephys_791094_2025-10-09_14-26-31",
+        schema=1,
     )
     found = find_sorted_session_dirs(tmp_path)
     assert found["ecephys_791094_2025-10-09_14-26-31"].name.startswith("ecephys_791094_2025-10-09_sorted_")
@@ -296,6 +306,71 @@ def test_find_sorted_session_dirs_empty_when_none_mounted(tmp_path):
 def test_read_sorted_input_recording_missing_field_returns_none(tmp_path):
     root = _mount_sorted(tmp_path / "sorted", input_recording=None)
     assert read_sorted_input_recording(root) is None
+
+
+# Two data_description generations are in circulation: schema 1 names the input
+# recording in a scalar ``input_data_name``, schema 2 in a ``source_data`` list.
+# Reading only the former left every schema-2 asset unidentifiable, which drops the
+# resolution back to matching by directory name -- the drift this whole path avoids.
+
+
+@pytest.mark.parametrize("schema", [1, 2])
+def test_read_sorted_input_recording_accepts_both_schemas(tmp_path, schema):
+    root = _mount_sorted(tmp_path / "sorted", input_recording="823993_2026-04-14_10-56-43", schema=schema)
+    assert read_sorted_input_recording(root) == "823993_2026-04-14_10-56-43"
+
+
+def test_read_sorted_input_recording_reads_a_real_schema_2_payload(tmp_path):
+    # Fields as they appear in 823993_..._sorted_2026-04-15_12-04-52 (schema 2.3.0).
+    root = tmp_path / "sorted"
+    _mkdir(root / "spikesorted")
+    (root / "data_description.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "2.3.0",
+                "name": "823993_2026-04-14_10-56-43_sorted_2026-04-15_12-04-52",
+                "data_level": "derived",
+                "source_data": ["823993_2026-04-14_10-56-43"],
+            }
+        )
+    )
+    assert read_sorted_input_recording(root) == "823993_2026-04-14_10-56-43"
+
+
+def test_read_sorted_input_recording_prefers_source_data(tmp_path):
+    # They have not been seen together, but source_data is the current shape.
+    root = tmp_path / "sorted"
+    _mkdir(root / "spikesorted")
+    (root / "data_description.json").write_text(
+        json.dumps({"source_data": ["ecephys_new"], "input_data_name": "ecephys_old"})
+    )
+    assert read_sorted_input_recording(root) == "ecephys_new"
+
+
+def test_read_sorted_input_recording_refuses_several_sources(tmp_path):
+    # No single source is *the* input recording, so guessing would silently mount
+    # a sorting against the wrong session.
+    root = tmp_path / "sorted"
+    _mkdir(root / "spikesorted")
+    (root / "data_description.json").write_text(json.dumps({"source_data": ["ecephys_A", "ecephys_B"]}))
+    assert read_sorted_input_recording(root) is None
+
+
+def test_read_sorted_input_recording_empty_source_data_falls_through(tmp_path):
+    root = tmp_path / "sorted"
+    _mkdir(root / "spikesorted")
+    (root / "data_description.json").write_text(json.dumps({"source_data": [], "input_data_name": "ecephys_A"}))
+    assert read_sorted_input_recording(root) == "ecephys_A"
+
+
+def test_find_sorted_session_dirs_mixes_both_schemas(tmp_path):
+    # A run can mount sortings written years apart.
+    _mount_sorted(tmp_path / "sorted_old", input_recording="ecephys_791094_2025-10-08_16-48-57", schema=1)
+    _mount_sorted(tmp_path / "sorted_new", input_recording="823993_2026-04-14_10-56-43", schema=2)
+    assert find_sorted_session_dirs(tmp_path) == {
+        "ecephys_791094_2025-10-08_16-48-57": tmp_path / "sorted_old",
+        "823993_2026-04-14_10-56-43": tmp_path / "sorted_new",
+    }
 
 
 def test_find_raw_session_dir_single(tmp_path):

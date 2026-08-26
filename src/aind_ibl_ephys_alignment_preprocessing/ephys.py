@@ -166,8 +166,9 @@ def find_sorted_session_dirs(data_root: Path, *, max_depth: int = 4) -> dict[str
     The plural counterpart to :func:`find_sorted_session_dir`, for the stages that
     mount *several* sortings at once (``discover`` mounts one per session). Each
     sorted asset is located structurally, by its ``spikesorted`` child, and then
-    keyed by the ``input_data_name`` in its own ``data_description.json`` -- the raw
-    recording it was sorted from, which is exactly ``ManifestRow.recording_id``.
+    keyed by the input recording named in its own ``data_description.json`` -- the
+    raw recording it was sorted from, which is exactly ``ManifestRow.recording_id``.
+    See :func:`read_sorted_input_recording` for the two schema shapes that carry it.
 
     Keying on content rather than on the directory name is the point. A sorted
     asset mounts under its *asset* name, which is not required to equal the
@@ -175,7 +176,7 @@ def find_sorted_session_dirs(data_root: Path, *, max_depth: int = 4) -> dict[str
     the recording time dropped from the name entirely. Matching the mount path
     against the pin therefore finds nothing and the session is judged unsorted --
     which silently cost 791094 half its probes (all 10 of ``2025-10-09_14-26-31``)
-    in the 2026-08-11 run, while the run still exited 0. ``input_data_name`` is
+    in the 2026-08-11 run, while the run still exited 0. The input recording is
     written by the sorting pipeline and travels with the data, so it cannot drift
     from the asset name because it never depended on it.
 
@@ -202,8 +203,9 @@ def find_sorted_session_dirs(data_root: Path, *, max_depth: int = 4) -> dict[str
         recording_id = read_sorted_input_recording(path)
         if recording_id is None:
             logger.warning(
-                "sorted session %s has no readable input_data_name in data_description.json; "
-                "it cannot be matched to a manifest row by content",
+                "sorted session %s names no input recording in data_description.json "
+                "(neither source_data nor input_data_name); it cannot be matched to a "
+                "manifest row by content",
                 path,
             )
             continue
@@ -273,19 +275,43 @@ def find_raw_session_dir(data_root: Path, *, recording_id: str | None = None, ma
 def read_sorted_input_recording(sorted_dir: Path) -> str | None:
     """Return a sorted asset's raw input recording name (``recording_id``).
 
-    Reads ``input_data_name`` from the sorted asset's ``data_description.json`` --
-    the raw recording the sorting was derived from, which equals ``ManifestRow``'s
-    ``recording_id``. Under a fixed pipeline slot the asset name (and thus the
-    manifest's ``sorted_recording``) is not recoverable from the mount path, so this
-    is how the launcher tells *which* sort is mounted. Returns ``None`` if the field
-    is missing or the file is unreadable.
+    Reads the sorted asset's ``data_description.json`` for the raw recording the
+    sorting was derived from, which equals ``ManifestRow``'s ``recording_id``.
+    Under a fixed pipeline slot the asset name (and thus the manifest's
+    ``sorted_recording``) is not recoverable from the mount path, so this is how
+    the launcher tells *which* sort is mounted.
+
+    Two schema generations are in circulation and both are accepted. Schema 2
+    carries a ``source_data`` *list* and is checked first, being the shape every
+    new asset is written in; schema 1's scalar ``input_data_name`` is read only
+    when that yields nothing. They have not been observed together.
+
+    A ``source_data`` naming several sources cannot identify one recording, so it
+    is refused rather than guessed at -- the caller then falls back to matching by
+    directory name, which is the very drift this function exists to avoid, so the
+    refusal is logged.
+
+    Returns ``None`` if neither field is usable or the file is unreadable.
     """
     dd = Path(sorted_dir) / "data_description.json"
     try:
         payload = json.loads(dd.read_text())
     except (OSError, ValueError):
         return None
-    name = payload.get("input_data_name") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    source = payload.get("source_data")
+    if isinstance(source, list) and source:
+        if len(source) == 1 and source[0]:
+            return str(source[0])
+        logger.warning(
+            "sorted session %s names %d sources in data_description source_data (%s); "
+            "none of them can be taken as *the* input recording",
+            sorted_dir,
+            len(source),
+            ", ".join(repr(s) for s in source),
+        )
+    name = payload.get("input_data_name")
     return str(name) if name else None
 
 
