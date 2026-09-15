@@ -440,6 +440,7 @@ def run_ephys_for_recording(
     data_root: Path,
     processed: set[str],
     num_parallel_jobs: int = 4,
+    coherence_block_source: str = "all",
 ) -> None:
     """Run ephys extraction once per unique ``sorted_recording``.
 
@@ -458,6 +459,8 @@ def run_ephys_for_recording(
         Set of already-processed ``sorted_recording`` strings for idempotency.
     num_parallel_jobs : int
         Number of parallel workers for ``compute_rms`` in ``extract_continuous``.
+    coherence_block_source : {"all", "main", "surface"}
+        Blocks contributing to correlation and coherency.
     """
     # Imported lazily so lightweight consumers (e.g. pre-flight validation)
     # can use ``has_sorting_output`` without pulling in spikeinterface.
@@ -488,6 +491,7 @@ def run_ephys_for_recording(
             probe_surface_finding=resolve_surface_finding(data_root, row.surface_finding),
             num_parallel_jobs=num_parallel_jobs,
             session_folder=session_folder,
+            coherence_block_source=coherence_block_source,
         )
     else:
         extract_continuous(
@@ -495,6 +499,7 @@ def run_ephys_for_recording(
             results_folder,
             num_parallel_jobs=num_parallel_jobs,
             session_folder=session_folder,
+            coherence_block_source=coherence_block_source,
         )
 
     extract_spikes(recording_folder, results_folder, session_folder=session_folder)
@@ -508,6 +513,7 @@ def run_ephys_for_stream(
     outputs: OutputDirs,
     data_root: Path,
     num_parallel_jobs: int = 4,
+    coherence_block_source: str = "all",
 ) -> None:
     """Run ephys extraction for a single ``(recording, ephys_collection)`` slice.
 
@@ -548,6 +554,8 @@ def run_ephys_for_stream(
         Root directory containing input data.
     num_parallel_jobs : int
         Number of parallel workers for ``compute_rms`` in ``extract_continuous``.
+    coherence_block_source : {"all", "main", "surface"}
+        Blocks contributing to correlation and coherency.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -584,6 +592,7 @@ def run_ephys_for_stream(
                 probe_surface_finding=resolve_surface_finding(data_root, surface_finding),
                 num_parallel_jobs=num_parallel_jobs,
                 session_folder=session_folder,
+                coherence_block_source=coherence_block_source,
             )
         else:
             extract_continuous(
@@ -592,6 +601,7 @@ def run_ephys_for_stream(
                 stream_to_use=ephys_collection,
                 num_parallel_jobs=num_parallel_jobs,
                 session_folder=session_folder,
+                coherence_block_source=coherence_block_source,
             )
 
     def _spikes() -> None:

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import ants
 import pandas as pd
@@ -52,6 +52,8 @@ class PipelineConfig(BaseModel, frozen=True):
         Unique label values for the lateralized annotation.
     skip_ephys : bool
         If *True*, skip ephys extraction.
+    coherence_block_source : {"all", "main", "surface"}
+        Recording block provenance used for correlation and coherency.
     desired_voxel_size_um : float
         Target voxel size in micrometers for multiscale level selection.
     """
@@ -117,6 +119,7 @@ class PipelineConfig(BaseModel, frozen=True):
     # which is the price of every mouse sharing one grid.
     output_voxel_size_um: float = 30.0
     num_parallel_jobs: int = 4
+    coherence_block_source: Literal["all", "main", "surface"] = "all"
     # QC/diagnostic outputs that the alignment GUI never reads: the Slicer FCSVs
     # (spim/template/ccf), the CCF/bregma xyz_picks, and the CCF-space histology
     # volumes. Off by default — producing them costs the ANTs point-warps and the

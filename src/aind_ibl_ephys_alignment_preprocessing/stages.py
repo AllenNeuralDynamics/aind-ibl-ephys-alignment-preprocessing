@@ -625,6 +625,7 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
         out,
         config.data_root,
         num_parallel_jobs=config.num_parallel_jobs,
+        coherence_block_source=config.coherence_block_source,
     )
     logger.info("[ephys] Completed %s/%s -> %s", recording_id, ephys_collection, unit_name)
 

@@ -145,7 +145,13 @@ async def io_to_thread_on(limits: Limits, target_path: str, fn: Callable[..., An
         return await to_thread_logged(fn, *args, **kwargs)
 
 
-def _run_ephys_sync(mr: ManifestRow, out: OutputDirs, data_root: Path, num_parallel_jobs: int = 4) -> None:
+def _run_ephys_sync(
+    mr: ManifestRow,
+    out: OutputDirs,
+    data_root: Path,
+    num_parallel_jobs: int = 4,
+    coherence_block_source: str = "all",
+) -> None:
     """Single recording ephys in a separate *process*.
 
     Idempotent via a disk marker and file lock.
@@ -180,6 +186,7 @@ def _run_ephys_sync(mr: ManifestRow, out: OutputDirs, data_root: Path, num_paral
                 probe_surface_finding=resolve_surface_finding(data_root, mr.surface_finding),
                 num_parallel_jobs=num_parallel_jobs,
                 session_folder=session_folder,
+                coherence_block_source=coherence_block_source,
             )
         else:
             extract_continuous(
@@ -187,6 +194,7 @@ def _run_ephys_sync(mr: ManifestRow, out: OutputDirs, data_root: Path, num_paral
                 results_folder,
                 num_parallel_jobs=num_parallel_jobs,
                 session_folder=session_folder,
+                coherence_block_source=coherence_block_source,
             )
         extract_spikes(recording_folder, results_folder)
         done.write_text("ok")

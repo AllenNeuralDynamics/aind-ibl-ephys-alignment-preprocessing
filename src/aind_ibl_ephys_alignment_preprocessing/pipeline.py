@@ -173,7 +173,12 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
             continue
         if not config.skip_ephys:
             run_ephys_for_recording(
-                mr, out, config.data_root, processed_recordings, num_parallel_jobs=config.num_parallel_jobs
+                mr,
+                out,
+                config.data_root,
+                processed_recordings,
+                num_parallel_jobs=config.num_parallel_jobs,
+                coherence_block_source=config.coherence_block_source,
             )
 
     manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]

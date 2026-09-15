@@ -139,6 +139,7 @@ async def process_manifest_async(
                         out=out,
                         data_root=config.data_root,
                         num_parallel_jobs=config.num_parallel_jobs,
+                        coherence_block_source=config.coherence_block_source,
                     ),
                     name=f"ephys-ensure-{mr.sorted_recording}",
                 )
