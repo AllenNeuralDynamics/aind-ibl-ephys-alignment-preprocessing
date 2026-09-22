@@ -76,7 +76,7 @@ wheels = [
 
 [[package]]
 name = "aind-ibl-ephys-alignment-preprocessing"
-version = "0.5.0"
+version = "0.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "aind-anatomical-utils" },
