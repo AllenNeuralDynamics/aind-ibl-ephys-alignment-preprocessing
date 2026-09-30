@@ -5,6 +5,8 @@ including real provenance.computation / external flags. These lock in the
 ground-truth resolution the manifest encodes.
 """
 
+import pytest
+
 from aind_ibl_ephys_alignment_preprocessing.co_asset_resolver import (
     CandidateAsset,
     _acquisition_from_uri,
@@ -257,7 +259,6 @@ def test_raw_key_of_accepts_suffixed_upload_and_rejects_derived():
     assert raw_key_of("ecephys_750107_2025-01-28_13-49-03_sorted_2026-07-30_11-52-00") is None
     assert raw_key_of("ecephys_781370_2025-05-30_15-52-48_sorted-curation-sprint_2026-05-13_02-43-03") is None
     assert raw_key_of("ecephys_781370_2025-05-30_15-52-48_preprocessed_2026-04-26_12-26-00") is None
-    assert raw_key_of("SmartSPIM_750107_2025-02-19_12-00-00") is None
 
 
 # --- 823993 real data: names without the modality prefix --------------------
@@ -359,7 +360,32 @@ def test_raw_key_of_accepts_both_naming_conventions():
     assert raw_key_of(f"{KEY_823993}_sorted_2026-04-15_12-04-52") is None
     assert raw_key_of(f"{KEY_823993}_processed_2026-04-15_08-24-35") is None
     assert raw_key_of(f"ecephys_{KEY_823993}_processed_2026-04-15_08-24-35") is None
-    assert raw_key_of(NG_ACQ_823993) is None
+
+
+@pytest.mark.parametrize("prefix", ["ecephys_", "behavior_"])
+def test_any_platform_prefix_resolves(prefix):
+    # Sessions were filed under more than one platform; the key, not the prefix,
+    # identifies the recording.
+    raw = A("fadd36ec", f"{prefix}{KEY_823993}", ("823993", "raw"))
+    sorting = A(
+        "4b782b4b",
+        f"{prefix}{PINNED_823993[0]}",
+        ("derived", "ecephys", "823993"),
+        computation="c3da679f",
+        external=True,
+    )
+    res = resolve("823993", [sorting.name], [raw], SPIM_823993, [sorting], NG_ACQ_823993)
+    assert res.unresolved == ()
+    assert res.sortings[KEY_823993].id == "4b782b4b"
+    assert res.raw[KEY_823993].id == "fadd36ec"
+
+
+def test_smartspim_raw_in_the_raw_pool_is_not_a_recording():
+    # The prefix is unchecked, so a SmartSPIM acquisition parses as a key of its
+    # own; it must still never be attached as the ephys recording.
+    res = _resolve_823993(raw=RAW_823993 + SPIM_823993)
+    assert res.raw[KEY_823993].id == "fadd36ec"
+    assert not any("AMBIGUOUS" in w for w in res.warnings)
 
 
 # --- unit tests on helpers --------------------------------------------------
@@ -417,9 +443,8 @@ def test_parse_pinned_without_modality_prefix():
 
 def test_parse_pinned_rejects_bases_that_do_not_name_a_recording():
     # `_sorted_<ts>` alone is not enough -- the base has to be a recording, which
-    # keeps a re-sorting and a same-shaped non-ephys name out.
+    # keeps a re-sorting out.
     assert parse_pinned("823993_2026-04-14_10-56-43_sorted_2026-04-15_12-04-52_sorted_2026-05-01_00-00-00") is None
-    assert parse_pinned("SmartSPIM_823993_2026-05-06_16-49-37_sorted_2026-04-15_12-04-52") is None
     assert parse_pinned("823993_2026-04-14_10-56-43_sorted_2026-04-15") is None
 
 

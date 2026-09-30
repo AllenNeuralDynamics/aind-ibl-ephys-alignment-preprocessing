@@ -147,11 +147,13 @@ class AssetResolution:
 
 
 # recording key: "<mouseid>_<date>_<time>" -- the session identity, which is the
-# whole asset name under the current AIND convention and follows an `ecephys_`
-# prefix under the older one. Both are in use, so the prefix is optional.
+# whole asset name under the current AIND convention and follows a platform
+# prefix under the older one. The prefix is optional and not checked: sessions
+# were filed under more than one platform (`ecephys_`, `behavior_`).
 # The suffix is optional because a re-uploaded raw keeps the key and adds to it
 # (`..._corrected`); anchoring the pattern hid those completely.
-_RAW_RE = re.compile(r"^(?:ecephys_)?(?P<key>\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?P<suffix>_.+)?$")
+_PREFIX = r"(?:[A-Za-z][A-Za-z0-9-]*_)?"
+_RAW_RE = re.compile("^" + _PREFIX + r"(?P<key>\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?P<suffix>_.+)?$")
 # Suffixes that mark a *derived* product rather than another upload of the raw.
 # Without this the relaxed pattern above would also accept `..._sorted_<ts>`.
 # `processed` is the behavior sibling of a session: with the modality prefix gone
@@ -499,7 +501,7 @@ def _resolve_pinned_sortings(
         date = key.split("_", 1)[1].rsplit("_", 1)[0]  # <mouseid>_<date>_<time> -> <date>
         # recording time is optional because sorting asset names sometimes drop it
         fuzzy = re.compile(
-            rf"^(?:ecephys_)?{re.escape(mouseid)}_{re.escape(date)}"
+            rf"^{_PREFIX}{re.escape(mouseid)}_{re.escape(date)}"
             rf"(?:_\d{{2}}-\d{{2}}-\d{{2}})?_sorted_{re.escape(sort_ts)}$"
         )
         hits = [a for a in tagged_all if fuzzy.match(a.name)]
