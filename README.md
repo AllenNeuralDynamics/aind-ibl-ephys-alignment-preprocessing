@@ -227,7 +227,7 @@ before a column existed stays valid.
 | `probe_name` | *legacy* | Alias for `ephys_collection`. |
 | `probe_shank` | *legacy* | Alias for both `histology_shank` and `ephys_shank`. |
 | `surface_finding` | *null* | Path (relative to `data_root`) to a surface-finding file. |
-| `registration_asset` | *null* | Path (relative to `data_root`) to a registration directory holding the `ls_to_template_SyN_*` transforms to use **instead of** the stitched asset's own -- e.g. `SmartSPIM_750108_reg/ccf_Ex_639_Em_667`. Per-*brain*: replicated across rows like `mouseid`, and rows must agree. The registration channel is taken from the directory name (a leading `ccf_` is stripped), so the histology volume is built from the channel the transforms were computed from rather than the one `processing.json` names. |
+| `registration_asset` | *null* | Path relative to `data_root` to a replacement registration directory, e.g. `SmartSPIM_750108_reg/ccf_Ex_639_Em_667`. One value per brain; all nonblank rows must agree. See [Separate registration asset](#separate-registration-asset) for its contents and coordinate requirements. |
 
 **Constraints:**
 - All rows must have the same `mouseid`.
@@ -262,7 +262,152 @@ and any additional channels.
 The asset directory must contain:
 - `image_tile_fusing/OMEZarr/<channel>.zarr/` -- fused OME-Zarr volumes
 - `image_atlas_alignment/<registration_channel_stem>/` -- ANTs registration
-  outputs: the light-sheet to template affine and inverse warp
+  outputs: the light-sheet to template affine and inverse warp (or supply a
+  separate registration asset as described below)
+
+### Separate registration asset
+
+The optional manifest column `registration_asset` selects replacement
+light-sheet-to-SmartSPIM-template transforms, for example after re-registering a
+brain on a corrected channel. It points directly to the directory containing
+the transforms, relative to `PipelineConfig.data_root`, rather than just to the
+asset root. Omit the column or leave it blank to use the stitched asset's
+registration. Repeat the same path across rows for the brain; blank rows are
+ignored, but conflicting nonblank paths raise an error.
+
+```csv
+mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,registration_asset
+750108,recording_sorted,probeA,A0001,ProbeA,SmartSPIM_750108_reg/ccf_Ex_639_Em_667
+```
+
+Mount or place the asset so this layout exists under `data_root`:
+
+```text
+SmartSPIM_750108_reg/
+└── ccf_Ex_639_Em_667/
+    ├── ls_to_template_SyN_0GenericAffine.mat
+    ├── ls_to_template_SyN_1InverseWarp.nii.gz
+    └── ls_to_template_transform_information.json  # geometry sidecar; see below
+```
+
+The affine and inverse warp are required, with exactly these filenames. Supply
+valid ANTs SyN outputs for this brain's selected channel registered to the
+SmartSPIM LCA template used by preprocessing. Despite the `ccf_` directory
+prefix, these files represent the light-sheet-to-template registration; the
+separate template-to-CCF transforms are still required. A forward warp
+(`ls_to_template_SyN_1Warp.nii.gz`) and a moved image are not required for the
+normal preprocessing path.
+
+The final directory name selects the registration channel: preprocessing strips
+one leading `ccf_`, so `ccf_Ex_639_Em_667` and `Ex_639_Em_667` both select
+`Ex_639_Em_667`. That channel must exist at
+`<smartspim_asset>/image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr/`. The stitched
+asset still supplies the image volumes and metadata; the registration asset
+only supplies the replacement transforms and their geometry. Its own
+`processing.json` or copy of the OME-Zarr volumes is not required. Missing
+directories, required transforms, or the selected channel raise an error.
+
+**Coordinate frame:** For a standalone registration computed in the image's
+native frame, include the transform producer's geometry sidecar beside the
+transforms. Preprocessing looks for
+`ls_to_template_transform_information.json` first, then
+`transform_information.json`, and parses it with `aind-ants-transform-sidecar`.
+It must declare a `moving_domain` describing the actual registration input's
+physical geometry in LPS millimeters. Preprocessing compares its voxel-center
+bounds with the selected volume's native and pipeline-anchored frames, and
+uses the nearer plausible frame. A different registration resolution is
+allowed; a missing `moving_domain` or bounds matching neither frame raises an
+error. Keep the sidecar paired with the transforms that produced it.
+
+Without a recognized sidecar, preprocessing assumes the standard SmartSPIM
+pipeline's anchored frame, even for a separate asset. Therefore, a native-frame
+standalone registration needs the sidecar to avoid incorrect coordinates;
+placing it in a separate asset alone does not select the native frame.
+
+**QC limitation:** Optional additional-channel CCF volumes (`emit_qc=True`) still
+use the stitched asset's pipeline image-transform chain. Those QC volumes do
+not use the replacement registration. Probe coordinates and CCF-to-image
+resampling use the selected registration.
+
+#### Generate the sidecar from ANTs outputs
+
+Use the original **fixed image** (SmartSPIM template) and **moving image**
+(histology channel) passed to ANTs, including any resampling or origin changes
+made before registration. The affine and warp files alone do not record enough
+information to reconstruct both input domains. Do not substitute the warped
+output image for the moving input or assign an origin just to make validation
+pass.
+
+In an environment containing the preprocessing dependencies (`uv sync` in the
+preprocessing library checkout), save the following as
+`generate_registration_sidecar.py`:
+
+```python
+import sys
+from pathlib import Path
+
+import SimpleITK as sitk
+from aind_ants_transform_sidecar import dump_package, load_package
+from aind_registration_utils.domains import ImageHeader, make_syn_sidecar
+
+
+def read_header(path):
+    reader = sitk.ImageFileReader()
+    reader.SetFileName(str(path))
+    reader.ReadImageInformation()  # Read geometry without loading voxel data.
+    if reader.GetDimension() != 3:
+        raise ValueError("Registration inputs must be 3D")
+    return ImageHeader(
+        origin=reader.GetOrigin(),
+        spacing=reader.GetSpacing(),
+        direction=reader.GetDirection(),
+        size=reader.GetSize(),
+    )
+
+
+registration_dir, fixed_image, moving_image = map(Path, sys.argv[1:])
+sidecar = make_syn_sidecar(
+    fixed_image_header=read_header(fixed_image),
+    moving_image_header=read_header(moving_image),
+    affine="ls_to_template_SyN_0GenericAffine.mat",
+    warp="ls_to_template_SyN_1Warp.nii.gz",
+    inverse_warp="ls_to_template_SyN_1InverseWarp.nii.gz",
+)
+text = dump_package(sidecar)
+load_package(text)  # Validate the serialized package.
+destination = registration_dir / "ls_to_template_transform_information.json"
+destination.write_text(text + "\n")
+print(destination)
+```
+
+Run it with the transform directory, fixed input, and moving input, in that order:
+
+```bash
+uv run python generate_registration_sidecar.py \
+    /path/to/SmartSPIM_750108_reg/ccf_Ex_639_Em_667 \
+    /path/to/fixed_template_used_by_ants.nii.gz \
+    /path/to/moving_histology_used_by_ants.nii.gz
+```
+
+Image headers must express origin and spacing in **millimeters**, with
+axis-aligned directions (axis permutations and flips are supported; oblique
+directions are rejected). SimpleITK supplies LPS geometry; the helper computes
+voxel-center bounds and spatial signatures and supplies both `fixed_domain`
+and `moving_domain`, as required by the sidecar schema.
+
+The transform filenames in the example are relative to the sidecar directory;
+rename or copy differently named raw ANTs outputs to these expected names
+before publishing the asset. The schema requires a forward-warp filename even
+though normal preprocessing only needs the affine and inverse warp. The
+helper does not check that the named transform files exist or inspect their
+contents. Keep the actual forward warp when available; naming it in the sidecar
+does not make it a required input for normal preprocessing.
+
+Generate this JSON in a writable staging directory before uploading the asset,
+then include it beside the affine and inverse warp. Code Ocean mounts under
+`/data` are read-only. Reloading the JSON checks its schema; preprocessing
+separately checks whether its moving domain matches the selected histology
+volume.
 
 ### Reference volumes
 
