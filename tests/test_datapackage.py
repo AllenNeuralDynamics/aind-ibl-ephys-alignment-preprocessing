@@ -315,6 +315,7 @@ def test_split_stream_quadbase_maps_histology_to_ephys_shank(tmp_path):
     ]
     _touch(tmp_path / "rec1/ProbeD/channels.contactId.npy")
     _touch(tmp_path / "rec1/ProbeD/channels.localCoordinates.npy")
+    _touch(tmp_path / "rec1/ProbeD/_iblqc_ephysRawUnitDensity.density.npy")
 
     probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
 
@@ -323,6 +324,7 @@ def test_split_stream_quadbase_maps_histology_to_ephys_shank(tmp_path):
     assert entry.ephys_collection == "ProbeD"
     assert entry.num_shanks == 1
     assert entry.ephys == _local("rec1/ProbeD")
+    assert entry.raw_unit_density == _local("rec1/ProbeD/_iblqc_ephysRawUnitDensity.density.npy")
     assert entry.channel_table is not None
     assert entry.channel_table.contact_id == _local("rec1/ProbeD/channels.contactId.npy")
     assert entry.channel_table.shank_ind == _local("rec1/ProbeD/channels.shankInd.npy")
@@ -346,6 +348,20 @@ def test_channel_table_omits_missing_contact_id_for_existing_outputs(tmp_path):
     channel_table = probes["rec1"]["46101"].channel_table
     assert channel_table is not None
     assert channel_table.contact_id is None
+
+
+def test_probe_omits_missing_raw_unit_density_for_existing_outputs(tmp_path):
+    """Datapackage-only regeneration must tolerate older ephys outputs."""
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import ProcessResult
+
+    rows = [_fake_row(probe_id="pid-1", probe_name="46101", recording_id="rec1")]
+    results = [ProcessResult(probe_id="pid-1", recording_id="rec1", wrote_files=True)]
+    _seed_ephys(tmp_path, rows)
+
+    probes = _build_probes(rows, results, _fake_outputs(tmp_path), tmp_path, _fake_pipeline_config())
+
+    assert probes["rec1"]["46101"].raw_unit_density is None
 
 
 def test_ephys_dir_is_probe_gui_folder_not_spikes_subdir(tmp_path):
@@ -492,6 +508,7 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
         "rec1/46101/channels.rawInd.npy",
         "rec1/46101/channels.contactId.npy",
         "rec1/46101/channels.shankInd.npy",
+        "rec1/46101/_iblqc_ephysRawUnitDensity.density.npy",
     ]:
         _touch(root / rel)
 
@@ -528,6 +545,7 @@ def _valid_datapackage_on_disk(root: Path) -> DataPackage:
                     ephys_collection="46101",
                     num_shanks=1,
                     ephys=_local("rec1/46101"),
+                    raw_unit_density=_local("rec1/46101/_iblqc_ephysRawUnitDensity.density.npy"),
                     channel_table=ChannelTablePaths(
                         local_coordinates=_local("rec1/46101/channels.localCoordinates.npy"),
                         raw_ind=_local("rec1/46101/channels.rawInd.npy"),
@@ -593,6 +611,15 @@ def test_missing_file_is_reported(tmp_path):
         tmp_path,
         asset_roots=_asset_roots(tmp_path),
     )
+
+
+def test_missing_raw_unit_density_is_reported(tmp_path):
+    """A density file advertised by the datapackage must remain on disk."""
+    dp = _valid_datapackage_on_disk(tmp_path)
+    density = "rec1/46101/_iblqc_ephysRawUnitDensity.density.npy"
+    (tmp_path / density).unlink()
+
+    assert density in dp.missing_paths(tmp_path, asset_roots=_asset_roots(tmp_path))
 
 
 def test_emit_qc_false_omits_ccf_picks(tmp_path):

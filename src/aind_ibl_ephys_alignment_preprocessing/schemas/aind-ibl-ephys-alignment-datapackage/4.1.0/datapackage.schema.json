@@ -200,7 +200,7 @@
       "type": "object"
     },
     "ProbeEntry": {
-      "description": "Manifest entry for one ephys collection within a recording session.\n\nUniquely identified by the ``(recording_id, ephys_collection)`` pair from\nthe parent dict path. ``logical_probe`` may be shared by multiple ephys\ncollections when the acquisition split one physical probe into streams.",
+      "description": "Manifest entry for one ephys collection within a recording session.\n\nUniquely identified by the ``(recording_id, ephys_collection)`` pair from\nthe parent dict path. ``logical_probe`` may be shared by multiple ephys\ncollections when the acquisition split one physical probe into streams.\n``raw_unit_density`` is optional so packages can still be regenerated from\nresults produced by converter versions that predate this output.",
       "properties": {
         "channel_table": {
           "anyOf": [
@@ -255,6 +255,17 @@
         "probe_id": {
           "title": "Probe Id",
           "type": "string"
+        },
+        "raw_unit_density": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PathReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "xyz_picks": {
           "items": {

@@ -435,6 +435,7 @@ results_root/
             |-- channels.rawInd.npy
             |-- channels.contactId.npy          # Optional; new ephys conversion outputs
             |-- channels.shankInd.npy
+            |-- _iblqc_ephysRawUnitDensity.density.npy  # Normalized raw-AP activity density
             +-- band_corr/                    # Full matrices + row_channels.json
 ```
 

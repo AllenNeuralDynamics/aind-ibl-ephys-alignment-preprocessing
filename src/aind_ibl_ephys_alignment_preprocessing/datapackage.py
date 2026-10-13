@@ -147,6 +147,8 @@ class ProbeEntry(BaseModel, frozen=True):
     Uniquely identified by the ``(recording_id, ephys_collection)`` pair from
     the parent dict path. ``logical_probe`` may be shared by multiple ephys
     collections when the acquisition split one physical probe into streams.
+    ``raw_unit_density`` is optional so packages can still be regenerated from
+    results produced by converter versions that predate this output.
     """
 
     probe_id: str
@@ -154,6 +156,7 @@ class ProbeEntry(BaseModel, frozen=True):
     ephys_collection: str | None = None
     num_shanks: int
     ephys: PathReference | None = None
+    raw_unit_density: PathReference | None = None
     channel_table: ChannelTablePaths | None = None
     xyz_picks: list[XyzPicks]
 
@@ -240,6 +243,8 @@ class DataPackage(BaseModel, frozen=True):
             paths.extend(self.histology.ccf_space.additional_channels)
         for recording in self.probes.values():
             for probe in recording.values():
+                if probe.raw_unit_density is not None:
+                    paths.append(probe.raw_unit_density)
                 if probe.channel_table is not None:
                     paths.append(probe.channel_table.local_coordinates)
                     paths.append(probe.channel_table.raw_ind)
@@ -597,6 +602,12 @@ def _build_probes(
         # conversion writes the ALF collection (spikes/clusters/channels.*)
         # directly into gui_folder -- NOT a "spikes" subdirectory.
         ephys_path = _local_ref(ephys_dir, manifest_root) if not config.skip_ephys else None
+        raw_unit_density_path = ephys_dir / "_iblqc_ephysRawUnitDensity.density.npy"
+        raw_unit_density = (
+            _local_ref(raw_unit_density_path, manifest_root)
+            if not config.skip_ephys and raw_unit_density_path.is_file()
+            else None
+        )
         contact_id_path = ephys_dir / "channels.contactId.npy"
         channel_table = (
             ChannelTablePaths(
@@ -618,6 +629,7 @@ def _build_probes(
             ephys_collection=ephys_collection,
             num_shanks=num_shanks,
             ephys=ephys_path,
+            raw_unit_density=raw_unit_density,
             channel_table=channel_table,
             xyz_picks=xyz_picks_list,
         )
