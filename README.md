@@ -438,9 +438,13 @@ results_root/
             +-- band_corr/                    # Full matrices + row_channels.json
 ```
 
-The `datapackage.json` file contains a structured manifest of all outputs,
-including transform chain paths, histology volume paths, and per-probe
-metadata. It can be loaded back with:
+The `datapackage.json` file describes the mouse, recordings, ephys collections,
+transform chain, histology, channel tables, and track mappings. It references
+each ephys directory; individual spike/QC files and `band_corr/` contents are
+loaded by convention rather than enumerated in the JSON. See
+[the datapackage contract](docs/external_asset_references.md) for asset
+descriptions versus runtime location resolution, Code Ocean/desktop examples,
+shank joins, and validation limits. The model can be loaded back with:
 
 ```python
 from aind_ibl_ephys_alignment_preprocessing.datapackage import load_datapackage
@@ -465,7 +469,9 @@ The pipeline performs the following steps:
    `xyz_picks.json` files for the alignment GUI.
 5. **Ephys extraction** (optional) -- Convert spike-sorted data into IBL ALF
    format.
-6. **Manifest generation** -- Write `datapackage.json` summarizing all outputs.
+6. **Manifest generation** -- Write `datapackage.json` describing explicit
+   references and ephys collection directories; preserve their conventional
+   contents, including QC files not individually listed in the JSON.
 
 ## Adapting to your own data
 
@@ -493,31 +499,8 @@ origin at bregma, in meters.
 
 ## Development
 
-To develop the code, run:
-```bash
-uv sync
-```
-
-Please test your changes using the full linting and testing suite:
-
-```bash
-./scripts/run_linters_and_checks.sh -c
-```
-
-Or run individual commands:
-```bash
-uv run --frozen ruff format          # Code formatting
-uv run --frozen ruff check           # Linting
-uv run --frozen mypy                 # Type checking
-uv run --frozen interrogate -v src   # Documentation coverage
-uv run --frozen codespell --check-filenames  # Spell checking
-uv run --frozen pytest --cov aind_ibl_ephys_alignment_preprocessing  # Tests with coverage
-```
-
-### Documentation
-```bash
-sphinx-build -b html docs/source/ docs/build/html
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for developer setup, checks, and
+repository conventions. Coding agents should also read [AGENTS.md](AGENTS.md).
 
 ## License
 

@@ -30,6 +30,7 @@ import aind_ibl_ephys_alignment_preprocessing
 :caption: Contents
 
 api
+data_contracts
 ```
 
 ## Indices and tables
