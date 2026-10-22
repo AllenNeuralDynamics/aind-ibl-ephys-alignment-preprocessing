@@ -12,7 +12,11 @@ import ants
 import pandas as pd
 from pydantic import BaseModel, model_validator
 
-from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS
+from aind_ibl_ephys_alignment_preprocessing._constants import (
+    IMAGE_CHAIN_FORWARD_WARP,
+    REGISTRATION_TRANSFORMS,
+    TEMPLATE_TO_CCF_BY_PIPELINE_NAME,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +271,8 @@ class AssetInfo:
     zarr_volumes: ZarrPaths
     pipeline_registration_chains: PipelineRegistrationInfo
     registration_dir_path: Path
+    template_to_ccf_dir: Path | None = None
+    """The manifest's ``template_to_ccf_asset``, for a brain registered to a template other than the pipeline's."""
 
     @property
     def has_registration_override(self) -> bool:
@@ -278,13 +284,14 @@ class AssetInfo:
         return self.asset_path not in self.registration_dir_path.parents
 
     def point_chain(self) -> tuple[list[str], list[bool]]:
-        """Return the individual->CCF point chain, honoring a registration override.
+        """Return the individual->CCF point chain, honoring the registration and template overrides.
 
         ``pipeline_registration_chains`` resolves both halves from the stitched
         asset's ``processing.json``, so its individual->template half is the
-        registration the override exists to replace. Substituting by basename
-        rather than by position keeps this correct if the chain's length or order
-        ever changes upstream.
+        registration ``registration_asset`` replaces, and its template->CCF half
+        the SmartSPIM template's, which ``template_to_ccf_asset`` replaces.
+        Substituting by basename rather than by position keeps this correct if the
+        chain's length or order ever changes upstream.
 
         Returns
         -------
@@ -292,13 +299,36 @@ class AssetInfo:
             Transform paths and their inversion flags, in application order.
         """
         chains = self.pipeline_registration_chains
-        if not self.has_registration_override:
-            return chains.pt_tx_str, chains.pt_tx_inverted
-        substituted = [
-            str(self.registration_dir_path / Path(path).name) if Path(path).name in REGISTRATION_TRANSFORMS else path
-            for path in chains.pt_tx_str
-        ]
-        return substituted, chains.pt_tx_inverted
+        return [self._substitute(path) for path in chains.pt_tx_str], chains.pt_tx_inverted
+
+    def image_chain(self) -> tuple[list[str], list[bool]]:
+        """Return the individual->CCF image chain (QC only), honoring both overrides like :meth:`point_chain`.
+
+        Returns
+        -------
+        tuple[list[str], list[bool]]
+            Transform paths and their inversion flags, in application order.
+
+        Raises
+        ------
+        FileNotFoundError
+            If an override directory lacks a forward warp the chain needs; neither override is required to ship one.
+        """
+        chains = self.pipeline_registration_chains
+        paths = [self._substitute(path, forward=True) for path in chains.img_tx_str]
+        missing = [p for p, orig in zip(paths, chains.img_tx_str, strict=True) if p != orig and not Path(p).exists()]
+        if missing:
+            raise FileNotFoundError(f"the QC channels->CCF warp needs {', '.join(missing)}")
+        return paths, chains.img_tx_inverted
+
+    def _substitute(self, path: str, *, forward: bool = False) -> str:
+        name = Path(path).name
+        individual = REGISTRATION_TRANSFORMS + ((IMAGE_CHAIN_FORWARD_WARP,) if forward else ())
+        if self.has_registration_override and name in individual:
+            return str(self.registration_dir_path / name)
+        if self.template_to_ccf_dir is not None and name in TEMPLATE_TO_CCF_BY_PIPELINE_NAME:
+            return str(self.template_to_ccf_dir / TEMPLATE_TO_CCF_BY_PIPELINE_NAME[name])
+        return path
 
 
 @dataclass(frozen=True)
@@ -407,6 +437,15 @@ MANIFEST_COLUMNS: tuple[ManifestColumn, ...] = (
             "transforms to use instead of the stitched asset's own. Per-brain."
         ),
     ),
+    ManifestColumn(
+        "template_to_ccf_asset",
+        required=False,
+        description=(
+            "Path to a template->CCF directory holding syn_0GenericAffine.mat and "
+            "syn_1InverseWarp.nii.gz, for a brain registered to a template other "
+            "than the SmartSPIM LCA template. Per-brain."
+        ),
+    ),
 )
 
 #: Columns whose absence invalidates a manifest, canonical name first.
@@ -457,6 +496,10 @@ class ManifestRow:
         Per-*brain*, not per-probe: like ``mouseid`` it is replicated across
         rows, and discovery reads the first non-empty value. Empty leaves the
         stitched asset's registration in use.
+    template_to_ccf_asset : Path | None
+        Optional path to a template->CCF directory, relative to ``data_root``,
+        replacing the SmartSPIM LCA template's chain for a brain registered to
+        another template. Per-*brain*, like ``registration_asset``.
     row_index : int | None
         Row index from the CSV for provenance.
     """
@@ -475,6 +518,7 @@ class ManifestRow:
     ephys_shank: int | None = None
     surface_finding: Path | None = None
     registration_asset: Path | None = None
+    template_to_ccf_asset: Path | None = None
     row_index: int | None = None
 
     def __post_init__(self) -> None:
@@ -554,5 +598,6 @@ class ManifestRow:
             ephys_shank=ephys_shank,
             surface_finding=opt_path(s.get("surface_finding")),
             registration_asset=opt_path(s.get("registration_asset")),
+            template_to_ccf_asset=opt_path(s.get("template_to_ccf_asset")),
             row_index=int(s.name) if hasattr(s, "name") else None,  # type: ignore[call-overload]
         )

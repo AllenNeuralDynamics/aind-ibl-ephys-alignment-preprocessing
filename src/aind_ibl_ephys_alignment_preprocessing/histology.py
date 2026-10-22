@@ -563,11 +563,12 @@ def process_additional_channels_pipeline(
         ants_hist_img = ants.image_read(str(channel_dst), pixeltype=None)
         ants.copy_image_info(pipeline_histology_space_img, ants_hist_img)
 
+        img_tx_str, img_tx_inverted = asset_info.image_chain()
         ch_in_ccf = ants.apply_transforms(
             refs.ccf_25,
             ants_hist_img,
-            asset_info.pipeline_registration_chains.img_tx_str,
-            whichtoinvert=asset_info.pipeline_registration_chains.img_tx_inverted,
+            img_tx_str,
+            whichtoinvert=img_tx_inverted,
         )
         ch_in_ccf_dst = outputs.histology_ccf / f"histology_{ch_str}.nrrd"
         ch_in_ccf_tmp_dst = scratch_root / f"histology-{ch_str}-ccf.nrrd"

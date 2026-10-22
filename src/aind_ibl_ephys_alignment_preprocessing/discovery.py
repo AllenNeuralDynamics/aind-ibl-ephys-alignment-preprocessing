@@ -16,7 +16,7 @@ from aind_zarr_utils.pipeline_transformed import (
     pipeline_transforms_local_paths,
 )
 
-from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS
+from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS, TEMPLATE_TO_CCF_TRANSFORMS
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     OutputDirs,
@@ -33,6 +33,22 @@ logger = logging.getLogger(__name__)
 def manifest_registration_override(config: PipelineConfig) -> Path | None:
     """Return the manifest's ``registration_asset`` path fragment, if any.
 
+    See :func:`manifest_per_brain_path`.
+    """
+    return manifest_per_brain_path(config, "registration_asset")
+
+
+def manifest_template_override(config: PipelineConfig) -> Path | None:
+    """Return the manifest's ``template_to_ccf_asset`` path fragment, if any.
+
+    See :func:`manifest_per_brain_path`.
+    """
+    return manifest_per_brain_path(config, "template_to_ccf_asset")
+
+
+def manifest_per_brain_path(config: PipelineConfig, column: str) -> Path | None:
+    """Return a per-brain path column's value, if any.
+
     The column is per-*brain*: like ``mouseid`` it is replicated across rows, so
     the first non-empty value wins. Rows disagreeing is a manifest error, not
     something to resolve silently, so it raises.
@@ -41,6 +57,8 @@ def manifest_registration_override(config: PipelineConfig) -> Path | None:
     ----------
     config : PipelineConfig
         Pipeline configuration with resolved paths.
+    column : str
+        Manifest column naming a directory.
 
     Returns
     -------
@@ -51,23 +69,54 @@ def manifest_registration_override(config: PipelineConfig) -> Path | None:
     Raises
     ------
     ValueError
-        If rows name different registration assets.
+        If rows name different directories.
     """
     import pandas as pd
 
     if not config.manifest_csv.exists():
         return None
     df = pd.read_csv(config.manifest_csv)
-    if "registration_asset" not in df.columns:
+    if column not in df.columns:
         return None
-    values = {str(v).strip() for v in df["registration_asset"] if pd.notna(v) and str(v).strip()}
+    values = {str(v).strip() for v in df[column] if pd.notna(v) and str(v).strip()}
     if not values:
         return None
     if len(values) > 1:
-        raise ValueError(
-            f"registration_asset must name one directory per manifest; {config.manifest_csv} has {sorted(values)}"
-        )
+        raise ValueError(f"{column} must name one directory per manifest; {config.manifest_csv} has {sorted(values)}")
     return Path(values.pop())
+
+
+def resolve_template_to_ccf_dir(config: PipelineConfig) -> Path | None:
+    """Resolve the manifest's template->CCF directory, for brains registered to another template.
+
+    Parameters
+    ----------
+    config : PipelineConfig
+        Pipeline configuration with resolved paths.
+
+    Returns
+    -------
+    Path or None
+        The directory, or ``None`` to keep the pipeline's SmartSPIM template->CCF chain.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the directory does not exist or lacks either transform.
+    """
+    override = manifest_template_override(config)
+    if override is None:
+        return None
+    tmpl_dir = config.data_root / override
+    if not tmpl_dir.is_dir():
+        raise FileNotFoundError(
+            f"template_to_ccf_asset {override} not found under {config.data_root} (resolved to {tmpl_dir})"
+        )
+    missing = [name for name in TEMPLATE_TO_CCF_TRANSFORMS if not (tmpl_dir / name).exists()]
+    if missing:
+        raise FileNotFoundError(f"template_to_ccf_asset {override} is missing {', '.join(missing)} in {tmpl_dir}")
+    logger.info("using template->CCF override %s", tmpl_dir)
+    return tmpl_dir
 
 
 def resolve_registration_dir(config: PipelineConfig, asset_path: Path) -> tuple[Path, str | None]:
@@ -198,6 +247,7 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
         zarr_volumes=zarr_paths,
         pipeline_registration_chains=pipeline_reg_info,
         registration_dir_path=registration_dir_path,
+        template_to_ccf_dir=resolve_template_to_ccf_dir(config),
     )
 
 

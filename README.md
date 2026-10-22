@@ -325,8 +325,9 @@ column uses the stitched asset's registration.
 
 The directory must contain `ls_to_template_SyN_0GenericAffine.mat` and
 `ls_to_template_SyN_1InverseWarp.nii.gz`: ANTs SyN outputs registering this
-brain's selected channel to the SmartSPIM LCA template. The separate
-template-to-CCF registration is still required.
+brain's selected channel to the SmartSPIM LCA template, or to the template
+named by `template_to_ccf_asset` (below). The separate template-to-CCF
+registration is still required.
 
 The final directory name selects the channel after stripping a leading
 `ccf_`. For this example, the stitched asset must contain
@@ -340,9 +341,9 @@ registration input in LPS millimeters and match the selected volume's native
 or pipeline-anchored frame. Missing or incompatible domains fail. Without a
 sidecar, preprocessing assumes the pipeline-anchored frame.
 
-**QC:** Additional-channel CCF volumes (`emit_qc=True`) still use the stitched
-asset's image-transform chain. Probe coordinates and CCF-to-image resampling
-use the override.
+**QC:** Additional-channel CCF volumes (`emit_qc=True`) also need
+`ls_to_template_SyN_1Warp.nii.gz` in the override directory; without it the
+QC warp fails rather than falling back to the stitched asset's registration.
 
 #### Generate the sidecar from ANTs outputs
 
@@ -407,6 +408,27 @@ inverse warp. The helper does not verify transform files.
 
 Generate the JSON beside the transforms before uploading the asset;
 Code Ocean's `/data` mounts are read-only.
+
+### Separate template-to-CCF registration
+
+A brain registered to a template other than the SmartSPIM LCA template (an
+iDISCO template, say) needs that template's CCF registration. Set the optional
+`template_to_ccf_asset` column to its directory relative to `data_root`, one
+path per brain like `registration_asset`:
+
+```csv
+mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,registration_asset,template_to_ccf_asset
+750107,recording_sorted,probeA,A0001,ProbeA,idisco_reg/750107,idisco_template_2026-10/template_to_ccf
+```
+
+The directory must contain `syn_0GenericAffine.mat` and
+`syn_1InverseWarp.nii.gz`, ANTs SyN outputs with CCF fixed and the template
+moving; `emit_qc=True` also needs `syn_1Warp.nii.gz`. They replace the
+pipeline's `spim_template_to_ccf_syn_*_25` transforms in the probe and QC
+chains, and the datapackage refers to them under the `template_to_ccf` asset,
+named after the directory's first component under `data_root`. The
+individual-to-template sidecar under `registration_asset` must then name this
+template as its fixed domain.
 
 ### Reference volumes
 

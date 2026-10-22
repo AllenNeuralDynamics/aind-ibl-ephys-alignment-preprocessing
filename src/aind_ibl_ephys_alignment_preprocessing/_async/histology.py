@@ -296,13 +296,14 @@ async def process_additional_channel_pipeline_async(
     ants.copy_image_info(pipeline_histology_space_img, ants_hist_img)
 
     logger.debug("[Channel %s] Applying ANTs transform to CCF", ch_str)
+    img_tx_str, img_tx_inverted = asset_info.image_chain()
     async with limits.registration:
         ch_in_ccf = await to_thread_logged(
             ants.apply_transforms,
             refs.ccf_25,
             ants_hist_img,
-            asset_info.pipeline_registration_chains.img_tx_str,
-            whichtoinvert=asset_info.pipeline_registration_chains.img_tx_inverted,
+            img_tx_str,
+            whichtoinvert=img_tx_inverted,
         )
     ch_in_ccf_dst = outputs.histology_ccf / f"histology_{ch_str}.nrrd"
     ch_in_ccf_tmp_dst = scratch_root / f"histology-{ch_str}-ccf.nrrd"

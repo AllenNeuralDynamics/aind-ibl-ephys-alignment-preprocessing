@@ -19,11 +19,12 @@ from aind_ibl_ephys_alignment_preprocessing.datapackage import (
 
 def _fake_asset_info(reg_dir: Path) -> SimpleNamespace:
     # AssetInfo is a frozen dataclass with extra fields that _build_transforms
-    # does not read; only asset_path/registration_dir_path are consulted.
+    # does not read; only the fields below are consulted.
     return SimpleNamespace(
         asset_path=reg_dir.parents[1],
         asset_uri=None,
         registration_dir_path=reg_dir,
+        template_to_ccf_dir=None,
     )
 
 

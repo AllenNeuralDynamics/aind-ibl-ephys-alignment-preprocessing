@@ -366,6 +366,28 @@ def build_datapackage(
     )
 
 
+def _asset_root_under_data_root(path: Path, config: PipelineConfig) -> Path | None:
+    """Return the mounted asset holding *path*: its first component under ``data_root``."""
+    try:
+        relative = path.relative_to(config.data_root)
+    except ValueError:
+        return None
+    return config.data_root / relative.parts[0]
+
+
+def _template_to_ccf_location(asset_info: AssetInfo, config: PipelineConfig) -> tuple[str, Path, Path]:
+    """Return the asset key, transform directory and asset root of the template->CCF pair.
+
+    A ``template_to_ccf_asset`` override gets its own key so a datapackage records which template the brain was
+    registered to; consumers resolve it like any other external asset.
+    """
+    override = asset_info.template_to_ccf_dir
+    if override is None:
+        return "spim_template_to_ccf", config.template_to_ccf_dir, config.template_to_ccf_dir
+    root = _asset_root_under_data_root(override, config)
+    return "template_to_ccf", override, root if root is not None else override
+
+
 def _registration_asset_root(asset_info: AssetInfo, config: PipelineConfig) -> Path | None:
     """Return the override asset root, or ``None`` when the registration is in-asset.
 
@@ -377,16 +399,12 @@ def _registration_asset_root(asset_info: AssetInfo, config: PipelineConfig) -> P
     reg_dir = asset_info.registration_dir_path
     if asset_info.asset_path in reg_dir.parents:
         return None
-    try:
-        relative = reg_dir.relative_to(config.data_root)
-    except ValueError:
-        return None
-    return config.data_root / relative.parts[0]
+    return _asset_root_under_data_root(reg_dir, config)
 
 
 def _build_transforms(asset_info: AssetInfo, config: PipelineConfig, manifest_root: Path) -> TransformPaths:
     reg_dir = asset_info.registration_dir_path
-    tmpl_dir = config.template_to_ccf_dir
+    tmpl_asset, tmpl_dir, tmpl_root = _template_to_ccf_location(asset_info, config)
     # Point the image->template pair at whichever asset actually holds them, so
     # a datapackage records the registration it was built from rather than the
     # one the stitched asset happens to carry.
@@ -405,14 +423,14 @@ def _build_transforms(asset_info: AssetInfo, config: PipelineConfig, manifest_ro
             reg_root,
         ),
         template_to_ccf_affine=_external_ref(
-            "spim_template_to_ccf",
+            tmpl_asset,
             tmpl_dir / "syn_0GenericAffine.mat",
-            tmpl_dir,
+            tmpl_root,
         ),
         template_to_ccf_warp=_external_ref(
-            "spim_template_to_ccf",
+            tmpl_asset,
             tmpl_dir / "syn_1InverseWarp.nii.gz",
-            tmpl_dir,
+            tmpl_root,
         ),
     )
 
@@ -446,6 +464,13 @@ def _build_external_assets(asset_info: AssetInfo, config: PipelineConfig) -> dic
                 "on": platform,
             },
         )
+    tmpl_asset, tmpl_dir, tmpl_root = _template_to_ccf_location(asset_info, config)
+    if tmpl_asset != "spim_template_to_ccf":
+        assets[tmpl_asset] = ExternalAsset(
+            role="template_to_ccf_override",
+            name=tmpl_root.name,
+            provenance={"mounted_at": str(tmpl_root), "template_to_ccf_dir": str(tmpl_dir), "on": platform},
+        )
     return assets
 
 
@@ -473,12 +498,16 @@ def _display_ref(ref: PathReference) -> str:
 
 def producer_asset_overrides(asset_info: AssetInfo, config: PipelineConfig) -> dict[str, Path]:
     """Local asset locations available during producer-side validation."""
-    return {
+    overrides = {
         "smartspim": asset_info.asset_path,
         asset_info.asset_path.name: asset_info.asset_path,
         "spim_template_to_ccf": config.template_to_ccf_dir,
         config.template_to_ccf_dir.name: config.template_to_ccf_dir,
     }
+    tmpl_asset, _, tmpl_root = _template_to_ccf_location(asset_info, config)
+    if tmpl_asset != "spim_template_to_ccf":
+        overrides[tmpl_asset] = tmpl_root
+    return overrides
 
 
 def _build_histology(outputs: OutputDirs, manifest_root: Path, config: PipelineConfig) -> HistologyPaths:
