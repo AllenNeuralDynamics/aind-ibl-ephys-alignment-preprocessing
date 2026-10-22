@@ -29,6 +29,7 @@ dependencies = [
   "aind-registration-utils>=0.4",
   "aind-s3-cache>=0.1",
   "aind-zarr-utils>=0.11.2",
+  "boto3",
   "filelock",
 ]
 
@@ -39,6 +40,7 @@ Changelog = "https://github.com/AllenNeuralDynamics/aind-ibl-ephys-alignment-pre
 
 [project.scripts]
 aind-ibl-preprocess = "aind_ibl_ephys_alignment_preprocessing.scripts.run:main"
+aind-ibl-build-manifest = "aind_ibl_ephys_alignment_preprocessing.scripts.build_manifest:main"
 
 [dependency-groups]
 types = ["mypy", "pandas-stubs"]
@@ -122,6 +124,8 @@ module = [
   "aind_registration_utils.*",
   "aind_s3_cache.*",
   "aind_zarr_utils.*",
+  "boto3",
+  "botocore.*",
   "iblatlas.*",
   "filelock",
 ]
