@@ -322,7 +322,8 @@ class AssetInfo:
         return paths, chains.img_tx_inverted
 
     def _substitute(self, path: str, *, forward: bool = False) -> str:
-        name = Path(path).name
+        # The S3 cache names a downloaded file ``<bucket>__<key path>__<hash>__<basename>``.
+        name = Path(path).name.rsplit("__", 1)[-1]
         individual = REGISTRATION_TRANSFORMS + ((IMAGE_CHAIN_FORWARD_WARP,) if forward else ())
         if self.has_registration_override and name in individual:
             return str(self.registration_dir_path / name)

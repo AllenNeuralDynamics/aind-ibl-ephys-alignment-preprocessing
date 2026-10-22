@@ -103,6 +103,19 @@ def test_point_chain_replaces_only_the_template_half(tmp_path):
     assert inverted == [True, False, True, False]
 
 
+def test_substitution_sees_through_the_s3_cache_prefix(tmp_path):
+    """The template->CCF half is always downloaded, so the chain names cached copies."""
+    cached = "/tmp/s3-ants-cache/aind-open-data__SmartSPIM-template_2024-05-16_11-26-14__fa7e696d0972__"
+    info = _asset_info(tmp_path, template_dir=tmp_path / "t2c")
+    chains = info.pipeline_registration_chains
+    chains.pt_tx_str[2:] = [cached + Path(p).name for p in POINT_CHAIN[2:]]
+    paths, _ = info.point_chain()
+    assert paths[2:] == [
+        str(tmp_path / "t2c" / "syn_0GenericAffine.mat"),
+        str(tmp_path / "t2c" / "syn_1InverseWarp.nii.gz"),
+    ]
+
+
 def test_both_overrides_compose(tmp_path):
     reg = tmp_path / "data" / "reg" / "750107"
     tmpl = tmp_path / "data" / "idisco" / "template_to_ccf"
