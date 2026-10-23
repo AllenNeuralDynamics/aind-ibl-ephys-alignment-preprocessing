@@ -465,8 +465,8 @@ MANIFEST_COLUMNS: tuple[ManifestColumn, ...] = (
         "template_to_ccf_asset",
         required=False,
         description=(
-            "Path to a template->CCF directory holding syn_0GenericAffine.mat and "
-            "syn_1InverseWarp.nii.gz, for a brain registered to a template other "
+            "Path to a template->CCF directory holding template_to_ccf_0GenericAffine.mat "
+            "and template_to_ccf_1InverseWarp.nii.gz, for a brain registered to a template other "
             "than the SmartSPIM LCA template. Per-brain."
         ),
     ),

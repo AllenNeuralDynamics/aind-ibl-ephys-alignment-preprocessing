@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from aind_ibl_ephys_alignment_preprocessing._constants import LCA_TEMPLATE_TO_CCF_TRANSFORMS, TEMPLATE_TO_CCF_TRANSFORMS
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     ManifestRow,
@@ -405,6 +406,9 @@ def _registration_asset_root(asset_info: AssetInfo, config: PipelineConfig) -> P
 def _build_transforms(asset_info: AssetInfo, config: PipelineConfig, manifest_root: Path) -> TransformPaths:
     reg_dir = asset_info.registration_dir_path
     tmpl_asset, tmpl_dir, tmpl_root = _template_to_ccf_location(asset_info, config)
+    tmpl_affine, tmpl_warp = (
+        TEMPLATE_TO_CCF_TRANSFORMS if asset_info.template_to_ccf_dir is not None else LCA_TEMPLATE_TO_CCF_TRANSFORMS
+    )
     # Point the image->template pair at whichever asset actually holds them, so
     # a datapackage records the registration it was built from rather than the
     # one the stitched asset happens to carry.
@@ -424,12 +428,12 @@ def _build_transforms(asset_info: AssetInfo, config: PipelineConfig, manifest_ro
         ),
         template_to_ccf_affine=_external_ref(
             tmpl_asset,
-            tmpl_dir / "syn_0GenericAffine.mat",
+            tmpl_dir / tmpl_affine,
             tmpl_root,
         ),
         template_to_ccf_warp=_external_ref(
             tmpl_asset,
-            tmpl_dir / "syn_1InverseWarp.nii.gz",
+            tmpl_dir / tmpl_warp,
             tmpl_root,
         ),
     )

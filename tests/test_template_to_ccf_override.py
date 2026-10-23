@@ -86,7 +86,7 @@ def test_column_is_optional_and_parsed():
 def test_resolve_requires_both_point_transforms(tmp_path):
     config = _config(tmp_path, f"{MANIFEST_HEADER},template_to_ccf_asset\n750107,p,s,a,b,idisco/template_to_ccf\n")
     _template_dir(config.data_root / "idisco" / "template_to_ccf", TEMPLATE_TO_CCF_TRANSFORMS[0])
-    with pytest.raises(FileNotFoundError, match="syn_1InverseWarp"):
+    with pytest.raises(FileNotFoundError, match="template_to_ccf_1InverseWarp"):
         resolve_template_to_ccf_dir(config)
     _template_dir(config.data_root / "idisco" / "template_to_ccf", *TEMPLATE_TO_CCF_TRANSFORMS)
     assert resolve_template_to_ccf_dir(config) == config.data_root / "idisco" / "template_to_ccf"
@@ -99,7 +99,10 @@ def test_resolve_without_the_column_keeps_the_pipeline_chain(tmp_path):
 def test_point_chain_replaces_only_the_template_half(tmp_path):
     tmpl = tmp_path / "data" / "idisco" / "template_to_ccf"
     paths, inverted = _asset_info(tmp_path, template_dir=tmpl).point_chain()
-    assert paths == POINT_CHAIN[:2] + [str(tmpl / "syn_0GenericAffine.mat"), str(tmpl / "syn_1InverseWarp.nii.gz")]
+    assert paths == POINT_CHAIN[:2] + [
+        str(tmpl / "template_to_ccf_0GenericAffine.mat"),
+        str(tmpl / "template_to_ccf_1InverseWarp.nii.gz"),
+    ]
     assert inverted == [True, False, True, False]
 
 
@@ -111,8 +114,8 @@ def test_substitution_sees_through_the_s3_cache_prefix(tmp_path):
     chains.pt_tx_str[2:] = [cached + Path(p).name for p in POINT_CHAIN[2:]]
     paths, _ = info.point_chain()
     assert paths[2:] == [
-        str(tmp_path / "t2c" / "syn_0GenericAffine.mat"),
-        str(tmp_path / "t2c" / "syn_1InverseWarp.nii.gz"),
+        str(tmp_path / "t2c" / "template_to_ccf_0GenericAffine.mat"),
+        str(tmp_path / "t2c" / "template_to_ccf_1InverseWarp.nii.gz"),
     ]
 
 
@@ -127,11 +130,13 @@ def test_image_chain_substitutes_forward_warps(tmp_path):
     reg = _template_dir(
         tmp_path / "data" / "reg" / "750107", "ls_to_template_SyN_1Warp.nii.gz", "ls_to_template_SyN_0GenericAffine.mat"
     )
-    tmpl = _template_dir(tmp_path / "data" / "idisco" / "t2c", "syn_1Warp.nii.gz", "syn_0GenericAffine.mat")
+    tmpl = _template_dir(
+        tmp_path / "data" / "idisco" / "t2c", "template_to_ccf_1Warp.nii.gz", "template_to_ccf_0GenericAffine.mat"
+    )
     paths, _ = _asset_info(tmp_path, reg, tmpl).image_chain()
     assert paths == [
-        str(tmpl / "syn_1Warp.nii.gz"),
-        str(tmpl / "syn_0GenericAffine.mat"),
+        str(tmpl / "template_to_ccf_1Warp.nii.gz"),
+        str(tmpl / "template_to_ccf_0GenericAffine.mat"),
         str(reg / "ls_to_template_SyN_1Warp.nii.gz"),
         str(reg / "ls_to_template_SyN_0GenericAffine.mat"),
     ]
@@ -139,7 +144,7 @@ def test_image_chain_substitutes_forward_warps(tmp_path):
 
 def test_image_chain_reports_a_missing_forward_warp(tmp_path):
     tmpl = _template_dir(tmp_path / "data" / "idisco" / "t2c", *TEMPLATE_TO_CCF_TRANSFORMS)
-    with pytest.raises(FileNotFoundError, match="syn_1Warp"):
+    with pytest.raises(FileNotFoundError, match="template_to_ccf_1Warp"):
         _asset_info(tmp_path, template_dir=tmpl).image_chain()
 
 
@@ -158,8 +163,8 @@ def test_datapackage_records_the_override_template(tmp_path):
     assets = _build_external_assets(info, config)
 
     assert transforms.template_to_ccf_affine.asset == "template_to_ccf"
-    assert transforms.template_to_ccf_affine.path == "template_to_ccf/syn_0GenericAffine.mat"
-    assert transforms.template_to_ccf_warp.path == "template_to_ccf/syn_1InverseWarp.nii.gz"
+    assert transforms.template_to_ccf_affine.path == "template_to_ccf/template_to_ccf_0GenericAffine.mat"
+    assert transforms.template_to_ccf_warp.path == "template_to_ccf/template_to_ccf_1InverseWarp.nii.gz"
     assert assets["template_to_ccf"].name == "idisco_template_2026-10"
     assert assets["template_to_ccf"].role == "template_to_ccf_override"
     assert producer_asset_overrides(info, config)["template_to_ccf"] == config.data_root / "idisco_template_2026-10"
@@ -219,10 +224,14 @@ def test_a_template_to_ccf_sidecar_decides_the_template(tmp_path):
 
     pipeline_template, lca, other = _template_check_inputs(tmp_path)
     write_sidecar(tmp_path / "reg", lca)
-    write_sidecar(tmp_path / "t2c", fixed=other, moving=lca, name=TEMPLATE_TO_CCF_SIDECAR_NAMES[0], prefix="syn")
+    write_sidecar(
+        tmp_path / "t2c", fixed=other, moving=lca, name=TEMPLATE_TO_CCF_SIDECAR_NAMES[0], prefix="template_to_ccf"
+    )
     check_registration_template(tmp_path / "reg", pipeline_template, tmp_path / "t2c")
 
-    write_sidecar(tmp_path / "t2c", fixed=lca, moving=other, name=TEMPLATE_TO_CCF_SIDECAR_NAMES[0], prefix="syn")
+    write_sidecar(
+        tmp_path / "t2c", fixed=lca, moving=other, name=TEMPLATE_TO_CCF_SIDECAR_NAMES[0], prefix="template_to_ccf"
+    )
     with pytest.raises(ValueError, match="not the one"):
         check_registration_template(tmp_path / "reg", pipeline_template, tmp_path / "t2c")
 
@@ -241,7 +250,7 @@ def test_resolve_requires_the_forward_warp_for_qc(tmp_path):
     config = _config(tmp_path, f"{MANIFEST_HEADER},template_to_ccf_asset\n750107,p,s,a,b,t2c\n")
     _template_dir(config.data_root / "t2c", *TEMPLATE_TO_CCF_TRANSFORMS)
     assert resolve_template_to_ccf_dir(config) is not None
-    with pytest.raises(FileNotFoundError, match="syn_1Warp"):
+    with pytest.raises(FileNotFoundError, match="template_to_ccf_1Warp"):
         resolve_template_to_ccf_dir(config.model_copy(update={"emit_qc": True}))
 
 

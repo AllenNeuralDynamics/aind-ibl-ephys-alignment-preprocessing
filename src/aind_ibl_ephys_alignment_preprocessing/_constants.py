@@ -17,18 +17,24 @@ only the QC channels->CCF warp needs it, and standalone registrations are not
 required to ship it.
 """
 
-TEMPLATE_TO_CCF_TRANSFORMS: tuple[str, ...] = ("syn_0GenericAffine.mat", "syn_1InverseWarp.nii.gz")
+TEMPLATE_TO_CCF_TRANSFORMS: tuple[str, ...] = (
+    "template_to_ccf_0GenericAffine.mat",
+    "template_to_ccf_1InverseWarp.nii.gz",
+)
 """Transforms a template->CCF directory must supply: the template->CCF half of the point chain."""
 
-TEMPLATE_TO_CCF_FORWARD_WARP: str = "syn_1Warp.nii.gz"
+LCA_TEMPLATE_TO_CCF_TRANSFORMS: tuple[str, ...] = ("syn_0GenericAffine.mat", "syn_1InverseWarp.nii.gz")
+"""The same pair as named in the SmartSPIM LCA template's CCF registration asset, ``spim_template_to_ccf``."""
+
+TEMPLATE_TO_CCF_FORWARD_WARP: str = "template_to_ccf_1Warp.nii.gz"
 """The template->CCF forward warp, needed only by the QC channels->CCF warp."""
 
 IMAGE_CHAIN_FORWARD_WARP: str = "ls_to_template_SyN_1Warp.nii.gz"
 """The individual->template forward warp, needed only by the QC channels->CCF warp."""
 
 TEMPLATE_TO_CCF_BY_PIPELINE_NAME: dict[str, str] = {
-    "spim_template_to_ccf_syn_0GenericAffine_25.mat": "syn_0GenericAffine.mat",
-    "spim_template_to_ccf_syn_1InverseWarp_25.nii.gz": "syn_1InverseWarp.nii.gz",
-    "spim_template_to_ccf_syn_1Warp_25.nii.gz": "syn_1Warp.nii.gz",
+    "spim_template_to_ccf_syn_0GenericAffine_25.mat": "template_to_ccf_0GenericAffine.mat",
+    "spim_template_to_ccf_syn_1InverseWarp_25.nii.gz": "template_to_ccf_1InverseWarp.nii.gz",
+    "spim_template_to_ccf_syn_1Warp_25.nii.gz": "template_to_ccf_1Warp.nii.gz",
 }
 """The pipeline's template->CCF file names and what a template->CCF directory calls the same transform."""

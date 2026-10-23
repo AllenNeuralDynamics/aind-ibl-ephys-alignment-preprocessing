@@ -423,12 +423,12 @@ path per brain like `registration_asset`:
 
 ```csv
 mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,registration_asset,template_to_ccf_asset
-750107,recording_sorted,probeA,A0001,ProbeA,idisco_reg/750107,idisco_template_2026-10/template_to_ccf
+750107,recording_sorted,probeA,A0001,ProbeA,idisco_reg/750107,AIND-MouseiDISCO-v1.0-to-CCFv3-r1_2026-10-22_17-34-50
 ```
 
-The directory must contain `syn_0GenericAffine.mat` and
-`syn_1InverseWarp.nii.gz`, ANTs SyN outputs with CCF fixed and the template
-moving; `emit_qc=True` also needs `syn_1Warp.nii.gz`. They replace the
+The directory must contain `template_to_ccf_0GenericAffine.mat` and
+`template_to_ccf_1InverseWarp.nii.gz`, ANTs SyN outputs with CCF fixed and the
+template moving; `emit_qc=True` also needs `template_to_ccf_1Warp.nii.gz`. They replace the
 pipeline's `spim_template_to_ccf_syn_*_25` transforms in the probe and QC
 chains, and the datapackage refers to them under the `template_to_ccf` asset,
 named after the directory's first component under `data_root`.
