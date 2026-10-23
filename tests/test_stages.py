@@ -356,6 +356,29 @@ def test_stage_discover_allows_a_partial_run_when_asked(tmp_path: Path, monkeypa
     assert len(_read_coverage(config).dropped) == 1
 
 
+def test_stage_discover_keeps_per_brain_overrides_from_dropped_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Histology and pack read the filtered manifest, so a value only a dropped row carried would vanish."""
+    config = _config(tmp_path, allow_partial=True)
+    config.manifest_csv.write_text(
+        f"{_MANIFEST_HEADER},registration_asset,template_to_ccf_asset\n"
+        "791094,ecephys_791094_2025-10-08_sorted_x,ng,Track1,ProbeA,,,\n"
+        "791094,ecephys_791094_2025-10-09_sorted_y,ng,Track2,ProbeB,,reg/ccf_Ex_639_Em_667,idisco/t2c\n"
+    )
+    monkeypatch.setattr(
+        stages,
+        "_probe_viability",
+        lambda config, mr, sorted_dirs=None: (mr.ephys_collection == "ProbeA", "skipped for test", []),
+    )
+
+    stage_discover(config)
+
+    kept = pd.read_csv(config.results_root / "manifest.csv")
+    assert kept["registration_asset"].tolist() == ["reg/ccf_Ex_639_Em_667"]
+    assert kept["template_to_ccf_asset"].tolist() == ["idisco/t2c"]
+
+
 def test_stage_discover_refuses_zero_viable_even_with_allow_partial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

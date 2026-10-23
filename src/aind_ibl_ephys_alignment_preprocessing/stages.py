@@ -60,7 +60,11 @@ from aind_ibl_ephys_alignment_preprocessing.coverage import (
     RunCoverage,
     build_coverage,
 )
-from aind_ibl_ephys_alignment_preprocessing.discovery import prepare_result_dirs
+from aind_ibl_ephys_alignment_preprocessing.discovery import (
+    PER_BRAIN_PATH_COLUMNS,
+    manifest_per_brain_path,
+    prepare_result_dirs,
+)
 from aind_ibl_ephys_alignment_preprocessing.ephys import (
     find_session_dir,
     find_sorted_session_dir,
@@ -279,7 +283,14 @@ def stage_discover(
 
     config.results_root.mkdir(parents=True, exist_ok=True)
     filtered_manifest = config.results_root / "manifest.csv"
-    manifest_df[pd.Series(viable, index=manifest_df.index)].to_csv(filtered_manifest, index=False)
+    filtered_df = manifest_df[pd.Series(viable, index=manifest_df.index)].copy()
+    # A per-brain value may sit only on a dropped row; downstream stages would then
+    # read none and fall back to the pipeline's transforms.
+    for column in PER_BRAIN_PATH_COLUMNS:
+        value = manifest_per_brain_path(config, column)
+        if value is not None:
+            filtered_df[column] = value.as_posix()
+    filtered_df.to_csv(filtered_manifest, index=False)
     logger.info("[discover] %d/%d probes viable -> %s", sum(viable), len(rows), filtered_manifest)
 
     # Assign units before writing anything, so the coverage record can name the
