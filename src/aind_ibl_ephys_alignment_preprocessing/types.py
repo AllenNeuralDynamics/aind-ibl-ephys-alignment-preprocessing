@@ -297,9 +297,16 @@ class AssetInfo:
         -------
         tuple[list[str], list[bool]]
             Transform paths and their inversion flags, in application order.
+
+        Raises
+        ------
+        ValueError
+            If an override is set but no transform in the chain carries a name it replaces.
         """
         chains = self.pipeline_registration_chains
-        return [self._substitute(path) for path in chains.pt_tx_str], chains.pt_tx_inverted
+        paths = [self._substitute(path) for path in chains.pt_tx_str]
+        self._require_substituted(paths, chains.pt_tx_str)
+        return paths, chains.pt_tx_inverted
 
     def image_chain(self) -> tuple[list[str], list[bool]]:
         """Return the individual->CCF image chain (QC only), honoring both overrides like :meth:`point_chain`.
@@ -313,13 +320,29 @@ class AssetInfo:
         ------
         FileNotFoundError
             If an override directory lacks a forward warp the chain needs; neither override is required to ship one.
+        ValueError
+            If an override is set but no transform in the chain carries a name it replaces.
         """
         chains = self.pipeline_registration_chains
         paths = [self._substitute(path, forward=True) for path in chains.img_tx_str]
+        self._require_substituted(paths, chains.img_tx_str)
         missing = [p for p, orig in zip(paths, chains.img_tx_str, strict=True) if p != orig and not Path(p).exists()]
         if missing:
             raise FileNotFoundError(f"the QC channels->CCF warp needs {', '.join(missing)}")
         return paths, chains.img_tx_inverted
+
+    def _require_substituted(self, paths: list[str], originals: list[str]) -> None:
+        # Substitution matches upstream file names, so a rename there would leave
+        # the pipeline's transforms in place without an error.
+        replaced = {Path(p).parent for p, orig in zip(paths, originals, strict=True) if p != orig}
+        overrides = {"registration_asset": self.registration_dir_path if self.has_registration_override else None}
+        overrides["template_to_ccf_asset"] = self.template_to_ccf_dir
+        for column, directory in overrides.items():
+            if directory is not None and directory not in replaced:
+                raise ValueError(
+                    f"{column} {directory} replaced no transform in the chain {originals}; "
+                    "the transform names it matches no longer appear upstream"
+                )
 
     def _substitute(self, path: str, *, forward: bool = False) -> str:
         # The S3 cache names a downloaded file ``<bucket>__<key path>__<hash>__<basename>``.

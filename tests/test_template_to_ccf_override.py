@@ -172,3 +172,83 @@ def test_datapackage_without_override_is_unchanged(tmp_path):
     info = _asset_info(tmp_path)
     assert _build_transforms(info, config, tmp_path).template_to_ccf_affine.asset == "spim_template_to_ccf"
     assert "template_to_ccf" not in _build_external_assets(info, config)
+
+
+# --- the registration and the template->CCF chain must share a template ------
+
+
+def _template_check_inputs(tmp_path: Path):
+    from tests.sidecar_fixtures import OTHER_TEMPLATE_ORIGIN, write_template
+
+    pipeline_template = tmp_path / "lca" / "template_25.nii.gz"
+    lca = write_template(pipeline_template)
+    other = write_template(tmp_path / "idisco" / "template.nii.gz", OTHER_TEMPLATE_ORIGIN)
+    return pipeline_template, lca, other
+
+
+def test_registration_to_another_template_needs_its_ccf_registration(tmp_path):
+    """The silent case: an iDISCO registration paired with the LCA template->CCF chain."""
+    from aind_ibl_ephys_alignment_preprocessing.registration_frame import check_registration_template
+    from tests.sidecar_fixtures import write_sidecar
+
+    pipeline_template, _, other = _template_check_inputs(tmp_path)
+    write_sidecar(tmp_path / "reg", other)
+    with pytest.raises(ValueError, match="no template_to_ccf_asset"):
+        check_registration_template(tmp_path / "reg", pipeline_template, None)
+    check_registration_template(tmp_path / "reg", pipeline_template, tmp_path / "t2c")
+
+
+def test_registration_to_the_pipeline_template_keeps_its_chain(tmp_path):
+    from aind_ibl_ephys_alignment_preprocessing.registration_frame import check_registration_template
+    from tests.sidecar_fixtures import write_sidecar
+
+    pipeline_template, lca, _ = _template_check_inputs(tmp_path)
+    write_sidecar(tmp_path / "reg", lca)
+    check_registration_template(tmp_path / "reg", pipeline_template, None)
+    with pytest.raises(ValueError, match="replaces that template's CCF registration"):
+        check_registration_template(tmp_path / "reg", pipeline_template, tmp_path / "t2c")
+
+
+def test_a_template_to_ccf_sidecar_decides_the_template(tmp_path):
+    """A replacement CCF registration of the pipeline template is allowed once it says so."""
+    from aind_ibl_ephys_alignment_preprocessing.registration_frame import (
+        TEMPLATE_TO_CCF_SIDECAR_NAMES,
+        check_registration_template,
+    )
+    from tests.sidecar_fixtures import write_sidecar
+
+    pipeline_template, lca, other = _template_check_inputs(tmp_path)
+    write_sidecar(tmp_path / "reg", lca)
+    write_sidecar(tmp_path / "t2c", fixed=other, moving=lca, name=TEMPLATE_TO_CCF_SIDECAR_NAMES[0], prefix="syn")
+    check_registration_template(tmp_path / "reg", pipeline_template, tmp_path / "t2c")
+
+    write_sidecar(tmp_path / "t2c", fixed=lca, moving=other, name=TEMPLATE_TO_CCF_SIDECAR_NAMES[0], prefix="syn")
+    with pytest.raises(ValueError, match="not the one"):
+        check_registration_template(tmp_path / "reg", pipeline_template, tmp_path / "t2c")
+
+
+def test_a_template_override_needs_a_registration_sidecar(tmp_path):
+    from aind_ibl_ephys_alignment_preprocessing.registration_frame import check_registration_template
+
+    pipeline_template, _, _ = _template_check_inputs(tmp_path)
+    (tmp_path / "reg").mkdir()
+    check_registration_template(tmp_path / "reg", pipeline_template, None)
+    with pytest.raises(ValueError, match="no transform sidecar"):
+        check_registration_template(tmp_path / "reg", pipeline_template, tmp_path / "t2c")
+
+
+def test_resolve_requires_the_forward_warp_for_qc(tmp_path):
+    config = _config(tmp_path, f"{MANIFEST_HEADER},template_to_ccf_asset\n750107,p,s,a,b,t2c\n")
+    _template_dir(config.data_root / "t2c", *TEMPLATE_TO_CCF_TRANSFORMS)
+    assert resolve_template_to_ccf_dir(config) is not None
+    with pytest.raises(FileNotFoundError, match="syn_1Warp"):
+        resolve_template_to_ccf_dir(config.model_copy(update={"emit_qc": True}))
+
+
+def test_an_override_matching_nothing_in_the_chain_is_fatal(tmp_path):
+    """An upstream rename would otherwise leave the LCA transforms in place."""
+    info = _asset_info(tmp_path, template_dir=tmp_path / "t2c")
+    chains = info.pipeline_registration_chains
+    chains.pt_tx_str[2:] = ["/cache/template/renamed_affine.mat", "/cache/template/renamed_warp.nii.gz"]
+    with pytest.raises(ValueError, match="replaced no transform"):
+        info.point_chain()

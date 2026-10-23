@@ -20,6 +20,9 @@ required to ship it.
 TEMPLATE_TO_CCF_TRANSFORMS: tuple[str, ...] = ("syn_0GenericAffine.mat", "syn_1InverseWarp.nii.gz")
 """Transforms a template->CCF directory must supply: the template->CCF half of the point chain."""
 
+TEMPLATE_TO_CCF_FORWARD_WARP: str = "syn_1Warp.nii.gz"
+"""The template->CCF forward warp, needed only by the QC channels->CCF warp."""
+
 IMAGE_CHAIN_FORWARD_WARP: str = "ls_to_template_SyN_1Warp.nii.gz"
 """The individual->template forward warp, needed only by the QC channels->CCF warp."""
 

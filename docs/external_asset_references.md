@@ -97,6 +97,15 @@ An illustrative registry fragment is:
 }
 ```
 
+The producer writes these logical keys:
+
+| Key | Role | Present |
+|---|---|---|
+| `smartspim` | `smartspim_registration` | Always: the stitched asset holding the volumes and, by default, the registration |
+| `spim_template_to_ccf` | `template_to_ccf` | Always: the SmartSPIM LCA template's CCF registration |
+| `registration` | `registration_override` | With the manifest's `registration_asset` |
+| `template_to_ccf` | `template_to_ccf_override` | With the manifest's `template_to_ccf_asset`; `transforms.template_to_ccf_*` then name it instead of `spim_template_to_ccf` |
+
 These fragments are not complete datapackages. Role/name are required; ID,
 URI, checksum, and provenance are optional. A URI should describe the asset
 actually containing the referenced files, not an earlier acquisition asset.

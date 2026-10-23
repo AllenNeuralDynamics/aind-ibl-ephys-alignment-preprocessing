@@ -16,7 +16,16 @@ from aind_zarr_utils.pipeline_transformed import (
     pipeline_transforms_local_paths,
 )
 
-from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS, TEMPLATE_TO_CCF_TRANSFORMS
+from aind_ibl_ephys_alignment_preprocessing._constants import (
+    REGISTRATION_TRANSFORMS,
+    TEMPLATE_TO_CCF_FORWARD_WARP,
+    TEMPLATE_TO_CCF_TRANSFORMS,
+)
+from aind_ibl_ephys_alignment_preprocessing.registration_frame import (
+    REGISTRATION_SIDECAR_NAMES,
+    check_registration_template,
+    find_registration_sidecar,
+)
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
     OutputDirs,
@@ -28,6 +37,10 @@ if TYPE_CHECKING:
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
 
 logger = logging.getLogger(__name__)
+
+
+#: Manifest columns naming one directory per brain, read off whichever row carries them.
+PER_BRAIN_PATH_COLUMNS = ("registration_asset", "template_to_ccf_asset")
 
 
 def manifest_registration_override(config: PipelineConfig) -> Path | None:
@@ -102,7 +115,7 @@ def resolve_template_to_ccf_dir(config: PipelineConfig) -> Path | None:
     Raises
     ------
     FileNotFoundError
-        If the directory does not exist or lacks either transform.
+        If the directory does not exist or lacks a transform the run needs; ``emit_qc`` adds the forward warp.
     """
     override = manifest_template_override(config)
     if override is None:
@@ -112,7 +125,8 @@ def resolve_template_to_ccf_dir(config: PipelineConfig) -> Path | None:
         raise FileNotFoundError(
             f"template_to_ccf_asset {override} not found under {config.data_root} (resolved to {tmpl_dir})"
         )
-    missing = [name for name in TEMPLATE_TO_CCF_TRANSFORMS if not (tmpl_dir / name).exists()]
+    required = TEMPLATE_TO_CCF_TRANSFORMS + ((TEMPLATE_TO_CCF_FORWARD_WARP,) if config.emit_qc else ())
+    missing = [name for name in required if not (tmpl_dir / name).exists()]
     if missing:
         raise FileNotFoundError(f"template_to_ccf_asset {override} is missing {', '.join(missing)} in {tmpl_dir}")
     logger.info("using template->CCF override %s", tmpl_dir)
@@ -146,7 +160,7 @@ def resolve_registration_dir(config: PipelineConfig, asset_path: Path) -> tuple[
     ------
     FileNotFoundError
         If the override names a directory that does not exist, or one missing
-        either transform.
+        either transform or the transform sidecar.
     """
     override = manifest_registration_override(config)
     if override is None:
@@ -160,6 +174,15 @@ def resolve_registration_dir(config: PipelineConfig, asset_path: Path) -> tuple[
     missing = [name for name in REGISTRATION_TRANSFORMS if not (reg_dir / name).exists()]
     if missing:
         raise FileNotFoundError(f"registration_asset {override} is missing {', '.join(missing)} in {reg_dir}")
+    # Without a sidecar the frame falls back to the pipeline's anchored geometry and
+    # the template to the pipeline's, both guesses an off-pipeline registration
+    # usually breaks, silently.
+    if find_registration_sidecar(reg_dir) is None:
+        raise FileNotFoundError(
+            f"registration_asset {override} has no transform sidecar ({' or '.join(REGISTRATION_SIDECAR_NAMES)}) "
+            f"in {reg_dir}; it declares the frame and template the registration was computed in. Generate it "
+            "beside the transforms (README: 'Generate the sidecar from ANTs outputs')."
+        )
     # ``ccf_<channel>`` is the standalone capsule's layout; the pipeline's own is
     # ``image_atlas_alignment/<channel>``, where the name is already the channel.
     channel = reg_dir.name.removeprefix("ccf_")
@@ -241,13 +264,15 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
         # No override: the registration lives beside the channel the asset's own
         # metadata nominated, so the stem is the channel.
         registration_dir_path = registration_dir_path / Path(alignment_zarr_uri).stem
+    template_to_ccf_dir = resolve_template_to_ccf_dir(config)
+    check_registration_template(registration_dir_path, config.template_25, template_to_ccf_dir)
     return AssetInfo(
         asset_path=asset_path,
         asset_uri=_infer_asset_uri(a_zarr_uri, asset_pathlike),
         zarr_volumes=zarr_paths,
         pipeline_registration_chains=pipeline_reg_info,
         registration_dir_path=registration_dir_path,
-        template_to_ccf_dir=resolve_template_to_ccf_dir(config),
+        template_to_ccf_dir=template_to_ccf_dir,
     )
 
 

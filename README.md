@@ -228,6 +228,7 @@ before a column existed stays valid.
 | `probe_shank` | *legacy* | Alias for both `histology_shank` and `ephys_shank`. |
 | `surface_finding` | *null* | Path (relative to `data_root`) to a surface-finding file. |
 | `registration_asset` | *null* | Path relative to `data_root` to a replacement registration directory, e.g. `SmartSPIM_750108_reg/ccf_Ex_639_Em_667`. One value per brain; all nonblank rows must agree. See [Separate registration asset](#separate-registration-asset) for its contents and coordinate requirements. |
+| `template_to_ccf_asset` | *null* | Path relative to `data_root` to the template-to-CCF registration of the template `registration_asset` was registered to, when that is not the SmartSPIM LCA template. One value per brain, like `registration_asset`. See [Separate template-to-CCF registration](#separate-template-to-ccf-registration). |
 
 **Constraints:**
 - All rows must have the same `mouseid`.
@@ -263,6 +264,7 @@ naming convention.
 mouseid = "837772"
 annotation = "837772-probe-annotations-CK-2026-09-29.json"  # relative to this file
 # registration_asset = "..."                                  # optional, per brain
+# template_to_ccf_asset = "..."                               # optional, per brain
 
 [[session]]
 sorted_recording = "ecephys_837772_2026-06-27_14-08-21_sorted_2026-08-27_18-59-49"
@@ -323,23 +325,26 @@ mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,registra
 Use one path per brain; conflicting nonblank values fail. An absent or blank
 column uses the stitched asset's registration.
 
-The directory must contain `ls_to_template_SyN_0GenericAffine.mat` and
-`ls_to_template_SyN_1InverseWarp.nii.gz`: ANTs SyN outputs registering this
-brain's selected channel to the SmartSPIM LCA template, or to the template
-named by `template_to_ccf_asset` (below). The separate template-to-CCF
-registration is still required.
+The directory must contain `ls_to_template_SyN_0GenericAffine.mat`,
+`ls_to_template_SyN_1InverseWarp.nii.gz` and a geometry sidecar (below): ANTs
+SyN outputs registering this brain's selected channel to the SmartSPIM LCA
+template, or to another template whose CCF registration
+`template_to_ccf_asset` (below) supplies.
 
 The final directory name selects the channel after stripping a leading
 `ccf_`. For this example, the stitched asset must contain
 `image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr/`. Images and metadata come
 from the stitched asset; the override needs only transforms and their sidecar.
 
-Native-frame registrations need a geometry sidecar beside the transforms.
-Preprocessing checks `ls_to_template_transform_information.json`, then
-`transform_information.json`. Its `moving_domain` must describe the actual
-registration input in LPS millimeters and match the selected volume's native
-or pipeline-anchored frame. Missing or incompatible domains fail. Without a
-sidecar, preprocessing assumes the pipeline-anchored frame.
+Every separate registration needs a geometry sidecar beside the transforms;
+a directory without one fails. Preprocessing checks
+`ls_to_template_transform_information.json`, then `transform_information.json`.
+Its `moving_domain` must describe the actual registration input in LPS
+millimeters and match the selected volume's native or pipeline-anchored frame.
+Its `fixed_domain` must match the template the template-to-CCF chain starts
+from: the SmartSPIM LCA template unless `template_to_ccf_asset` is set. Missing
+or incompatible domains fail, since a wrong frame or template still puts the
+probes somewhere plausible.
 
 **QC:** Additional-channel CCF volumes (`emit_qc=True`) also need
 `ls_to_template_SyN_1Warp.nii.gz` in the override directory; without it the
@@ -426,9 +431,14 @@ The directory must contain `syn_0GenericAffine.mat` and
 moving; `emit_qc=True` also needs `syn_1Warp.nii.gz`. They replace the
 pipeline's `spim_template_to_ccf_syn_*_25` transforms in the probe and QC
 chains, and the datapackage refers to them under the `template_to_ccf` asset,
-named after the directory's first component under `data_root`. The
-individual-to-template sidecar under `registration_asset` must then name this
-template as its fixed domain.
+named after the directory's first component under `data_root`.
+
+The column requires a `registration_asset` with a sidecar, whose `fixed_domain`
+is checked against this template. If the directory ships its own sidecar
+(`template_to_ccf_transform_information.json` or `transform_information.json`),
+the registration's `fixed_domain` must match its `moving_domain`. Without one,
+the registration's `fixed_domain` must *not* match the SmartSPIM LCA template;
+to replace the LCA template's own CCF registration, ship the sidecar.
 
 ### Reference volumes
 

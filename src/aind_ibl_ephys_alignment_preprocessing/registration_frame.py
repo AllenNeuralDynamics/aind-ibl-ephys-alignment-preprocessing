@@ -34,6 +34,13 @@ REGISTRATION_SIDECAR_NAMES = (
     "transform_information.json",
 )
 
+#: Sidecar filenames looked for in a ``template_to_ccf_asset`` directory, whose
+#: ``moving_domain`` is the template the CCF registration starts from.
+TEMPLATE_TO_CCF_SIDECAR_NAMES = (
+    "template_to_ccf_transform_information.json",
+    "transform_information.json",
+)
+
 #: Floor for the plausibility check, in mm. The frame is chosen by which candidate
 #: is *nearer*, so this decides nothing -- it only rejects a sidecar that belongs to
 #: some other volume. Set well above any legitimate resampling disagreement (tens of
@@ -130,11 +137,11 @@ def resolve_registration_frame(
         re-grid would apply the pipeline's compensation to a transform that is
         not the pipeline's, which is the original defect.
     """
-    # A manifest override still gets this branch. Which *asset* holds the
-    # transforms says nothing about which *frame* they were trained in -- a
-    # re-registration run with ``pipeline=True`` would be anchored too -- so the
-    # sidecar is the only evidence, and its absence means the pipeline's
-    # convention. Do not reach for ``has_registration_override`` here.
+    # Which *asset* holds the transforms says nothing about which *frame* they
+    # were trained in -- a re-registration run with ``pipeline=True`` would be
+    # anchored too -- so the sidecar is the only evidence. Discovery refuses a
+    # ``registration_asset`` without one, so reaching the no-sidecar branch means
+    # the stitched asset's own registration, whose convention is the pipeline's.
     sidecar_path = find_registration_sidecar(registration_dir)
     if sidecar_path is None:
         return RegistrationFrame(
@@ -182,6 +189,107 @@ def resolve_registration_frame(
         reason=reason,
         sidecar_path=sidecar_path,
     )
+
+
+def check_registration_template(
+    registration_dir: Path,
+    pipeline_template: Path,
+    template_to_ccf_dir: Path | None,
+) -> None:
+    """Refuse a registration whose template is not the one the template->CCF chain starts from.
+
+    The two halves of the point chain are chosen independently -- the
+    individual->template half by ``registration_asset``, the template->CCF half
+    by ``template_to_ccf_asset`` -- and a mismatched pair is silent: points warp
+    through the wrong template into CCF and still pick up plausible region
+    names. The registration sidecar's ``fixed_domain`` is the template it was
+    registered to, so it is compared with the template the chain assumes: the
+    template->CCF directory's own sidecar when it ships one, else the pipeline
+    template, which an override must *not* match.
+
+    Parameters
+    ----------
+    registration_dir : Path
+        Directory holding the image-to-template transforms.
+    pipeline_template : Path
+        The pipeline's template volume (``PipelineConfig.template_25``); only its
+        header is read.
+    template_to_ccf_dir : Path or None
+        The ``template_to_ccf_asset`` directory, or None for the pipeline's chain.
+
+    Raises
+    ------
+    ValueError
+        If the registration's template disagrees with the template->CCF chain,
+        or a ``template_to_ccf_asset`` is set without a registration sidecar to
+        check it against.
+    """
+    sidecar_path = find_registration_sidecar(registration_dir)
+    if sidecar_path is None:
+        if template_to_ccf_dir is not None:
+            raise ValueError(
+                f"template_to_ccf_asset {template_to_ccf_dir} is set, but {registration_dir} has no transform "
+                f"sidecar ({' or '.join(REGISTRATION_SIDECAR_NAMES)}) naming the template it was registered to, "
+                "so nothing shows the two halves of the chain share a template. Add the sidecar."
+            )
+        return
+    fixed = load_package(sidecar_path.read_text()).fixed_domain
+    if fixed is None:
+        raise ValueError(f"{sidecar_path} declares no fixed_domain, so its template cannot be checked")
+
+    template_sidecar = find_template_to_ccf_sidecar(template_to_ccf_dir) if template_to_ccf_dir else None
+    if template_sidecar is not None:
+        expected = load_package(template_sidecar.read_text()).moving_domain
+        if expected is None:
+            raise ValueError(f"{template_sidecar} declares no moving_domain, so its template cannot be checked")
+        distance, tolerance = _bbox_distance(fixed, expected), _sanity_tolerance(fixed, expected)
+        if distance > tolerance:
+            raise ValueError(
+                f"{sidecar_path} was registered to a template that is not the one {template_sidecar} maps to CCF.\n"
+                f"  registration fixed bbox:   {_format_bbox(fixed)}\n"
+                f"  template->CCF moving bbox: {_format_bbox(expected)}  (off by {distance:.4g} mm)"
+            )
+        return
+
+    reference = _domain_from_file(pipeline_template)
+    distance, tolerance = _bbox_distance(fixed, reference), _sanity_tolerance(fixed, reference)
+    on_pipeline_template = distance <= tolerance
+    if template_to_ccf_dir is None and not on_pipeline_template:
+        raise ValueError(
+            f"{sidecar_path} was registered to a template other than {pipeline_template.name}, but no "
+            "template_to_ccf_asset names that template's CCF registration; the pipeline's would be applied.\n"
+            f"  registration fixed bbox: {_format_bbox(fixed)}\n"
+            f"  pipeline template bbox:  {_format_bbox(reference)}  (off by {distance:.4g} mm)"
+        )
+    if template_to_ccf_dir is not None and on_pipeline_template:
+        raise ValueError(
+            f"{sidecar_path} was registered to {pipeline_template.name}, but template_to_ccf_asset "
+            f"{template_to_ccf_dir} replaces that template's CCF registration. Drop the column, or, for a "
+            "replacement registration of the same template, ship a sidecar in it "
+            f"({' or '.join(TEMPLATE_TO_CCF_SIDECAR_NAMES)}) whose moving_domain is the template."
+        )
+
+
+def find_template_to_ccf_sidecar(template_to_ccf_dir: Path) -> Path | None:
+    """Return the transform sidecar in *template_to_ccf_dir*, or None."""
+    for name in TEMPLATE_TO_CCF_SIDECAR_NAMES:
+        candidate = template_to_ccf_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _domain_from_file(path: Path) -> Domain:
+    """Describe an image file's physical extent from its header alone."""
+    reader = sitk.ImageFileReader()
+    reader.SetFileName(str(path))
+    reader.ReadImageInformation()
+    stub = sitk.Image((1, 1, 1), sitk.sitkUInt8)
+    stub.SetOrigin(reader.GetOrigin())
+    stub.SetSpacing(reader.GetSpacing())
+    stub.SetDirection(reader.GetDirection())
+    size = reader.GetSize()
+    return _domain_from_image(stub, (size[0], size[1], size[2]))
 
 
 def _domain_from_image(image: sitk.Image, size_ijk: tuple[int, int, int]) -> Domain:

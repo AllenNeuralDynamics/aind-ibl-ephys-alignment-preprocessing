@@ -17,6 +17,7 @@ from aind_ibl_ephys_alignment_preprocessing.discovery import (
     resolve_registration_dir,
 )
 from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow, PipelineConfig
+from tests.sidecar_fixtures import write_sidecar, write_template
 
 MANIFEST_HEADER = "mouseid,probe_file,sorted_recording,probe_id,probe_name"
 
@@ -35,11 +36,15 @@ def _config(tmp_path: Path, manifest_body: str | None) -> PipelineConfig:
     )
 
 
-def _registration_dir(root: Path, name: str, *, complete: bool = True) -> Path:
+def _registration_dir(root: Path, name: str, *, complete: bool = True, sidecar: bool = True) -> Path:
+    """Transforms registered to the pipeline template, which is written under *root* if absent."""
     reg = root / name
     reg.mkdir(parents=True, exist_ok=True)
     for transform in REGISTRATION_TRANSFORMS if complete else REGISTRATION_TRANSFORMS[:1]:
         (reg / transform).write_text("x")
+    if sidecar:
+        template = root / PipelineConfig.model_fields["template_25"].default
+        write_sidecar(reg, write_template(template))
     return reg
 
 
@@ -487,24 +492,10 @@ def test_find_asset_info_rejects_a_channel_the_brain_does_not_have(tmp_path, mon
     assert DEFAULT_CHANNEL in message and OVERRIDE_CHANNEL in message
 
 
-def test_an_override_without_a_sidecar_is_still_a_pipeline_brain(tmp_path):
-    """Which asset holds the transforms is not evidence about their frame.
+def test_an_override_without_a_sidecar_is_refused(tmp_path):
+    """Without one the pipeline's frame and template would be assumed for transforms that are not the pipeline's."""
+    config = _config(tmp_path, f"{MANIFEST_HEADER},registration_asset\n750108,p,s,a,b,reg/ccf_Ex_639_Em_667\n")
+    _registration_dir(config.data_root, "reg/ccf_Ex_639_Em_667", sidecar=False)
 
-    A re-registration run with ``pipeline=True`` would be anchored too, so only
-    the sidecar can say. Absent one, the pipeline's convention applies even
-    though the manifest pinned a separate asset.
-    """
-    from aind_ibl_ephys_alignment_preprocessing.registration_frame import resolve_registration_frame
-
-    sitk = pytest.importorskip("SimpleITK")
-    reg_dir = _registration_dir(tmp_path, "ccf_Ex_639_Em_667")  # transforms, no sidecar
-
-    def header(origin):
-        img = sitk.Image((1, 1, 1), sitk.sitkUInt8)
-        img.SetSpacing((0.0144,) * 3)
-        img.SetOrigin(origin)
-        return img
-
-    frame = resolve_registration_frame(reg_dir, header((0.0, 0.0, 0.0)), header((12.0, 0.0, 0.0)), (944, 1120, 480))
-    assert frame.regrid_to_pipeline
-    assert frame.sidecar_path is None
+    with pytest.raises(FileNotFoundError, match="no transform sidecar"):
+        resolve_registration_dir(config, config.data_root / "SmartSPIM_750108")

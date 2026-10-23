@@ -485,12 +485,50 @@ class PipelineValidator:
                         self._add_result(
                             False, category, "registration_dir", f"Registration directory not found: {reg_dir}"
                         )
+                    self._validate_template_chain(reg_dir if override_channel is not None else None, category)
                 else:
                     self._add_result(False, category, "asset_path", f"Asset path not found: {asset_path}")
         except Exception as e:
             self._add_result(
                 False, category, "asset_discovery", f"Failed to discover asset structure: {e}", severity="warning"
             )
+
+    def _validate_template_chain(self, override_reg_dir: Path | None, category: str) -> None:
+        """Check the template->CCF override and that the registration shares its template, as discovery will."""
+        from aind_ibl_ephys_alignment_preprocessing.discovery import resolve_template_to_ccf_dir
+        from aind_ibl_ephys_alignment_preprocessing.registration_frame import check_registration_template
+
+        try:
+            template_dir = resolve_template_to_ccf_dir(self.config)
+        except (FileNotFoundError, ValueError) as e:
+            self._add_result(False, category, "template_to_ccf_dir", str(e))
+            return
+        if template_dir is not None:
+            self._add_result(
+                True, category, "template_to_ccf_dir", f"Template->CCF override found: {template_dir}", severity="info"
+            )
+        if override_reg_dir is None:
+            if template_dir is not None:
+                self._add_result(
+                    False,
+                    category,
+                    "registration_template",
+                    "template_to_ccf_asset is set without a registration_asset; the stitched asset's registration "
+                    "is to the pipeline template",
+                )
+            return
+        try:
+            check_registration_template(override_reg_dir, self.config.template_25, template_dir)
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
+            self._add_result(False, category, "registration_template", str(e))
+            return
+        self._add_result(
+            True,
+            category,
+            "registration_template",
+            "Registration template matches the template->CCF chain",
+            severity="info",
+        )
 
     # -- Category 5: Per-probe Files -------------------------------------------
 

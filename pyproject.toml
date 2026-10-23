@@ -135,5 +135,6 @@ ignore_missing_imports = true
 module = [
   "aind_ibl_ephys_alignment_preprocessing.histology",
   "aind_ibl_ephys_alignment_preprocessing._async.histology",
+  "aind_ibl_ephys_alignment_preprocessing.registration_frame",
 ]
 disallow_untyped_calls = false
