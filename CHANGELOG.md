@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.0 (2026-10-23)
+
+### BREAKING CHANGE
+
+- registration_asset directories must carry
+ls_to_template_transform_information.json or transform_information.json, and
+template_to_ccf_asset requires a registration_asset.
+
+### Feat
+
+- write template_to_ccf_asset from the manifest mapping
+
+### Fix
+
+- refuse override transforms whose frame or template is unverified
+- keep per-brain override columns on the rows discover keeps
+
 ## v0.6.0 (2026-10-22)
 
 ### Feat
