@@ -24,7 +24,7 @@ from aind_ibl_ephys_alignment_preprocessing.ephys import analyzer_collection, fi
 #: A split quad-base stream: one shank of a probe recorded as its own stream (``46101-3``).
 _SPLIT_STREAM_RE = re.compile(r"^(?P<base>.+)-(?P<position>[1-9]\d*)$")
 
-#: Columns written, in this order; ``registration_asset`` is added only when set.
+#: Columns written, in this order; ``registration_asset`` and ``template_to_ccf_asset`` are added only when set.
 OUTPUT_COLUMNS: tuple[str, ...] = (
     "mouseid",
     "sorted_recording",
@@ -85,6 +85,7 @@ class MouseMapping:
     annotation: Path
     sessions: tuple[SessionMapping, ...]
     registration_asset: str | None = None
+    template_to_ccf_asset: str | None = None
 
     @classmethod
     def from_toml(cls, path: Path) -> MouseMapping:
@@ -100,6 +101,7 @@ class MouseMapping:
             annotation=(path.parent / data["annotation"]).resolve(),
             sessions=sessions,
             registration_asset=data.get("registration_asset"),
+            template_to_ccf_asset=data.get("template_to_ccf_asset"),
         )
 
 
@@ -263,9 +265,11 @@ def build_manifest(
     rows.sort(key=lambda r: order[r["histology_track_id"]])
     df = pd.DataFrame(rows).assign(mouseid=mapping.mouseid, probe_file=mapping.annotation.stem)
     columns: list[str] = list(OUTPUT_COLUMNS)
-    if mapping.registration_asset:
-        df["registration_asset"] = mapping.registration_asset
-        columns.append("registration_asset")
+    for column in ("registration_asset", "template_to_ccf_asset"):
+        value = getattr(mapping, column)
+        if value:
+            df[column] = value
+            columns.append(column)
     for shank in ("histology_shank", "ephys_shank"):
         df[shank] = df[shank].astype("Int64")
     return df[columns]

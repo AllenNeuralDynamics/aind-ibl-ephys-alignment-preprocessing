@@ -141,3 +141,20 @@ def test_a_mapping_file_builds_against_a_mounted_sort(tmp_path):
     assert df["histology_track_id"].tolist() == ["bla", "pl"]
     assert df.loc[1, "histology_shank"] == 1
     assert unmapped == ["x"]
+
+
+def test_per_brain_overrides_are_written_only_when_set():
+    tracks = (TrackAssignment("bla", "46810"),)
+    plain = build_manifest(_mapping(*tracks), {SORT: {"46810"}}, _points("bla"))
+    assert "registration_asset" not in plain and "template_to_ccf_asset" not in plain
+
+    mapping = MouseMapping(
+        "1",
+        Path("tracks.json"),
+        (SessionMapping(SORT, tracks),),
+        registration_asset="reg/ccf_Ex_639_Em_667",
+        template_to_ccf_asset="idisco/t2c",
+    )
+    df = build_manifest(mapping, {SORT: {"46810"}}, _points("bla"))
+    assert df.columns[-2:].tolist() == ["registration_asset", "template_to_ccf_asset"]
+    assert df.iloc[0]["template_to_ccf_asset"] == "idisco/t2c"
