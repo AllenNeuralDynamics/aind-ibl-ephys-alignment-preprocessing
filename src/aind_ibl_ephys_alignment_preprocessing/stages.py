@@ -171,25 +171,20 @@ def _probe_viability(
     if not config.skip_ephys and mr.ephys_collection is not None:
         if sorted_dirs is None:
             sorted_dirs = find_sorted_session_dirs(config.data_root)
-        # Match the sorting by the recording it was derived from, not by the pinned
-        # name. A sorted asset mounts under its *asset* name, which is free to differ
-        # from the manifest's ``sorted_recording`` -- published captures have shipped
-        # with the recording time missing from the name. Resolving by name then finds
-        # nothing and the whole session reads as unsorted; that is how 791094 lost all
-        # 10 probes of 2025-10-09_14-26-31 while the run still exited 0.
-        sorted_dir = sorted_dirs.get(mr.recording_id)
+        # Honour the exact sorting pin first. Several sorting variants can name
+        # the same input recording. Input metadata is a compatibility fallback
+        # for published captures mounted under a different name.
+        sorted_dir = find_session_dir(config.data_root, str(mr.sorted_recording))
         if sorted_dir is None:
-            # No sorting identified itself as this recording's. Fall back to the old
-            # name lookup so an asset with an unreadable data_description still works.
-            sorted_dir = find_session_dir(config.data_root, str(mr.sorted_recording))
-            if sorted_dir is not None:
-                logger.warning(
-                    "[discover] %s: no mounted sorting names this recording in its "
-                    "data_description; matched %s by directory name instead",
-                    mr.recording_id,
-                    sorted_dir,
-                )
-                notes.append(f"sorting matched by directory name ({sorted_dir.name}), not by input recording")
+            sorted_dir = sorted_dirs.get(mr.recording_id)
+        elif mr.recording_id not in sorted_dirs:
+            logger.warning(
+                "[discover] %s: sorting matched by directory name %s; "
+                "its input recording is absent from data_description",
+                mr.recording_id,
+                sorted_dir,
+            )
+            notes.append(f"sorting matched by directory name ({sorted_dir.name}), not by input recording")
         if not has_sorting_output(sorted_dir, str(mr.ephys_collection)):
             return False, "no spike-sorting output (bad sorting)", notes
     ok, reason = _track_annotation_present(config.data_root, mr)

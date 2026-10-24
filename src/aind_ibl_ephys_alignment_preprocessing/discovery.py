@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -11,7 +11,6 @@ from aind_s3_cache.json_utils import get_json
 from aind_s3_cache.uri_utils import as_pathlike
 from aind_zarr_utils.neuroglancer import get_image_sources
 from aind_zarr_utils.pipeline_transformed import (
-    _asset_from_zarr_pathlike,
     alignment_zarr_uri_and_metadata_from_zarr_or_asset_pathlike,
     pipeline_transforms_local_paths,
 )
@@ -37,6 +36,25 @@ if TYPE_CHECKING:
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
 
 logger = logging.getLogger(__name__)
+
+
+def image_asset_path(data_root: Path, source_uri: str) -> Path:
+    """Locate a mounted image asset from its URI and processing layout.
+
+    S3 prefixes may have several components. Code Ocean mounts the asset under
+    its own directory name, without the bucket's enclosing prefix directories.
+    Neither acquisition prefixes nor timestamps identify that directory.
+    """
+    kind, _, path = as_pathlike(source_uri)
+    for parent in path.parents:
+        if parent.name == "image_tile_fusing":
+            asset = parent.parent
+            break
+    else:
+        raise ValueError(f"Image source has no image_tile_fusing asset layout: {source_uri!r}")
+    if kind != "s3" and asset.is_absolute() and Path(asset).is_dir():
+        return Path(asset)
+    return data_root / asset.name
 
 
 #: Manifest columns naming one directory per brain, read off whichever row carries them.
@@ -215,9 +233,10 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
     a_zarr_uri = next(iter(sources.values()), None)
     if a_zarr_uri is None:
         raise ValueError("No image sources found in neuroglancer data")
-    _, _, a_zarr_pathlike = as_pathlike(a_zarr_uri)
-    asset_pathlike = _asset_from_zarr_pathlike(a_zarr_pathlike)
-    asset_path = config.data_root / asset_pathlike
+    asset_paths = {image_asset_path(config.data_root, uri) for uri in sources.values() if uri}
+    if len(asset_paths) != 1:
+        raise ValueError(f"Neuroglancer image layers reference multiple assets: {sources!r}")
+    asset_path = next(iter(asset_paths))
     if not asset_path.exists():
         raise FileNotFoundError(f"Asset path not found: {asset_path}")
     asset_path_str = str(asset_path)
@@ -268,7 +287,7 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
     check_registration_template(registration_dir_path, config.template_25, template_to_ccf_dir)
     return AssetInfo(
         asset_path=asset_path,
-        asset_uri=_infer_asset_uri(a_zarr_uri, asset_pathlike),
+        asset_uri=_infer_asset_uri(a_zarr_uri),
         zarr_volumes=zarr_paths,
         pipeline_registration_chains=pipeline_reg_info,
         registration_dir_path=registration_dir_path,
@@ -276,24 +295,18 @@ def find_asset_info(config: PipelineConfig) -> AssetInfo:
     )
 
 
-def _infer_asset_uri(source_uri: str, asset_pathlike: str | PurePath) -> str | None:
+def _infer_asset_uri(source_uri: str) -> str | None:
     """Infer the asset-level URI from a source URI inside that asset.
 
     Neuroglancer sources often point inside the stitched SmartSPIM asset, for
     example ``s3://bucket/<asset>/image_tile_fusing/...``. The datapackage
     registry should name the asset that contains ``image_atlas_alignment/``,
-    not the nested zarr. If the source URI does not contain the inferred asset
-    pathlike verbatim, keep the durable URI unknown.
+    not the nested zarr. The processing directory marks the asset boundary,
+    including any enclosing S3 prefix directories.
     """
     if "://" not in source_uri:
         return None
-    marker = str(asset_pathlike).strip("/")
-    if not marker:
-        return None
-    idx = source_uri.find(marker)
-    if idx < 0:
-        return None
-    return source_uri[: idx + len(marker)]
+    return source_uri.split("/image_tile_fusing/", 1)[0]
 
 
 def prepare_result_dirs(mouse_id: str, results_root: Path) -> OutputDirs:

@@ -461,6 +461,32 @@ def test_probe_viability_notes_a_name_matched_sorting(tmp_path: Path, tracks_pre
     assert any("matched by directory name" in note for note in notes)
 
 
+@pytest.mark.parametrize(
+    "pin",
+    [
+        "ecephys_863973_2026-08-27_14-52-47_sorted-opto_2026-10-10_12-12-16",
+        "my-chosen-sorting",
+    ],
+)
+def test_probe_viability_honours_the_exact_sorting_pin(tmp_path, tracks_present, pin):
+    config = _config(tmp_path)
+    row = ManifestRow(
+        mouseid="863973",
+        sorted_recording=pin,
+        probe_file="ng",
+        probe_id="Track1",
+        probe_name="ProbeA",
+    )
+    # Another variant of this recording has no ProbeA output. A metadata-first
+    # lookup would choose it and incorrectly discard this manifest row.
+    wrong = config.data_root / "other-sorting"
+    _mount_sorted_for_coverage(wrong, input_recording=row.recording_id, collection="ProbeB")
+    chosen = config.data_root / pin
+    _mount_sorted_for_coverage(chosen, input_recording=row.recording_id, collection="ProbeA")
+    ok, reason, _ = stages._probe_viability(config, row, {row.recording_id: wrong})
+    assert ok and reason is None
+
+
 class _Row:
     """Minimal ManifestRow stand-in for the track-annotation check."""
 

@@ -399,6 +399,35 @@ def test_find_raw_session_dir_ambiguous_without_match_raises(tmp_path):
         find_raw_session_dir(tmp_path, recording_id="ecephys_does_not_match")
 
 
+def test_stream_extraction_uses_sorting_source_to_distinguish_surface_raw(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import aind_ephys_ibl_gui_conversion.ephys as converter
+
+    from aind_ibl_ephys_alignment_preprocessing.ephys import run_ephys_for_stream
+
+    _mount_sorted(tmp_path / "chosen-sorting", input_recording="actual-input")
+    raw = _mount_raw(tmp_path / "main-raw", name="actual-input")
+    _mount_raw(tmp_path / "surface-raw", name="surface-input")
+    seen = []
+
+    def extract(*args, **kwargs):
+        seen.append(kwargs["session_folder"])
+
+    monkeypatch.setattr(converter, "extract_continuous", extract)
+    monkeypatch.setattr(converter, "extract_spikes", extract)
+    outputs = SimpleNamespace(tracks_root=tmp_path / "results" / "mouse" / "tracks")
+    run_ephys_for_stream(
+        "chosen-sorting",
+        "output-label",
+        "ProbeA",
+        Path("surface-raw"),
+        outputs,
+        tmp_path,
+    )
+    assert seen == [raw, raw]
+
+
 def _mount_nwb_output(sorted_root, recording_name="ecephys_771432_2025-03-07_18-22-06"):
     """Add zarr-backed NWB output to a sorted asset, as the 2026-07 sorts do.
 

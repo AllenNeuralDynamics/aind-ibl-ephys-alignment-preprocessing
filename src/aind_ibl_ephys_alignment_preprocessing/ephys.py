@@ -483,6 +483,9 @@ def run_ephys_for_recording(
     # so raw and sorted need not be siblings. None -> converter falls back to its
     # legacy sibling-split, preserving the monolith/RR behaviour.
     session_folder = find_session_dir(data_root, recording_id)
+    if session_folder is None:
+        source_recording = read_sorted_input_recording(recording_folder) or recording_id
+        session_folder = find_raw_session_dir(data_root, recording_id=source_recording)
 
     if row.surface_finding is not None:
         extract_continuous(
@@ -579,7 +582,8 @@ def run_ephys_for_stream(
         )
     # Raw session resolved by content too (ecephys_compressed/ marker), told apart
     # from a surface-finding raw by recording_id. None -> converter sibling-split.
-    session_folder = find_raw_session_dir(data_root, recording_id=recording_id)
+    source_recording = read_sorted_input_recording(recording_folder) or recording_id
+    session_folder = find_raw_session_dir(data_root, recording_id=source_recording)
     if session_folder is None:
         session_folder = find_session_dir(data_root, recording_id)
 

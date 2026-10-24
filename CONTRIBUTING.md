@@ -96,6 +96,11 @@ src/aind_ibl_ephys_alignment_preprocessing/
 - **Path resolution**: `PipelineConfig` is a frozen Pydantic v2 model with a
   `@model_validator(mode="after")` that resolves all relative paths against
   `data_root`.
+- **Discovery**: Image sources identify the asset directory before
+  `image_tile_fusing/OMEZarr`, including nested S3 prefixes; asset names need no
+  modality prefix. Mounted sortings match the manifest's exact pin first, with
+  input-recording metadata as a fallback for renamed captures. Raw extraction
+  uses the sorting's input metadata to distinguish main and surface recordings.
 - **Frozen data structures**: All dataclasses and Pydantic models are frozen.
   Use `dataclasses.replace()` or `.model_copy(update=...)` to create modified
   copies.

@@ -415,8 +415,6 @@ def _patch_zarr_utils(monkeypatch, asset: Path, default_channel: str) -> dict:
 
     monkeypatch.setattr(discovery, "get_json", lambda *a, **k: {})
     monkeypatch.setattr(discovery, "get_image_sources", lambda *a, **k: {"layer": str(default_zarr)})
-    monkeypatch.setattr(discovery, "as_pathlike", lambda uri: (None, None, str(uri)))
-    monkeypatch.setattr(discovery, "_asset_from_zarr_pathlike", lambda p: asset.name)
     monkeypatch.setattr(
         discovery,
         "alignment_zarr_uri_and_metadata_from_zarr_or_asset_pathlike",

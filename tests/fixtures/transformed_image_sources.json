@@ -1,0 +1,87 @@
+{
+  "layers": [
+    {
+      "name": "Ex_488_Em_525.zarr",
+      "type": "image",
+      "source": "s3://aind-open-data/SmartSPIM_837772_2026-08-27_18-29-18_stitched_2026-09-03_13-39-04/image_tile_fusing/OMEZarr/Ex_488_Em_525.zarr"
+    },
+    {
+      "name": "Ex_561_Em_593.zarr",
+      "type": "image",
+      "source": {
+        "url": "s3://aind-open-data/SmartSPIM_837772_2026-08-27_18-29-18_stitched_2026-09-03_13-39-04/image_tile_fusing/OMEZarr/Ex_561_Em_593.zarr",
+        "transform": {
+          "matrix": [
+            [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              1,
+              0,
+              0,
+              2
+            ],
+            [
+              0,
+              0,
+              0,
+              1,
+              0,
+              -4
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              1,
+              0
+            ]
+          ],
+          "outputDimensions": {
+            "t": [
+              0.001,
+              "s"
+            ],
+            "c'": [
+              1,
+              ""
+            ],
+            "z": [
+              2e-06,
+              "m"
+            ],
+            "y": [
+              1.8e-06,
+              "m"
+            ],
+            "x": [
+              1.8e-06,
+              "m"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "Ex_639_Em_667.zarr",
+      "type": "image",
+      "source": "s3://aind-open-data/SmartSPIM_837772_2026-08-27_18-29-18_stitched_2026-09-03_13-39-04/image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr"
+    }
+  ]
+}
