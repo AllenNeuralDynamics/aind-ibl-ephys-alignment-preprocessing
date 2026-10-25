@@ -135,10 +135,9 @@ def _mirror_pipeline_grid(pipeline: sitk.Image, base_before: sitk.Image, base_af
 
     So the resample is done once, on the base, and the pipeline image inherits
     the result: the same voxels, with its header rescaled by the same per-axis
-    factor. Origin is kept, which is the convention ``apply_pipeline_overlays``
-    itself uses across levels (it scales spacing by ``2**level`` and passes the
-    level-0 origin through unchanged), so index ``i`` of the resampled pipeline
-    image lands where index ``i * factor`` of the original did.
+    factor. Origin is kept, as :func:`resample_to_isotropic` keeps the base's, so
+    in both headers index ``i`` of the resampled image lands where index
+    ``i * factor`` of the original did.
 
     Parameters
     ----------
