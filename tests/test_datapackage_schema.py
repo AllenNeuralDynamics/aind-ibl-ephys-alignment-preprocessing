@@ -53,6 +53,14 @@ def test_datapackage_schema_encodes_nullable_qc_outputs():
     assert _allows_null(histology["properties"]["ccf_space"])
 
 
+def test_datapackage_schema_encodes_optional_raw_unit_density():
+    """New density output is discoverable without invalidating old packages."""
+    probe = _defs(datapackage_json_schema(), "ProbeEntry")
+
+    assert "raw_unit_density" not in probe["required"]
+    assert _allows_null(probe["properties"]["raw_unit_density"])
+
+
 def test_datapackage_schema_encodes_path_reference_shape():
     """A 3.x path reference explicitly carries both asset identity and a non-empty path."""
     path_reference = _defs(datapackage_json_schema(), "PathReference")
