@@ -366,7 +366,6 @@ class PipelineValidator:
             ("template_25", self.ref_paths.template_25, "Template"),
             ("ccf_25", self.ref_paths.ccf_25, "CCF template"),
             ("ccf_labels", self.ref_paths.ccf_labels_lateralized_25, "CCF labels"),
-            ("ibl_atlas", self.ref_paths.ibl_atlas_histology_path, "IBL atlas directory"),
         ]
         for item, path, label in checks:
             if path.exists():

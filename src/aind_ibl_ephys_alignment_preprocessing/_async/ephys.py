@@ -11,13 +11,11 @@ from typing import Any
 import pandas as pd
 from aind_zarr_utils.pipeline_transformed import base_and_pipeline_anatomical_stub
 from aind_zarr_utils.zarr import _open_zarr
-from iblatlas.atlas import AllenAtlas
 
 from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     EphysCoordinator,
     Limits,
     _run_ephys_sync,
-    io_to_thread_on,
     to_thread_logged,
 )
 from aind_ibl_ephys_alignment_preprocessing._async.probes import process_manifest_row_safe_async
@@ -41,7 +39,6 @@ IO_THREADS = 40
 async def process_manifest_async(
     manifest_df: pd.DataFrame,
     asset_info: AssetInfo,
-    ibl_atlas: AllenAtlas,
     out: OutputDirs,
     node: Any,
     zarr_metadata: dict[str, Any],
@@ -58,8 +55,6 @@ async def process_manifest_async(
         Manifest data.
     asset_info : AssetInfo
         Asset metadata.
-    ibl_atlas : AllenAtlas
-        Allen atlas instance.
     out : OutputDirs
         Output directory tree.
     node : Any
@@ -120,7 +115,6 @@ async def process_manifest_async(
                     asset_info,
                     raw_img_stub,
                     raw_img_stub_buggy,
-                    ibl_atlas,
                     out,
                     limits,
                     config.data_root,
@@ -187,7 +181,7 @@ def run_manifest_subprocess_sync(
 ) -> list[ProcessResult]:
     """Subprocess entry point for manifest processing.
 
-    Recreates heavy objects (AllenAtlas, EphysCoordinator, Limits) in the
+    Recreates heavy objects (EphysCoordinator, Limits) in the
     subprocess, then runs the async manifest processing in a new event loop.
     """
 
@@ -213,15 +207,6 @@ def run_manifest_subprocess_sync(
             data_root=data_root,
         )
 
-        logger.info("[Subprocess] Loading AllenAtlas in subprocess")
-        ibl_atlas = await io_to_thread_on(
-            limits,
-            str(ref_paths.ibl_atlas_histology_path),
-            AllenAtlas,
-            25,
-            hist_path=ref_paths.ibl_atlas_histology_path,
-        )
-
         logger.info("[Subprocess] Opening zarr in subprocess")
         node, zarr_metadata = await to_thread_logged(_open_zarr, asset_info.zarr_volumes.registration)
 
@@ -231,7 +216,7 @@ def run_manifest_subprocess_sync(
         try:
             logger.info("[Subprocess] Starting manifest processing")
             result = await process_manifest_async(
-                manifest_df, asset_info, ibl_atlas, out, node, zarr_metadata, config, ephys, limits, frame
+                manifest_df, asset_info, out, node, zarr_metadata, config, ephys, limits, frame
             )
             return result
         finally:

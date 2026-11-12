@@ -418,7 +418,6 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
 
     from aind_zarr_utils.pipeline_transformed import base_and_pipeline_anatomical_stub
     from aind_zarr_utils.zarr import _open_zarr
-    from iblatlas.atlas import AllenAtlas
 
     from aind_ibl_ephys_alignment_preprocessing._async.concurrency import Limits, to_thread_logged
     from aind_ibl_ephys_alignment_preprocessing._async.ephys import _asyncio_exception_handler
@@ -436,7 +435,6 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
         asset_info: Any,
         stub: Any,
         stub_buggy: Any,
-        ibl_atlas: Any,
         out: Any,
         limits: Limits,
         frame: RegistrationFrame,
@@ -458,7 +456,6 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
                         asset_info,
                         stub,
                         stub_buggy,
-                        ibl_atlas,
                         out,
                         limits,
                         config.data_root,
@@ -504,22 +501,16 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
         out = prepare_result_dirs(mouse_id, config.results_root)
         node, zarr_metadata = _open_zarr(asset_info.zarr_volumes.registration)
 
-        # Stubs (header-only) and the atlas up front. The stubs read the opened
-        # zarr node, so compute them before the volume tasks touch it
-        # concurrently; coords needs only the stubs + atlas, never the node.
-        async with asyncio.TaskGroup() as tg:
-            stub_task = tg.create_task(
-                to_thread_logged(
-                    base_and_pipeline_anatomical_stub,
-                    asset_info.zarr_volumes.registration,
-                    asset_info.zarr_volumes.metadata,
-                    asset_info.zarr_volumes.processing,
-                    opened_zarr=(node, zarr_metadata),
-                )
-            )
-            atlas_task = tg.create_task(to_thread_logged(AllenAtlas, 25, hist_path=ref_paths.ibl_atlas_histology_path))
-        raw_img_stub, raw_img_stub_buggy, native_size = stub_task.result()
-        ibl_atlas = atlas_task.result()
+        # Stubs (header-only) up front. They read the opened zarr node, so compute
+        # them before the volume tasks touch it concurrently; coords needs only the
+        # stubs, never the node.
+        raw_img_stub, raw_img_stub_buggy, native_size = await to_thread_logged(
+            base_and_pipeline_anatomical_stub,
+            asset_info.zarr_volumes.registration,
+            asset_info.zarr_volumes.metadata,
+            asset_info.zarr_volumes.processing,
+            opened_zarr=(node, zarr_metadata),
+        )
 
         # One decision shared by volumes and coords: both enter the same
         # image-to-template transform, so they cannot disagree about its frame.
@@ -528,7 +519,7 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
         )
 
         # Volumes (use the zarr node) run concurrently with per-probe coords
-        # (use the stubs + atlas) and the emit_qc-gated CCF-space copy.
+        # (use the stubs) and the emit_qc-gated CCF-space copy.
         async with asyncio.TaskGroup() as tg:
             tg.create_task(
                 _create_volumes_async(
@@ -548,7 +539,7 @@ def stage_histology(config: PipelineConfig) -> list[ProcessResult]:
                 name=f"histology-volumes-{mouse_id}",
             )
             coords_task = tg.create_task(
-                _coords(manifest_df, asset_info, raw_img_stub, raw_img_stub_buggy, ibl_atlas, out, limits, reg_frame),
+                _coords(manifest_df, asset_info, raw_img_stub, raw_img_stub_buggy, out, limits, reg_frame),
                 name=f"histology-coords-{mouse_id}",
             )
 

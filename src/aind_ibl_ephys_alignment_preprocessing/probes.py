@@ -13,10 +13,10 @@ from aind_ephys_ibl_gui_conversion.histology import create_slicer_fcsv
 from aind_registration_utils.ants import apply_ants_transforms_to_point_arr
 from aind_s3_cache.json_utils import get_json
 from aind_zarr_utils.neuroglancer import neuroglancer_annotations_to_anatomical
-from iblatlas.atlas import AllenAtlas
 from numpy.typing import NDArray
 
 from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS
+from aind_ibl_ephys_alignment_preprocessing.bregma import ccf_to_bregma_um
 from aind_ibl_ephys_alignment_preprocessing.registration_frame import RegistrationFrame
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
@@ -33,7 +33,6 @@ def process_manifest_row(
     asset_info: AssetInfo,
     hist_stub: sitk.Image,
     hist_stub_buggy: sitk.Image,
-    ibl_atlas: AllenAtlas,
     outputs: OutputDirs,
     data_root: Path,
     frame: RegistrationFrame,
@@ -45,8 +44,8 @@ def process_manifest_row(
     Always writes the image-space ``xyz_picks`` (the only track output the
     alignment GUI reads). The QC/diagnostic outputs — SPIM/template/CCF Slicer
     FCSVs and the CCF/bregma ``xyz_picks`` — are produced only when *emit_qc* is
-    True; they require the ANTs point-warps (via ``hist_stub_buggy``) and the
-    ``ibl_atlas``, and nothing in the alignment workflow consumes them.
+    True; they require the ANTs point-warps (via ``hist_stub_buggy``), and
+    nothing in the alignment workflow consumes them.
 
     Parameters
     ----------
@@ -59,9 +58,6 @@ def process_manifest_row(
     hist_stub_buggy : sitk.Image
         Histology stub on the pipeline's anchored geometry. Only used when
         *emit_qc* is True, and only when *frame* calls for the re-grid.
-    ibl_atlas : AllenAtlas
-        Allen atlas instance for CCF-to-bregma conversion. Only used when
-        *emit_qc* is True.
     outputs : OutputDirs
         Output directory tree.
     data_root : Path
@@ -123,7 +119,6 @@ def process_manifest_row(
             probe_id=probe_id,
             probe_pts=probe_pts,
             hist_stub_buggy=hist_stub_buggy,
-            ibl_atlas=ibl_atlas,
             outputs=outputs,
             gui_folder=gui_folder,
             shank_suffix=shank_suffix,
@@ -145,7 +140,6 @@ def _write_qc_probe_outputs(
     probe_id: str,
     probe_pts: NDArray[Any],
     hist_stub_buggy: sitk.Image,
-    ibl_atlas: AllenAtlas,
     outputs: OutputDirs,
     gui_folder: Path,
     shank_suffix: str,
@@ -153,7 +147,7 @@ def _write_qc_probe_outputs(
 ) -> None:
     """Write GUI-unused QC outputs: SPIM/template/CCF FCSVs + CCF/bregma xyz-picks.
 
-    These require the two ANTs point-warps and the ``ibl_atlas``; nothing in the
+    These require the two ANTs point-warps; nothing in the
     alignment workflow reads them.
     """
     # SPIM FCSV (no warp)
@@ -194,7 +188,7 @@ def _write_qc_probe_outputs(
 
     # IBL CCF/bregma xyz-picks (um), ML/AP/DV with signed flips
     ccf_mlapdv_um = convert_coordinate_system(1000.0 * pts_ccf, src_coord="LPS", dst_coord="RPI")
-    bregma_mlapdv_um = 1_000_000.0 * ibl_atlas.ccf2xyz(ccf_mlapdv_um, ccf_order="mlapdv")
+    bregma_mlapdv_um = ccf_to_bregma_um(ccf_mlapdv_um)
     xyz_picks_ccf = {"xyz_picks": bregma_mlapdv_um.tolist()}
 
     ccf_name = f"{probe_id}{shank_suffix}_ccf.json"

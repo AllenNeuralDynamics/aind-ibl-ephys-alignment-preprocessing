@@ -50,8 +50,6 @@ class PipelineConfig(BaseModel, frozen=True):
         Allen CCF average template volume (25 µm).
     ccf_labels_lateralized_25 : Path
         Lateralized CCF annotation labels (25 µm, compacted).
-    ibl_atlas_histology_path : Path
-        IBL atlas histology directory.
     ccf_labels_lateralized_25_unq_vals : Path
         Unique label values for the lateralized annotation.
     skip_ephys : bool
@@ -77,7 +75,6 @@ class PipelineConfig(BaseModel, frozen=True):
     ccf_labels_lateralized_25: Path = Path(
         "allen_mouse_ccf_annotations_lateralized_compact/ccf_2017_annotation_25_lateralized_compact.nrrd"
     )
-    ibl_atlas_histology_path: Path = Path("iblatlas_allenatlas/")
     ccf_labels_lateralized_25_unq_vals: Path = Path(
         "allen_mouse_ccf_annotations_lateralized_compact/ccf_2017_annotation_25_lateralized_unique_vals.npz"
     )
@@ -145,7 +142,6 @@ class PipelineConfig(BaseModel, frozen=True):
             "template_25",
             "ccf_25",
             "ccf_labels_lateralized_25",
-            "ibl_atlas_histology_path",
             "ccf_labels_lateralized_25_unq_vals",
             "template_to_ccf_dir",
         )
@@ -184,7 +180,6 @@ class ReferencePaths:
     ccf_labels_lateralized_25: Path = Path(
         "allen_mouse_ccf_annotations_lateralized_compact/ccf_2017_annotation_25_lateralized_compact.nrrd"
     )
-    ibl_atlas_histology_path: Path = Path("iblatlas_allenatlas/")
     ccf_labels_lateralized_25_unq_vals: Path = Path(
         "allen_mouse_ccf_annotations_lateralized_compact/ccf_2017_annotation_25_lateralized_unique_vals.npz"
     )
@@ -197,7 +192,6 @@ class ReferencePaths:
             template_25=data_root / base.template_25,
             ccf_25=data_root / base.ccf_25,
             ccf_labels_lateralized_25=data_root / base.ccf_labels_lateralized_25,
-            ibl_atlas_histology_path=data_root / base.ibl_atlas_histology_path,
             ccf_labels_lateralized_25_unq_vals=data_root / base.ccf_labels_lateralized_25_unq_vals,
         )
 
@@ -208,7 +202,6 @@ class ReferencePaths:
             template_25=config.template_25,
             ccf_25=config.ccf_25,
             ccf_labels_lateralized_25=config.ccf_labels_lateralized_25,
-            ibl_atlas_histology_path=config.ibl_atlas_histology_path,
             ccf_labels_lateralized_25_unq_vals=config.ccf_labels_lateralized_25_unq_vals,
         )
 

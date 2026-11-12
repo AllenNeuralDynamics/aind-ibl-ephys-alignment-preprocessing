@@ -10,7 +10,6 @@ from pathlib import Path
 import pandas as pd
 from aind_zarr_utils.pipeline_transformed import base_and_pipeline_anatomical_stub
 from aind_zarr_utils.zarr import _open_zarr
-from iblatlas.atlas import AllenAtlas
 
 from aind_ibl_ephys_alignment_preprocessing.datapackage import (
     build_datapackage,
@@ -126,7 +125,6 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
 
     processed_recordings: set[str] = set()
     processed_results: list[ProcessResult] = []
-    ibl_atlas = AllenAtlas(25, hist_path=ref_paths.ibl_atlas_histology_path)
 
     if config.skip_ephys:
         logger.info("Ephys processing disabled via skip_ephys flag")
@@ -161,7 +159,6 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
             asset_info,
             raw_img_stub,
             raw_img_stub_buggy,
-            ibl_atlas,
             out,
             config.data_root,
             reg_frame,

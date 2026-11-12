@@ -162,7 +162,6 @@ def test_reference_paths_for_data_root():
 
     rp = ReferencePaths.for_data_root(Path("/mydata"))
     assert rp.template_25 == Path("/mydata/smartspim_lca_template/smartspim_lca_template_25.nii.gz")
-    assert rp.ibl_atlas_histology_path == Path("/mydata/iblatlas_allenatlas")
 
 
 def test_copy_existing_results_from_asset_root(tmp_path):

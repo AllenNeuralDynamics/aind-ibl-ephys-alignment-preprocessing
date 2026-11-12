@@ -13,7 +13,6 @@ from aind_anatomical_utils.coordinate_systems import convert_coordinate_system
 from aind_ephys_ibl_gui_conversion.histology import create_slicer_fcsv
 from aind_registration_utils.ants import apply_ants_transforms_to_point_arr
 from aind_zarr_utils.neuroglancer import neuroglancer_annotations_to_anatomical
-from iblatlas.atlas import AllenAtlas
 
 from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     Limits,
@@ -21,6 +20,7 @@ from aind_ibl_ephys_alignment_preprocessing._async.concurrency import (
     to_thread_logged,
 )
 from aind_ibl_ephys_alignment_preprocessing._constants import REGISTRATION_TRANSFORMS
+from aind_ibl_ephys_alignment_preprocessing.bregma import ccf_to_bregma_um
 from aind_ibl_ephys_alignment_preprocessing.registration_frame import RegistrationFrame
 from aind_ibl_ephys_alignment_preprocessing.types import (
     AssetInfo,
@@ -47,7 +47,6 @@ async def process_manifest_row_async(
     asset_info: AssetInfo,
     hist_stub: sitk.Image,
     hist_stub_buggy: sitk.Image,
-    ibl_atlas: AllenAtlas,
     outputs: OutputDirs,
     limits: Limits,
     data_root: Path,
@@ -59,7 +58,7 @@ async def process_manifest_row_async(
 
     Always writes the image-space ``xyz_picks`` (the only track output the
     alignment GUI reads). The QC outputs (FCSVs + CCF/bregma picks, which need
-    the two ANTs point-warps via ``hist_stub_buggy`` + ``ibl_atlas``) are
+    the two ANTs point-warps via ``hist_stub_buggy``) are
     produced only when *emit_qc* is True.
 
     Parameters
@@ -72,8 +71,6 @@ async def process_manifest_row_async(
         Histology stub with correct domain.
     hist_stub_buggy : sitk.Image
         Histology stub on the pipeline's anchored geometry.
-    ibl_atlas : AllenAtlas
-        Allen atlas for CCF-to-bregma conversion.
     outputs : OutputDirs
         Output directory tree.
     limits : Limits
@@ -150,7 +147,6 @@ async def process_manifest_row_async(
             probe_id=probe_id,
             probe_pts=probe_pts,
             hist_stub_buggy=hist_stub_buggy,
-            ibl_atlas=ibl_atlas,
             outputs=outputs,
             gui_folder=gui_folder,
             p_ccf=p_ccf,
@@ -175,7 +171,6 @@ async def _write_qc_probe_outputs_async(
     probe_id: str,
     probe_pts: object,
     hist_stub_buggy: sitk.Image,
-    ibl_atlas: AllenAtlas,
     outputs: OutputDirs,
     gui_folder: Path,
     p_ccf: Path,
@@ -185,7 +180,7 @@ async def _write_qc_probe_outputs_async(
 ) -> None:
     """QC outputs the GUI never reads: SPIM/template/CCF FCSVs + CCF/bregma picks.
 
-    Requires the two ANTs point-warps and ``ibl_atlas``.
+    Requires the two ANTs point-warps.
     """
     anno_zarr = asset_info.zarr_volumes.registration
     metadata = asset_info.zarr_volumes.metadata
@@ -251,7 +246,7 @@ async def _write_qc_probe_outputs_async(
 
     # CCF/bregma xyz-picks (um)
     ccf_mlapdv_um = convert_coordinate_system(1000.0 * pts_ccf, src_coord="LPS", dst_coord="RPI")
-    bregma_mlapdv_um = 1_000_000.0 * ibl_atlas.ccf2xyz(ccf_mlapdv_um, ccf_order="mlapdv")
+    bregma_mlapdv_um = ccf_to_bregma_um(ccf_mlapdv_um)
     ccf_json_str = json.dumps({"xyz_picks": bregma_mlapdv_um.tolist()})
 
     async with asyncio.TaskGroup() as tg:
@@ -270,7 +265,6 @@ async def process_manifest_row_limit_async(
     asset_info: AssetInfo,
     hist_stub: sitk.Image,
     hist_stub_buggy: sitk.Image,
-    ibl_atlas: AllenAtlas,
     outputs: OutputDirs,
     limits: Limits,
     data_root: Path,
@@ -281,7 +275,7 @@ async def process_manifest_row_limit_async(
     """Rate-limited wrapper around :func:`process_manifest_row_async`."""
     async with limits.manifest_rows:
         return await process_manifest_row_async(
-            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root, frame, emit_qc=emit_qc
+            row, asset_info, hist_stub, hist_stub_buggy, outputs, limits, data_root, frame, emit_qc=emit_qc
         )
 
 
@@ -290,7 +284,6 @@ async def process_manifest_row_safe_async(
     asset_info: AssetInfo,
     hist_stub: sitk.Image,
     hist_stub_buggy: sitk.Image,
-    ibl_atlas: AllenAtlas,
     outputs: OutputDirs,
     limits: Limits,
     data_root: Path,
@@ -301,7 +294,7 @@ async def process_manifest_row_safe_async(
     """Error-catching wrapper that converts exceptions to :class:`ProcessResult`."""
     try:
         return await process_manifest_row_limit_async(
-            row, asset_info, hist_stub, hist_stub_buggy, ibl_atlas, outputs, limits, data_root, frame, emit_qc=emit_qc
+            row, asset_info, hist_stub, hist_stub_buggy, outputs, limits, data_root, frame, emit_qc=emit_qc
         )
     except Exception as e:
         logger.exception("Row failed: probe=%s recording=%s", row.probe_id, row.recording_id)

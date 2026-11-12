@@ -3,7 +3,7 @@
 Only ``stage_discover`` and its viability/naming helpers are exercised here --
 they depend on nothing heavier than pandas + ``role_dispatch`` (the NG and
 sorting checks are monkeypatched). The histology/ephys/pack stages need
-ants/iblatlas/SimpleITK and real assets, so they are covered by integration
+ants/SimpleITK and real assets, so they are covered by integration
 runs rather than these smoke tests.
 """
 
