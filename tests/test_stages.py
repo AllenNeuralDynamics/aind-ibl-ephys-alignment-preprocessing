@@ -578,7 +578,7 @@ def test_find_mouse_output_trees_excludes_destination(tmp_path: Path) -> None:
     _histology_tree(data / "histology_asset", "791094")
     dest = _histology_tree(data / "results", "791094")  # lives under data_root
 
-    found = _find_mouse_output_trees(data, "791094", exclude=dest)
+    found = _find_mouse_output_trees(data, "791094", exclude=(dest,))
 
     assert dest.resolve() not in {p.resolve() for p in found}
 
@@ -617,6 +617,19 @@ def test_merge_pipeline_outputs_warns_on_true_overlap(tmp_path: Path, caplog: py
     assert any("overlap" in r.message for r in caplog.records)
     # Deterministic: sources are sorted, so node_b (last) wins.
     assert (merged / "rec1" / "probeA" / "spikes.times.npy").read_text() == "b"
+
+
+def test_merge_pipeline_outputs_skips_input_assets(tmp_path: Path) -> None:
+    """A registration asset shares the ``<mouse_id>/`` layout but is an input, so its files stay out of the package."""
+    data = tmp_path / "data"
+    _histology_tree(data / "histology_asset", "791094")
+    registration = data / "SmartSPIM_791094_registration"
+    _write(registration / "791094" / "ccf_Ex_639_Em_667" / "ls_to_template_SyN_0GenericAffine.mat")
+
+    merged = merge_pipeline_outputs(data, tmp_path / "results", "791094", skip=[registration])
+
+    assert (merged / "ccf_space_histology" / "histology_ccf.nrrd").is_file()
+    assert not (merged / "ccf_Ex_639_Em_667").exists()
 
 
 def test_merge_pipeline_outputs_no_tree_raises(tmp_path: Path) -> None:

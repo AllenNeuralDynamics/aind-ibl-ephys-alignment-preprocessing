@@ -753,7 +753,8 @@ def stage_pack(
       ``<mouse_id>/`` subtree (possibly one "indexed folders" level deep).
       :func:`~aind_ibl_ephys_alignment_preprocessing.datapackage.merge_pipeline_outputs`
       union-merges every one it finds into ``config.results_root/<mouse_id>/``
-      before the datapackage is written.
+      before the datapackage is written, skipping the mounts the datapackage
+      references as external assets.
     - ``source_results`` -- the single-tree regenerate path (rewrite metadata
       for one prior results asset). Delegated to ``regenerate_datapackage``.
 
@@ -780,7 +781,8 @@ def stage_pack(
     pathlib.Path
         Path to the written ``datapackage.json``.
     """
-    from aind_ibl_ephys_alignment_preprocessing.datapackage import merge_pipeline_outputs
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import external_asset_roots, merge_pipeline_outputs
+    from aind_ibl_ephys_alignment_preprocessing.discovery import find_asset_info
     from aind_ibl_ephys_alignment_preprocessing.pipeline import regenerate_datapackage
 
     if merge_from is not None:
@@ -788,7 +790,8 @@ def stage_pack(
             raise ValueError("stage_pack: pass either merge_from or source_results, not both")
         manifest_df = pd.read_csv(config.manifest_csv)
         mouse_id = str(manifest_df["mouseid"].astype("string").iat[0])
-        merge_pipeline_outputs(merge_from, config.results_root, mouse_id)
+        inputs = external_asset_roots(find_asset_info(config), config)
+        merge_pipeline_outputs(merge_from, config.results_root, mouse_id, skip=inputs)
         dp_path = regenerate_datapackage(config, source_results=None)
     else:
         dp_path = regenerate_datapackage(config, source_results=source_results)

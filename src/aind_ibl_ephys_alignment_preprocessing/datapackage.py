@@ -478,6 +478,15 @@ def _build_external_assets(asset_info: AssetInfo, config: PipelineConfig) -> dic
     return assets
 
 
+def external_asset_roots(asset_info: AssetInfo, config: PipelineConfig) -> list[Path]:
+    """Return the mount roots of every asset a datapackage references externally rather than packages."""
+    roots = [asset_info.asset_path, config.template_to_ccf_dir, _template_to_ccf_location(asset_info, config)[2]]
+    override_root = _registration_asset_root(asset_info, config)
+    if override_root is not None:
+        roots.append(override_root)
+    return roots
+
+
 def _detect_platform(config: PipelineConfig) -> str:
     """Best-effort platform descriptor for error messages and provenance."""
     if config.data_root == Path("/data") or config.data_root.as_posix().startswith("/data/"):
@@ -754,7 +763,7 @@ def infer_process_results_from_outputs(
 # ---------------------------------------------------------------------------
 
 
-def merge_pipeline_outputs(data_root: Path, results_root: Path, mouse_id: str) -> Path:
+def merge_pipeline_outputs(data_root: Path, results_root: Path, mouse_id: str, *, skip: Iterable[Path] = ()) -> Path:
     """Union-merge every mounted upstream ``<mouse_id>/`` tree into *results_root*.
 
     The fan-in step of the Code Ocean pipeline. The ``pack`` node mounts the
@@ -786,6 +795,9 @@ def merge_pipeline_outputs(data_root: Path, results_root: Path, mouse_id: str) -
         ``results_root/<mouse_id>/``.
     mouse_id : str
         Mouse identifier -- the top-level directory name shared by every source.
+    skip : iterable of Path
+        Mounts that are inputs, not upstream outputs (see :func:`external_asset_roots`). A registration asset shares
+        the ``<mouse_id>/`` layout, so without this its transforms would be copied into the package.
 
     Returns
     -------
@@ -799,7 +811,7 @@ def merge_pipeline_outputs(data_root: Path, results_root: Path, mouse_id: str) -
     """
     data_root = Path(data_root)
     destination = Path(results_root) / mouse_id
-    sources = _find_mouse_output_trees(data_root, mouse_id, exclude=destination)
+    sources = _find_mouse_output_trees(data_root, mouse_id, exclude=(destination, *skip))
     if not sources:
         raise FileNotFoundError(
             f"No {mouse_id!r} output tree found under {data_root} to pack. Expected the "
@@ -821,17 +833,18 @@ def merge_pipeline_outputs(data_root: Path, results_root: Path, mouse_id: str) -
 
 
 def _find_mouse_output_trees(
-    data_root: Path, mouse_id: str, *, exclude: Path | None = None, max_depth: int = 3
+    data_root: Path, mouse_id: str, *, exclude: Iterable[Path] = (), max_depth: int = 3
 ) -> list[Path]:
     """Find every directory named *mouse_id* under *data_root* (to *max_depth*).
 
     Code Ocean mounts each upstream asset as a direct child of ``/data`` and may
     add one "indexed folders" level, so the mouse tree can sit at depth 0-3.
     Results are deduplicated by resolved path and sorted for determinism;
-    *exclude* (typically the merge destination) is skipped so an in-place
-    ``results_root`` under ``data_root`` is never merged into itself.
+    A tree at or under any *exclude* path is skipped: the merge destination, so an
+    in-place ``results_root`` under ``data_root`` is never merged into itself, and
+    input asset mounts.
     """
-    exclude_resolved = exclude.resolve() if exclude is not None else None
+    excluded = [p.resolve() for p in exclude]
     seen: set[Path] = set()
     found: list[Path] = []
     for depth in range(max_depth + 1):
@@ -840,7 +853,7 @@ def _find_mouse_output_trees(
             if not candidate.is_dir():
                 continue
             resolved = candidate.resolve()
-            if resolved == exclude_resolved or resolved in seen:
+            if resolved in seen or any(resolved == e or e in resolved.parents for e in excluded):
                 continue
             seen.add(resolved)
             found.append(candidate)

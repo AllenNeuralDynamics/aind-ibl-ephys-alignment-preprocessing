@@ -179,6 +179,17 @@ def test_datapackage_without_override_is_unchanged(tmp_path):
     assert "template_to_ccf" not in _build_external_assets(info, config)
 
 
+def test_external_asset_roots_include_the_registration_override(tmp_path):
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import external_asset_roots
+
+    config = _config(tmp_path, f"{MANIFEST_HEADER}\n750107,p,s,a,b\n")
+    registration = config.data_root / "SmartSPIM_750107_registration"
+    info = _asset_info(tmp_path, reg_dir=registration / "750107" / "ccf_Ex_639_Em_667")
+
+    assert registration in external_asset_roots(info, config)
+    assert info.asset_path in external_asset_roots(info, config)
+
+
 # --- the registration and the template->CCF chain must share a template ------
 
 
