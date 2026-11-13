@@ -550,7 +550,12 @@ def process_additional_channels_pipeline(
 
     for zarr_path in asset_info.zarr_volumes.additional:
         ch_str = Path(zarr_path).stem
-        img_raw = zarr_to_sitk(zarr_path, asset_info.zarr_volumes.metadata, level=level)
+        img_raw = zarr_to_sitk(
+            zarr_path,
+            asset_info.zarr_volumes.metadata,
+            level=level,
+            processing_data=asset_info.zarr_volumes.processing,
+        )
         img_raw = resample_to_isotropic(img_raw, output_voxel_size_um, Path(zarr_path).stem)
         channel_dst = outputs.histology_img / f"{ch_str}.nrrd"
         convert_img_direction_and_write(img_raw, channel_dst)

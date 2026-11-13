@@ -27,7 +27,7 @@ dependencies = [
   "aind-ephys-ibl-gui-conversion>=0.5.0",
   "aind-registration-utils>=0.4",
   "aind-s3-cache>=0.1",
-  "aind-zarr-utils>=0.18,<0.19",
+  "aind-zarr-utils>=0.21,<0.22",
   "boto3",
   "filelock",
 ]

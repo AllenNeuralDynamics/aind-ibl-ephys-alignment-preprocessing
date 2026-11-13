@@ -278,7 +278,13 @@ async def process_additional_channel_pipeline_async(
     ch_str = Path(zarr_path).stem
     logger.info("[Channel %s] Starting processing", ch_str)
     with timed("histology.zarr_read", volume=ch_str, level=level) as record:
-        img_raw = await to_thread_logged(zarr_to_sitk, zarr_path, asset_info.zarr_volumes.metadata, level=level)
+        img_raw = await to_thread_logged(
+            zarr_to_sitk,
+            zarr_path,
+            asset_info.zarr_volumes.metadata,
+            level=level,
+            processing_data=asset_info.zarr_volumes.processing,
+        )
         record["mvox"] = int(np.prod(img_raw.GetSize()) // 10**6)
     logger.info("[Channel %s] read from zarr complete", ch_str)
     with timed("histology.resample", volume=ch_str):
