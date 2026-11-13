@@ -37,6 +37,7 @@ from aind_ibl_ephys_alignment_preprocessing.histology import (
 )
 from aind_ibl_ephys_alignment_preprocessing.probes import process_manifest_row
 from aind_ibl_ephys_alignment_preprocessing.registration_frame import resolve_registration_frame
+from aind_ibl_ephys_alignment_preprocessing.stream_resolution import read_resolved_manifest
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
     PipelineConfig,
@@ -64,10 +65,9 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     ref_paths = ReferencePaths.from_config(config)
     ref_imgs = ReferenceVolumes.from_paths(ref_paths)
 
-    # Keep a manifest snapshot for reproducibility
-    shutil.copy(config.manifest_csv, config.results_root / "manifest.csv")
-
-    manifest_df = pd.read_csv(config.manifest_csv)
+    manifest_df = read_resolved_manifest(config.manifest_csv, config.data_root, skip_ephys=config.skip_ephys)
+    # Snapshot the manifest as run, per-shank streams resolved, for reproducibility.
+    manifest_df.to_csv(config.results_root / "manifest.csv", index=False)
     mouse_id: str = str(manifest_df["mouseid"].astype("string").iat[0])
 
     out = prepare_result_dirs(mouse_id, config.results_root)

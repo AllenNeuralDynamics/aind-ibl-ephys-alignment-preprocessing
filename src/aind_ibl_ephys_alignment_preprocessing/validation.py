@@ -32,6 +32,7 @@ from aind_ibl_ephys_alignment_preprocessing.types import (
 )
 
 if TYPE_CHECKING:
+    from aind_ibl_ephys_alignment_preprocessing.stream_resolution import ResolvedManifest
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
 
 
@@ -570,6 +571,58 @@ class PipelineValidator:
                 severity="warning",
             )
 
+    def _resolve_streams(self, df: pd.DataFrame) -> ResolvedManifest | None:
+        """Resolve per-shank streams as the run will; ``None`` when ephys is skipped or rows do not parse."""
+        if self.config.skip_ephys:
+            return None
+        from aind_ibl_ephys_alignment_preprocessing.stream_resolution import (
+            default_locator,
+            resolve_manifest_streams,
+        )
+
+        try:
+            return resolve_manifest_streams(df, default_locator(self.config.data_root))
+        except Exception:
+            return None  # unparsable rows are reported one by one by the caller
+
+    def _stream_resolved_row(
+        self, resolved: ResolvedManifest | None, position: int, mr: ManifestRow, category: str
+    ) -> ManifestRow | None:
+        """Report a row's stream resolution; return the row to check, or ``None`` if it is unresolvable."""
+        if resolved is None:
+            return mr
+        if position in resolved.errors:
+            self._add_result(False, category, f"{mr.probe_id}_stream", resolved.errors[position])
+            return None
+        if position in resolved.resolutions:
+            self._add_result(
+                True, category, f"{mr.probe_id}_stream", resolved.resolutions[position].note(), severity="info"
+            )
+            return resolved.rows[position]
+        return mr
+
+    def _validate_annotation(self, mr: ManifestRow, category: str) -> None:
+        """Check the row's annotation file is mounted."""
+        ext = "json" if mr.annotation_format == "json" else None
+        if ext:
+            pattern = f"*/{mr.probe_file}.{ext}"
+            matches = list(self.config.data_root.glob(pattern))
+            if matches:
+                self._add_result(
+                    True,
+                    category,
+                    f"{mr.probe_id}_annotation",
+                    f"Annotation found for {mr.probe_id}: {matches[0].relative_to(self.config.data_root)}",
+                    severity="info",
+                )
+            else:
+                self._add_result(
+                    False,
+                    category,
+                    f"{mr.probe_id}_annotation",
+                    f"Annotation not found for {mr.probe_id} (pattern: {pattern})",
+                )
+
     def validate_per_probe_files(self) -> None:
         """Validate that per-probe annotation files and ephys data exist."""
         category = "Per-Probe Files"
@@ -582,7 +635,8 @@ class PipelineValidator:
         except Exception:
             return
 
-        for idx, row in df.iterrows():
+        resolved = self._resolve_streams(df)
+        for position, (idx, row) in enumerate(df.iterrows()):
             try:
                 mr = ManifestRow.from_series(row)
             except Exception as e:
@@ -590,26 +644,12 @@ class PipelineValidator:
                     False, category, f"row_{idx}", f"Failed to parse manifest row {idx}: {e}", severity="warning"
                 )
                 continue
+            stream_row = self._stream_resolved_row(resolved, position, mr, category)
+            if stream_row is None:
+                continue
+            mr = stream_row
 
-            ext = "json" if mr.annotation_format == "json" else None
-            if ext:
-                pattern = f"*/{mr.probe_file}.{ext}"
-                matches = list(self.config.data_root.glob(pattern))
-                if matches:
-                    self._add_result(
-                        True,
-                        category,
-                        f"{mr.probe_id}_annotation",
-                        f"Annotation found for {mr.probe_id}: {matches[0].relative_to(self.config.data_root)}",
-                        severity="info",
-                    )
-                else:
-                    self._add_result(
-                        False,
-                        category,
-                        f"{mr.probe_id}_annotation",
-                        f"Annotation not found for {mr.probe_id} (pattern: {pattern})",
-                    )
+            self._validate_annotation(mr, category)
 
             if not self.config.skip_ephys:
                 from aind_ibl_ephys_alignment_preprocessing.ephys import find_session_dir

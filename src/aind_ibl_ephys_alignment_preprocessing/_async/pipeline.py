@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 from aind_zarr_utils.pipeline_transformed import base_and_pipeline_anatomical_stub
 from aind_zarr_utils.zarr import _open_zarr
 
@@ -44,6 +42,7 @@ from aind_ibl_ephys_alignment_preprocessing.registration_frame import (
     RegistrationFrame,
     resolve_registration_frame,
 )
+from aind_ibl_ephys_alignment_preprocessing.stream_resolution import read_resolved_manifest
 from aind_ibl_ephys_alignment_preprocessing.types import (
     ManifestRow,
     PipelineConfig,
@@ -173,10 +172,9 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
         data_root=data_root_str,
     )
 
-    # Keep a manifest snapshot for reproducibility
-    shutil.copy(config.manifest_csv, config.results_root / "manifest.csv")
-
-    manifest_df = pd.read_csv(config.manifest_csv)
+    manifest_df = read_resolved_manifest(config.manifest_csv, config.data_root, skip_ephys=config.skip_ephys)
+    # Snapshot the manifest as run, per-shank streams resolved, for reproducibility.
+    manifest_df.to_csv(config.results_root / "manifest.csv", index=False)
     mouse_id: str = str(manifest_df["mouseid"].astype("string").iat[0])
     num_probes = len(manifest_df)
     logger.info("[Orchestrator] Starting histology and ephys processing for mouse: %s", mouse_id)

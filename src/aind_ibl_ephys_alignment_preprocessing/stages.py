@@ -73,6 +73,7 @@ from aind_ibl_ephys_alignment_preprocessing.ephys import (
     read_sorted_input_recording,
     run_ephys_for_stream,
 )
+from aind_ibl_ephys_alignment_preprocessing.stream_resolution import resolve_manifest_streams
 from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow, PipelineConfig, ProcessResult
 
 logger = logging.getLogger(__name__)
@@ -253,18 +254,33 @@ def stage_discover(
         If any manifest row was dropped and ``config.allow_partial`` is unset,
         or if no row survived at all (fatal either way).
     """
-    manifest_df = pd.read_csv(config.manifest_csv)
-    rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
-
     # Built once: it walks data_root, and every row consults it.
     sorted_dirs = {} if config.skip_ephys else find_sorted_session_dirs(config.data_root)
+
+    # Resolved here, the single decision point, so the filtered manifest carries the
+    # per-shank stream and histology, ephys and pack all read the same one.
+    if config.skip_ephys:
+        resolved = resolve_manifest_streams(pd.read_csv(config.manifest_csv), lambda _: None)
+    else:
+        resolved = resolve_manifest_streams(
+            pd.read_csv(config.manifest_csv),
+            lambda mr: find_session_dir(config.data_root, str(mr.sorted_recording)) or sorted_dirs.get(mr.recording_id),
+        )
+    manifest_df, rows = resolved.df, resolved.rows
 
     # Keep the verdict *with* its row. Dropping the reason on the floor -- it used
     # to go to a log line and nowhere else -- is what made a lost session require
     # run-log archaeology instead of a file read.
     judged: list[tuple[ManifestRow, bool, str | None, list[str]]] = []
-    for mr in rows:
-        ok, reason, notes = _probe_viability(config, mr, sorted_dirs)
+    for position, mr in enumerate(rows):
+        reason: str | None
+        notes: list[str]
+        if position in resolved.errors:
+            ok, reason, notes = False, f"ephys stream unresolved: {resolved.errors[position]}", []
+        else:
+            ok, reason, notes = _probe_viability(config, mr, sorted_dirs)
+            if position in resolved.resolutions:
+                notes.append(resolved.resolutions[position].note())
         if not ok:
             logger.warning(
                 "[discover] skipping probe %s (%s/%s): %s",
