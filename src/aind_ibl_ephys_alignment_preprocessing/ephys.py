@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 from aind_ibl_ephys_alignment_preprocessing.types import ManifestRow, OutputDirs
 
@@ -517,6 +518,7 @@ def run_ephys_for_stream(
     data_root: Path,
     num_parallel_jobs: int = 4,
     coherence_block_source: str = "all",
+    conversion_decisions: tuple[dict[str, Any], dict[str, Any]] | None = None,
 ) -> None:
     """Run ephys extraction for a single ``(recording, ephys_collection)`` slice.
 
@@ -559,6 +561,9 @@ def run_ephys_for_stream(
         Number of parallel workers for ``compute_rms`` in ``extract_continuous``.
     coherence_block_source : {"all", "main", "surface"}
         Blocks contributing to correlation and coherency.
+    conversion_decisions : tuple of dict, dict or None
+        Saved unit plan and its scoped inventory. Both extractors consume one
+        validated execution context; absent decisions retain legacy discovery.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -582,10 +587,29 @@ def run_ephys_for_stream(
         )
     # Raw session resolved by content too (ecephys_compressed/ marker), told apart
     # from a surface-finding raw by recording_id. None -> converter sibling-split.
-    source_recording = read_sorted_input_recording(recording_folder) or recording_id
-    session_folder = find_raw_session_dir(data_root, recording_id=source_recording)
-    if session_folder is None:
-        session_folder = find_session_dir(data_root, recording_id)
+    session_folder = None
+    if conversion_decisions is None:
+        source_recording = read_sorted_input_recording(recording_folder) or recording_id
+        session_folder = find_raw_session_dir(data_root, recording_id=source_recording)
+        if session_folder is None:
+            session_folder = find_session_dir(data_root, recording_id)
+
+    execution_kwargs: dict[str, Any] = {}
+    execution = None
+    if conversion_decisions is not None:
+        from aind_ibl_ephys_alignment_preprocessing.conversion_planning import bind_extraction
+
+        plan, inventory = conversion_decisions
+        execution = bind_extraction(plan, inventory, data_root, recording_folder, session_folder, results_folder)
+        execution.check_request(ephys_collection)
+        if coherence_block_source != "all" and not any(
+            b.source == coherence_block_source for b in execution.stream.blocks
+        ):
+            raise ValueError(f"No planned blocks for coherence_block_source={coherence_block_source!r}")
+        execution.write_receipt(execution.stream.output_folder, "started")
+        execution_kwargs["execution"] = execution
+    else:
+        logger.warning("No saved conversion plan; using legacy ephys extraction for %s", recording_id)
 
     def _continuous() -> None:
         if surface_finding is not None:
@@ -597,6 +621,7 @@ def run_ephys_for_stream(
                 num_parallel_jobs=num_parallel_jobs,
                 session_folder=session_folder,
                 coherence_block_source=coherence_block_source,
+                **execution_kwargs,
             )
         else:
             extract_continuous(
@@ -606,6 +631,7 @@ def run_ephys_for_stream(
                 num_parallel_jobs=num_parallel_jobs,
                 session_folder=session_folder,
                 coherence_block_source=coherence_block_source,
+                **execution_kwargs,
             )
 
     def _spikes() -> None:
@@ -614,6 +640,7 @@ def run_ephys_for_stream(
             results_folder,
             stream_to_use=ephys_collection,
             session_folder=session_folder,
+            **execution_kwargs,
         )
 
     # Overlap the two independent extractions. Threads suffice -- the heavy
@@ -624,4 +651,13 @@ def run_ephys_for_stream(
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(_continuous), executor.submit(_spikes)]
         for future in as_completed(futures):
-            future.result()  # re-raise the first failure as soon as it occurs
+            try:
+                future.result()
+            except Exception as exc:
+                if execution is not None:
+                    execution.write_receipt(
+                        execution.stream.output_folder, "failed", error=f"{type(exc).__name__}: {exc}"
+                    )
+                raise
+    if execution is not None:
+        execution.write_receipt(execution.stream.output_folder, "complete")

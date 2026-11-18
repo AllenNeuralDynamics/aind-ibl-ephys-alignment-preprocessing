@@ -196,6 +196,15 @@ Each of these is described in detail below.
 
 ### Manifest CSV
 
+Discovery also writes an [electrophysiology inventory](docs/ephys_inventory.md)
+before filtering rows. It records observed streams, segments, channel geometry,
+sorting outputs, and source-join findings without selecting conversion inputs.
+
+Discovery also saves conversion plans with duration-based main selection and
+optional `main_recording_id` / `sorting_family_id` overrides. Plans retain
+uncertainties and missing shanks and accompany each worker's inventory. They
+control both worker extractors after preflight; see the linked contract.
+
 A CSV file describing how histology tracks map onto ephys collections. Each
 row represents one histology track (or one histology shank) mapped to one
 ephys collection and ephys shank.
