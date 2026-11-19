@@ -146,6 +146,19 @@ aind-ibl-preprocess \
 
 ## Testing
 
+For development capsule validation, run
+`python -m aind_ibl_ephys_alignment_preprocessing.workflow_validation --record-outputs`
+after each successful worker stage. Completed ephys collections receive
+`ephys_output_manifest.json` beside their extraction receipts, inside the
+existing fan-out namespace. It records every collection file and its size.
+After normal packing, run the same module without `--record-outputs` to audit
+the single `/results/<mouse>/datapackage.json` tree and write
+`ephys_workflow_validation.json` there. The audit requires the carried discovery
+inventory, conversion plans, complete ephys collections, and local histology
+references. It checks optional-file preservation as well as ALF/QC array joins;
+external references must name declared assets, whose availability is checked by
+normal packing. These commands supplement the stages; they do not replace them.
+
 Tests are currently smoke tests (import verification, path resolution logic).
 No mocking, no integration tests with real data. Coverage threshold is 0%.
 
