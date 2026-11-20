@@ -7,23 +7,12 @@ on:
 
 jobs:
   docs:
-    # Match package CI: wavpack-numcodecs supports glibc 2.35/2.39,
-    # while ubuntu-latest currently uses unsupported glibc 2.43.
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.13'
-      - uses: astral-sh/setup-uv@v10.0.1
-        with:
-          python-version: '3.13'
-          enable-cache: true
-      - name: Install project and documentation dependencies
-        run: uv sync --locked --group docs
-      - name: Build documentation
-        run: uv run --frozen sphinx-build -W -b html docs/source docs/build/html
-      - uses: actions/upload-artifact@v7
-        with:
-          name: site
-          path: docs/build/html
+    uses: AllenNeuralDynamics/galen-uv-workflows/.github/workflows/_docs-ci-reusable.yml@v2
+    with:
+      python-version: '3.13'
+      install-extras: '--group docs'
+      docs-path: 'docs/source'
+      output-dir: 'docs/build/html'
+      fail-on-warnings: true
+      linkcheck: false              # flip to true if you want it on PRs
+      run-apidoc: false             # set true if you generate pages each build

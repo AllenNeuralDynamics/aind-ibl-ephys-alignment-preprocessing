@@ -3948,14 +3948,21 @@ wheels = [
 
 [[package]]
 name = "wavpack-numcodecs"
-version = "0.2.3"
+version = "0.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numcodecs" },
     { name = "numpy" },
     { name = "packaging" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b2/a1/d6dbfd3dcbc48fe7a14ce84d41522ae38ba60fd2742af1418ca224cb6da6/wavpack-numcodecs-0.2.3.tar.gz", hash = "sha256:e78a01f274bff72063a1eca9d999dcf9b0f060055e12fe8c915830bf29a23e06", size = 3559418, upload-time = "2025-05-14T09:48:56.988Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/99/2f5e60a962b8bb119d3b389c5143985ea7abe1737704338d63bca223d4f8/wavpack_numcodecs-0.3.3.tar.gz", hash = "sha256:b5fa1f7c81e4da16a9d85707f5bef56d2c29d6f081aa092e207d36eb2d7da09c", size = 983679, upload-time = "2026-11-19T17:15:27.645Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/7d/ed8ab1605d8f0e92b399d13ac80c89020f703cb3c063bc16b3cc26178b1e/wavpack_numcodecs-0.3.3-cp311-abi3-macosx_10_9_x86_64.whl", hash = "sha256:c5070c661295e72af4608eead1332583f2c36a27fabb298ca6e612e9d0179a64", size = 140517, upload-time = "2026-11-19T17:15:22.502Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/79/a569e6ba4bd00819d7b3f239005c6a5fe519a336b9eb3e7c8f16c09e0d06/wavpack_numcodecs-0.3.3-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:0755dbd43f46db96aaaef09c731287af84c560ab0b0e4a2539de949f3d798b84", size = 140018, upload-time = "2026-11-19T17:15:23.645Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/89/4a2419b3dbdf6c1dbae26fcd17bb0cd3a0be6f9e69be74c0de9294f358db/wavpack_numcodecs-0.3.3-cp311-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0e1c619aaf94038d179209d382558f1f512690b39207ed33af3e5b89400b2c4d", size = 164389, upload-time = "2026-11-19T17:15:24.679Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/39/a3327f6be8fafa3f42845c547db22112bc8692243a1e70285d5b59f955b7/wavpack_numcodecs-0.3.3-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8abe2566503521a48df5363c6b690c5a51116686012f46c9a4be02e487aaddea", size = 172548, upload-time = "2026-11-19T17:15:25.606Z" },
+    { url = "https://files.pythonhosted.org/packages/51/dd/ac8ef60a09601563cded1277c870dd0b6bc169f1f7ab93a3f91e19541b55/wavpack_numcodecs-0.3.3-cp311-abi3-win_amd64.whl", hash = "sha256:29b3dd347c6a63b6d3f97c0783947fedb313eb21860d3bc88691bae88a355cb5", size = 131432, upload-time = "2026-11-19T17:15:26.7Z" },
+]
 
 [[package]]
 name = "wcwidth"
