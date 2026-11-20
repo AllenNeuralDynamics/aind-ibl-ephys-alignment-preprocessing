@@ -24,7 +24,7 @@ dependencies = [
   "aind-anatomical-utils>=0.4",
   "aind-ants-transform-sidecar",
   "aind-code-ocean-pipeline-utils>=0.4",
-  "aind-ephys-ibl-gui-conversion>=0.5.0",
+  "aind-ephys-ibl-gui-conversion>=0.8.0",
   "aind-registration-utils>=0.4",
   "aind-s3-cache>=0.1",
   "aind-zarr-utils>=0.21,<0.22",
