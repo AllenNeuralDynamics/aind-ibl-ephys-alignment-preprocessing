@@ -153,6 +153,9 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
     list[ProcessResult]
         Per-probe processing results.
     """
+    from aind_ibl_ephys_alignment_preprocessing.registration_settings import resolve_registration_settings
+
+    resolve_registration_settings(config)
     loop = asyncio.get_running_loop()
     loop.set_debug(True)
     loop.set_exception_handler(_asyncio_exception_handler)
@@ -187,6 +190,9 @@ async def run_pipeline_async(config: PipelineConfig, max_workers: int = 40) -> l
     asset_info = asset_info_task.result()
 
     out = prepare_result_dirs(mouse_id, config.results_root)
+    from aind_ibl_ephys_alignment_preprocessing.registration_settings import write_registration_settings
+
+    write_registration_settings(config, out.tracks_root.parent)
 
     manifest_pool = ProcessPoolExecutor(max_workers=1)
     node, zarr_metadata = _open_zarr(asset_info.zarr_volumes.registration)

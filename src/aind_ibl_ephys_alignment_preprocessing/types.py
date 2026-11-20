@@ -44,6 +44,11 @@ class PipelineConfig(BaseModel, frozen=True):
     manifest_csv : Path
         Path to the manifest CSV.  Resolved against *data_root* when
         relative.
+    registration_asset : Path | None
+        Brain-wide registration override directory, relative to *data_root*
+        or absolute. Legacy CSV values and discovery settings must agree.
+    template_to_ccf_asset : Path | None
+        Template-to-CCF override directory, using the same resolution rules.
     template_25 : Path
         SmartSPIM LCA template volume (25 µm).
     ccf_25 : Path
@@ -81,6 +86,11 @@ class PipelineConfig(BaseModel, frozen=True):
 
     # External reference data
     template_to_ccf_dir: Path = Path("spim_template_to_ccf/")
+
+    # Brain-wide overrides; relative paths are resolved against data_root when
+    # used. Legacy CSV columns remain accepted but must agree with these settings.
+    registration_asset: Path | None = None
+    template_to_ccf_asset: Path | None = None
 
     # Processing options
     skip_ephys: bool = False

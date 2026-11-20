@@ -236,8 +236,19 @@ a physical shank to select one of them, as described below.
 | `probe_name` | *legacy* | Alias for `ephys_collection`. |
 | `probe_shank` | *legacy* | Optional compatibility alias for both shank fields. New manifests should use the explicit fields. |
 | `surface_finding` | *null* | Path (relative to `data_root`) to a surface-finding file. |
-| `registration_asset` | *null* | Path relative to `data_root` to a replacement registration directory, e.g. `SmartSPIM_750108_reg/ccf_Ex_639_Em_667`. One value per brain; all nonblank rows must agree. See [Separate registration asset](#separate-registration-asset) for its contents and coordinate requirements. |
-| `template_to_ccf_asset` | *null* | Path relative to `data_root` to the template-to-CCF registration of the template `registration_asset` was registered to, when that is not the SmartSPIM LCA template. One value per brain, like `registration_asset`. See [Separate template-to-CCF registration](#separate-template-to-ccf-registration). |
+
+Registration overrides belong in run settings: `--registration-asset` and
+`--template-to-ccf-asset`, or the corresponding `PipelineConfig` fields and
+capsule App Panel entries. The CSV columns `registration_asset` and
+`template_to_ccf_asset` remain accepted for backwards compatibility. Nonblank
+values must agree across rows and with run settings, including the transform
+subdirectory; conflicting values stop the run.
+
+Discovery records the resolved choices in `registration_settings.json` beside
+its filtered manifest. Later stages read that file, and the final package
+records the same settings beside `datapackage.json`. Keep the settings file with
+discovery's manifest when staging a histology or pack-only run. Defaults remain
+the stitched registration and the pipeline's template-to-CCF registration.
 
 **Constraints:**
 - All rows must have the same `mouseid`.
@@ -300,8 +311,6 @@ naming convention.
 ```toml
 mouseid = "837772"
 annotation = "837772-probe-annotations-CK-2026-09-29.json"  # relative to this file
-# registration_asset = "..."                                  # optional, per brain
-# template_to_ccf_asset = "..."                               # optional, per brain
 
 [[session]]
 sorted_recording = "ecephys_837772_2026-06-27_14-08-21_sorted_2026-08-27_18-59-49"
@@ -351,16 +360,19 @@ The asset directory must contain:
 
 ### Separate registration asset
 
-Set the manifest's optional `registration_asset` column to the transform
-directory relative to `data_root`:
+Set the brain-wide **Registration override** App Panel field, or pass the
+transform directory relative to `data_root` on the CLI:
 
-```csv
-mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,registration_asset
-750108,recording_sorted,probeA,A0001,ProbeA,SmartSPIM_750108_reg/ccf_Ex_639_Em_667
+```bash
+aind-ibl-preprocess --data-root /data --results-root /results \
+    --manifest manifest.csv --neuroglancer annotations.json \
+    --registration-asset SmartSPIM_750108_reg/ccf_Ex_639_Em_667
 ```
 
-Use one path per brain; conflicting nonblank values fail. An absent or blank
-column uses the stitched asset's registration.
+The programmatic setting is `PipelineConfig(registration_asset=...)`.
+Existing CSVs can still supply a `registration_asset` column. If both sources
+are provided, they must identify the same directory. Leaving both unset uses
+the stitched asset's registration.
 
 The directory must contain `ls_to_template_SyN_0GenericAffine.mat`,
 `ls_to_template_SyN_1InverseWarp.nii.gz` and a geometry sidecar (below): ANTs
@@ -454,14 +466,19 @@ Code Ocean's `/data` mounts are read-only.
 ### Separate template-to-CCF registration
 
 A brain registered to a template other than the SmartSPIM LCA template (an
-iDISCO template, say) needs that template's CCF registration. Set the optional
-`template_to_ccf_asset` column to its directory relative to `data_root`, one
-path per brain like `registration_asset`:
+iDISCO template, say) needs that template's CCF registration. Set the
+**Template-to-CCF override** App Panel field or `--template-to-ccf-asset` to its
+directory relative to `data_root`:
 
-```csv
-mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,registration_asset,template_to_ccf_asset
-750107,recording_sorted,probeA,A0001,ProbeA,idisco_reg/750107,AIND-MouseiDISCO-v1.0-to-CCFv3-r1_2026-10-22_17-34-50
+```bash
+aind-ibl-preprocess --data-root /data --results-root /results \
+    --manifest manifest.csv --neuroglancer annotations.json \
+    --registration-asset idisco_reg/750107 \
+    --template-to-ccf-asset AIND-MouseiDISCO-v1.0-to-CCFv3-r1_2026-10-22_17-34-50
 ```
+
+`PipelineConfig.template_to_ccf_asset` and the legacy CSV column of the same
+name are also accepted, with the same conflict checks.
 
 The directory must contain `template_to_ccf_0GenericAffine.mat` and
 `template_to_ccf_1InverseWarp.nii.gz`, ANTs SyN outputs with CCF fixed and the
@@ -470,7 +487,7 @@ pipeline's `spim_template_to_ccf_syn_*_25` transforms in the probe and QC
 chains, and the datapackage refers to them under the `template_to_ccf` asset,
 named after the directory's first component under `data_root`.
 
-The column requires a `registration_asset` with a sidecar, whose `fixed_domain`
+The override requires a `registration_asset` with a sidecar, whose `fixed_domain`
 is checked against this template. If the directory ships its own sidecar
 (`template_to_ccf_transform_information.json` or `transform_information.json`),
 the registration's `fixed_domain` must match its `moving_domain`. Without one,

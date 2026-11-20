@@ -303,13 +303,16 @@ def stage_discover(
     viable = [ok for _, ok, _, _ in judged]
 
     config.results_root.mkdir(parents=True, exist_ok=True)
+    from aind_ibl_ephys_alignment_preprocessing.registration_settings import write_registration_settings
+
+    write_registration_settings(config, config.results_root)
     filtered_manifest = config.results_root / "manifest.csv"
     filtered_df = manifest_df[pd.Series(viable, index=manifest_df.index)].copy()
     # A per-brain value may sit only on a dropped row; downstream stages would then
     # read none and fall back to the pipeline's transforms.
     for column in PER_BRAIN_PATH_COLUMNS:
         value = manifest_per_brain_path(config, column)
-        if value is not None:
+        if value is not None and column in manifest_df.columns:
             filtered_df[column] = value.as_posix()
     filtered_df.to_csv(filtered_manifest, index=False)
     logger.info("[discover] %d/%d probes viable -> %s", sum(viable), len(rows), filtered_manifest)

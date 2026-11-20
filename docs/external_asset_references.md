@@ -103,8 +103,16 @@ The producer writes these logical keys:
 |---|---|---|
 | `smartspim` | `smartspim_registration` | Always: the stitched asset holding the volumes and, by default, the registration |
 | `spim_template_to_ccf` | `template_to_ccf` | Always: the SmartSPIM LCA template's CCF registration |
-| `registration` | `registration_override` | With the manifest's `registration_asset` |
-| `template_to_ccf` | `template_to_ccf_override` | With the manifest's `template_to_ccf_asset`; `transforms.template_to_ccf_*` then name it instead of `spim_template_to_ccf` |
+| `registration` | `registration_override` | With the `registration_asset` run setting or legacy CSV column |
+| `template_to_ccf` | `template_to_ccf_override` | With `template_to_ccf_asset` from run settings or a legacy CSV; `transforms.template_to_ccf_*` then name it instead of `spim_template_to_ccf` |
+
+Registration choices are per brain. Run settings, legacy CSV values, and the
+`registration_settings.json` captured by discovery must agree. The settings
+file travels beside discovery's filtered manifest and is recorded beside the
+final datapackage. It records the resolved override paths; normal default
+registrations are represented by null overrides. This file is provenance and
+stage handoff, not an additional GUI input requirement. The datapackage still
+contains the external asset descriptions and transform references the GUI uses.
 
 These fragments are not complete datapackages. Role/name are required; ID,
 URI, checksum, and provenance are optional. A URI should describe the asset
