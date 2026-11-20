@@ -209,10 +209,10 @@ A CSV file describing how histology tracks map onto ephys collections. Each
 row represents one histology track (or one histology shank) mapped to one
 ephys collection and ephys shank.
 
-The contract is declared once in `types.MANIFEST_COLUMNS` and drives both the
-parser and pre-flight validation, so what a run accepts cannot drift from what
-validation demands. **Optional columns are never required**: a manifest written
-before a column existed stays valid.
+The contract is declared in `types.MANIFEST_COLUMNS` and drives the parser and
+pre-flight validation. Optional columns may be omitted when the remaining
+fields identify the mapping. A logical probe recorded as several streams needs
+a physical shank to select one of them, as described below.
 
 **Required columns:**
 
@@ -222,7 +222,7 @@ before a column existed stays valid.
 | `sorted_recording` | Name of the spike-sorted recording folder under `data_root`. The recording ID is derived by stripping a `_sorted` suffix if present. |
 | `probe_file` | Basename (without extension) of the Neuroglancer annotation file. Resolved via glob `*/<probe_file>.<annotation_format>` under `data_root`. |
 | `histology_track_id` | Neuroglancer layer / histology track identifier. Legacy alias: `probe_id`. |
-| `ephys_collection` | Ephys ALF output folder produced by `aind-ephys-ibl-gui-conversion` (for example `ProbeA`). Legacy alias: `probe_name`. |
+| `ephys_collection` | Recorded ephys collection (for example `ProbeA` or `ProbeA-2`), used as the ALF output folder. A logical probe name can be resolved to a split collection when `histology_shank` identifies its physical shank. Legacy alias: `probe_name`. |
 
 **Optional columns:**
 
@@ -230,11 +230,11 @@ before a column existed stays valid.
 |--------|---------|-------------|
 | `annotation_format` | `json` | File extension for the annotation file (lowercase). |
 | `logical_probe` | `ephys_collection` | Physical/logical probe identity. Split quadbase streams can share one `logical_probe` while using different `ephys_collection` values. |
-| `histology_shank` | `probe_shank` | 0-based shank index in the physical/histology probe. |
-| `ephys_shank` | `probe_shank`, else `histology_shank` | 0-based shank index within `ephys_collection`. For split quadbase streams this is usually `0` even when `histology_shank` is 0..3. |
+| `histology_shank` | `probe_shank` | 0-based physical/histology shank index. Needed to resolve a logical probe name when several per-shank collections exist. |
+| `ephys_shank` | `probe_shank`, else `histology_shank` | 0-based shank index within the selected `ephys_collection`; it does not select a collection. For split quadbase streams this is `0` even when `histology_shank` is 0..3. Logical-probe resolution sets it to `0` for the selected split collection. |
 | `probe_id` | *legacy* | Alias for `histology_track_id`. |
 | `probe_name` | *legacy* | Alias for `ephys_collection`. |
-| `probe_shank` | *legacy* | Alias for both `histology_shank` and `ephys_shank`. |
+| `probe_shank` | *legacy* | Optional compatibility alias for both shank fields. New manifests should use the explicit fields. |
 | `surface_finding` | *null* | Path (relative to `data_root`) to a surface-finding file. |
 | `registration_asset` | *null* | Path relative to `data_root` to a replacement registration directory, e.g. `SmartSPIM_750108_reg/ccf_Ex_639_Em_667`. One value per brain; all nonblank rows must agree. See [Separate registration asset](#separate-registration-asset) for its contents and coordinate requirements. |
 | `template_to_ccf_asset` | *null* | Path relative to `data_root` to the template-to-CCF registration of the template `registration_asset` was registered to, when that is not the SmartSPIM LCA template. One value per brain, like `registration_asset`. See [Separate template-to-CCF registration](#separate-template-to-ccf-registration). |
@@ -252,6 +252,27 @@ before a column existed stays valid.
   use different `ephys_collection` values; each collection can have
   `ephys_shank=0`.
 
+**Four-shank NP2.0 versus split quadbase collections:**
+
+For a four-shank probe recorded in one collection, use `ephys_collection=ProbeA`
+on all four rows and `histology_shank=ephys_shank=0,1,2,3`. For a quadbase
+recorded as four collections, name the actual collections and use shank `0`
+within each:
+
+| `logical_probe` | `ephys_collection` | `histology_shank` | `ephys_shank` |
+|-----------------|--------------------|-------------------|---------------|
+| `ProbeA` | `ProbeA-1` | 0 | 0 |
+| `ProbeA` | `ProbeA-2` | 1 | 0 |
+| `ProbeA` | `ProbeA-3` | 2 | 0 |
+| `ProbeA` | `ProbeA-4` | 3 | 0 |
+
+Alternatively, use `ephys_collection=ProbeA` with `histology_shank=0,1,2,3`
+and omit `ephys_shank`. Discovery checks the sorted probe geometry and rewrites
+each row to its split collection with `ephys_shank=0`. A logical collection name
+plus only `ephys_shank=0,1,2,3` does not identify the physical shank for this
+resolution. Older errors saying the row "needs probe_shank" mean that physical
+shank information is missing; the legacy column itself is not required.
+
 **Example:**
 
 ```csv
@@ -259,7 +280,7 @@ mouseid,sorted_recording,probe_file,histology_track_id,logical_probe,ephys_colle
 mouse001,2024-06-01_rec_sorted,track_annotations_probeA,A0001,probeA,ProbeA,,
 mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank0,B0001,probeB,ProbeB,0,0
 mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank1,B0001,probeB,ProbeB,1,1
-mouse001,2024-06-01_rec_sorted,track_annotations_quad_shank3,Q0001,quad0,ProbeD,3,0
+mouse001,2024-06-01_rec_sorted,track_annotations_quad_shank3,Q0001,ProbeD,ProbeD-4,3,0
 ```
 
 #### Building a manifest from a mapping
