@@ -64,6 +64,33 @@ def test_matching_relative_and_absolute_paths_are_accepted(tmp_path):
     assert json.loads(path.read_text())["registration_asset"] == "registration/transforms"
 
 
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("source", ["run", "csv", "prior_results"])
+def test_discoverys_recorded_default_cannot_be_replaced_downstream(tmp_path, field, source):
+    config = _config(tmp_path)
+    write_registration_settings(config, config.manifest_csv.parent)
+    if source == "run":
+        config = config.model_copy(update={field: Path("different/transforms")})
+        inherited = None
+    elif source == "csv":
+        frame = pd.read_csv(config.manifest_csv)
+        frame[field] = "different/transforms"
+        frame.to_csv(config.manifest_csv, index=False)
+        inherited = None
+    else:
+        inherited = tmp_path / "prior"
+        inherited.mkdir()
+        (inherited / SETTINGS_FILENAME).write_text(json.dumps({"schema_version": 1, field: "different/transforms"}))
+    with pytest.raises(ValueError, match=f"Conflicting {field}.*recorded pipeline default"):
+        resolve_registration_settings(config, inherited_from=inherited)
+
+
+def test_recorded_defaults_remain_usable_without_overrides(tmp_path):
+    config = _config(tmp_path)
+    write_registration_settings(config, config.manifest_csv.parent)
+    assert resolve_registration_settings(config) == dict.fromkeys(FIELDS)
+
+
 def test_discovery_keeps_run_settings_out_of_track_csv_and_stages_them_separately(tmp_path, monkeypatch):
     config = _config(tmp_path, "registration_asset", configured="registration/transforms")
     monkeypatch.setattr(stages, "_track_annotation_present", lambda *args: (True, None))

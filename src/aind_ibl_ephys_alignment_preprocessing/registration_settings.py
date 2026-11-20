@@ -57,10 +57,13 @@ def resolve_registration_settings(
             if value is not None
         ]
         identities = {(config.data_root / path).resolve() for path in candidates}
-        if len(identities) > 1:
+        recorded_default = any(name in settings and settings[name] is None for settings in (saved, inherited))
+        if len(identities) > 1 or (recorded_default and candidates):
             raise ValueError(
                 f"Conflicting {name} in run settings, manifest, or discovery settings: "
-                f"{[str(path) for path in candidates]}; supply one registration directory"
+                f"{[str(path) for path in candidates]}"
+                f"{' conflicts with the recorded pipeline default' if recorded_default else ''}; "
+                "supply one registration choice before discovery"
             )
         result[name] = candidates[0] if candidates else None
     return result

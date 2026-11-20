@@ -144,6 +144,25 @@ def test_resolving_a_resolved_manifest_changes_nothing(tmp_path: Path) -> None:
     assert [r.ephys_collection for r in twice.rows] == ["ProbeA-2", "ProbeA-3"]
 
 
+def test_standalone_structure_validation_uses_the_same_resolved_shanks(tmp_path: Path) -> None:
+    from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
+    from aind_ibl_ephys_alignment_preprocessing.validation import PipelineValidator
+
+    _mount_quad_sort(tmp_path, {"ProbeA": SERIAL_A, "ProbeB": SERIAL_B})
+    manifest = tmp_path / "manifest.csv"
+    _ephys_only_manifest().to_csv(manifest, index=False)
+    config = PipelineConfig(
+        data_root=tmp_path,
+        results_root=tmp_path / "results",
+        neuroglancer_file=Path("ng.json"),
+        manifest_csv=manifest,
+    )
+    validator = PipelineValidator(config, skip_resource_checks=True)
+    validator.validate_manifest_structure()
+    errors = [result for result in validator.results if not result.passed and result.severity == "error"]
+    assert not errors, [result.message for result in errors]
+
+
 def test_rows_without_a_mounted_sort_pass_through(tmp_path: Path) -> None:
     resolved = resolve_manifest_streams(_manifest([("ProbeA", 1)]), default_locator(tmp_path))
     assert resolved.resolutions == {} and resolved.errors == {}
