@@ -19,6 +19,8 @@ def main() -> None:
     parser.add_argument("--scratch-root", type=Path, default=None, help="Scratch directory (default: tempdir).")
     parser.add_argument("--neuroglancer", required=True, help="Neuroglancer JSON file path.")
     parser.add_argument("--manifest", required=True, help="Manifest CSV file path.")
+    parser.add_argument("--registration-asset", type=Path, help="Brain registration directory, relative to data-root.")
+    parser.add_argument("--template-to-ccf-asset", type=Path, help="Override template-to-CCF registration directory.")
     parser.add_argument("--skip-ephys", action="store_true", help="Skip ephys extraction.")
     parser.add_argument("--validate-only", action="store_true", help="Run validation only, then exit.")
     parser.add_argument(
@@ -61,6 +63,8 @@ def main() -> None:
         scratch_root=args.scratch_root,
         neuroglancer_file=Path(args.neuroglancer),
         manifest_csv=Path(args.manifest),
+        registration_asset=args.registration_asset,
+        template_to_ccf_asset=args.template_to_ccf_asset,
         skip_ephys=args.skip_ephys,
         emit_qc=emit_qc,
     )

@@ -45,6 +45,7 @@ functions stay free of it.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -196,6 +197,7 @@ def stage_discover(
     config: PipelineConfig,
     *,
     producer_record: dict[str, Any] | None = None,
+    inventory_sources: list[dict[str, Any]] | None = None,
 ) -> list[Path]:
     """Gate probe viability up front, then emit the viable fan-out work.
 
@@ -268,6 +270,14 @@ def stage_discover(
         )
     manifest_df, rows = resolved.df, resolved.rows
 
+    # Observations precede filtering: rejected manifest rows must not erase the
+    # evidence needed to understand the decision. Selection remains unchanged.
+    inventory = None
+    if not config.skip_ephys:
+        from aind_ibl_ephys_alignment_preprocessing.ephys_inventory import discover_inventory
+
+        inventory = discover_inventory(config, rows, inventory_sources, manifest_frame=manifest_df)
+
     # Keep the verdict *with* its row. Dropping the reason on the floor -- it used
     # to go to a log line and nowhere else -- is what made a lost session require
     # run-log archaeology instead of a file read.
@@ -293,13 +303,16 @@ def stage_discover(
     viable = [ok for _, ok, _, _ in judged]
 
     config.results_root.mkdir(parents=True, exist_ok=True)
+    from aind_ibl_ephys_alignment_preprocessing.registration_settings import write_registration_settings
+
+    write_registration_settings(config, config.results_root)
     filtered_manifest = config.results_root / "manifest.csv"
     filtered_df = manifest_df[pd.Series(viable, index=manifest_df.index)].copy()
     # A per-brain value may sit only on a dropped row; downstream stages would then
     # read none and fall back to the pipeline's transforms.
     for column in PER_BRAIN_PATH_COLUMNS:
         value = manifest_per_brain_path(config, column)
-        if value is not None:
+        if value is not None and column in manifest_df.columns:
             filtered_df[column] = value.as_posix()
     filtered_df.to_csv(filtered_manifest, index=False)
     logger.info("[discover] %d/%d probes viable -> %s", sum(viable), len(rows), filtered_manifest)
@@ -350,6 +363,10 @@ def stage_discover(
             producer_record=producer_record,
         )
         logger.info("[discover] wrote %d ephys fan-out config(s)", len(written))
+
+    from aind_ibl_ephys_alignment_preprocessing.ephys_inventory import write_unit_inventories
+
+    write_unit_inventories(inventory, written)
 
     # Refuse *after* writing, so the record that explains the refusal survives it.
     _assert_coverage(coverage, allow_partial=config.allow_partial)
@@ -583,7 +600,12 @@ def find_ephys_stream_config(data_root: Path) -> dict[str, Any]:
     dict
         The parsed fan-out config for this ``(recording, collection)`` unit.
     """
-    _, cfg = find_stream_config(data_root, schema_marker=EPHYS_STREAM_MARKER)
+    path, cfg = find_stream_config(data_root, schema_marker=EPHYS_STREAM_MARKER)
+    from aind_ephys_ibl_gui_conversion.inventory import relative_path
+
+    for field in ("inventory", "conversion_plan"):
+        if cfg.get(field):
+            cfg[f"_{field}_path"] = str(path.parent / relative_path(cfg[field]))
     return cfg
 
 
@@ -630,6 +652,9 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
     # and unions them back together.
     unit_name = _ephys_unit_name(recording_id, str(ephys_collection) if ephys_collection is not None else None)
     out = prepare_result_dirs(mouse_id, config.results_root / unit_name)
+    from aind_ibl_ephys_alignment_preprocessing.conversion_planning import carry_unit_diagnostics
+
+    decisions = carry_unit_diagnostics(cfg, config.results_root / unit_name)
     run_ephys_for_stream(
         sorted_recording,
         recording_id,
@@ -639,6 +664,7 @@ def stage_ephys(config: PipelineConfig, *, stream_config: dict[str, Any] | None 
         config.data_root,
         num_parallel_jobs=config.num_parallel_jobs,
         coherence_block_source=config.coherence_block_source,
+        **({"conversion_decisions": decisions} if decisions is not None else {}),
     )
     logger.info("[ephys] Completed %s/%s -> %s", recording_id, ephys_collection, unit_name)
 
@@ -718,6 +744,22 @@ def stage_ephys_launch(config: PipelineConfig) -> list[Path]:
         len(written),
         mounted_recording_id,
     )
+    from aind_ephys_ibl_gui_conversion.inventory import INVENTORY_FILENAME
+
+    inventory_path = config.manifest_csv.parent / INVENTORY_FILENAME
+    if inventory_path.is_file():
+        from aind_ibl_ephys_alignment_preprocessing.conversion_planning import (
+            build_discovery_plans,
+            read_plan_registry,
+        )
+        from aind_ibl_ephys_alignment_preprocessing.ephys_inventory import write_unit_inventory
+
+        inventory = json.loads(inventory_path.read_text())
+        plans = read_plan_registry(inventory_path.parent, inventory)
+        if plans is None:
+            plans = build_discovery_plans(inventory, manifest_df)
+        for path in written:
+            write_unit_inventory(inventory, path, plans)
     return written
 
 
@@ -813,6 +855,9 @@ def stage_pack(
         dp_path = regenerate_datapackage(config, source_results=source_results)
 
     _carry_coverage_forward(config, asset_resolution)
+    from aind_ibl_ephys_alignment_preprocessing.ephys_inventory import carry_inventory
+
+    carry_inventory(config)
     return dp_path
 
 

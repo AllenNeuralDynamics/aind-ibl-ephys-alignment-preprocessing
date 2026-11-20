@@ -62,6 +62,9 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     list[ProcessResult]
         Per-probe processing results.
     """
+    from aind_ibl_ephys_alignment_preprocessing.registration_settings import resolve_registration_settings
+
+    resolve_registration_settings(config)
     ref_paths = ReferencePaths.from_config(config)
     ref_imgs = ReferenceVolumes.from_paths(ref_paths)
 
@@ -71,6 +74,9 @@ def run_pipeline(config: PipelineConfig) -> list[ProcessResult]:
     mouse_id: str = str(manifest_df["mouseid"].astype("string").iat[0])
 
     out = prepare_result_dirs(mouse_id, config.results_root)
+    from aind_ibl_ephys_alignment_preprocessing.registration_settings import write_registration_settings
+
+    write_registration_settings(config, out.tracks_root.parent)
     asset_info = find_asset_info(config)
 
     node, zarr_metadata = _open_zarr(asset_info.zarr_volumes.registration)
@@ -211,6 +217,13 @@ def regenerate_datapackage(
         copy_existing_results(source_results, config.results_root, mouse_id)
     shutil.copy(config.manifest_csv, config.results_root / "manifest.csv")
     out = prepare_result_dirs(mouse_id, config.results_root)
+    from aind_ibl_ephys_alignment_preprocessing.registration_settings import (
+        resolve_registration_settings,
+        write_registration_settings,
+    )
+
+    config = config.model_copy(update=resolve_registration_settings(config, inherited_from=out.tracks_root.parent))
+    write_registration_settings(config, out.tracks_root.parent)
     asset_info = find_asset_info(config)
     manifest_rows = [ManifestRow.from_series(row) for _, row in manifest_df.iterrows()]
     processed_results = infer_process_results_from_outputs(manifest_rows, out, emit_qc=config.emit_qc)

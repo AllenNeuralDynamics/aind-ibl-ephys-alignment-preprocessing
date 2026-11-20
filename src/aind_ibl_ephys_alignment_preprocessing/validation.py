@@ -345,7 +345,8 @@ class PipelineValidator:
             if column.aliases:
                 self._validate_required_column_group(df, column.accepted_names, column.name, category)
         self._report_optional_columns(df, category)
-        self._validate_uniqueness_constraints(df, category)
+        resolved = self._resolve_streams(df)
+        self._validate_uniqueness_constraints(resolved.df if resolved is not None else df, category)
 
     def _report_optional_columns(self, df: pd.DataFrame, category: str) -> None:
         """Note which optional columns are in play; never fail on their absence."""

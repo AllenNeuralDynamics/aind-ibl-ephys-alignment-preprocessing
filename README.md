@@ -196,14 +196,23 @@ Each of these is described in detail below.
 
 ### Manifest CSV
 
+Discovery also writes an [electrophysiology inventory](docs/ephys_inventory.md)
+before filtering rows. It records observed streams, segments, channel geometry,
+sorting outputs, and source-join findings without selecting conversion inputs.
+
+Discovery also saves conversion plans with duration-based main selection and
+optional `main_recording_id` / `sorting_family_id` overrides. Plans retain
+uncertainties and missing shanks and accompany each worker's inventory. They
+control both worker extractors after preflight; see the linked contract.
+
 A CSV file describing how histology tracks map onto ephys collections. Each
 row represents one histology track (or one histology shank) mapped to one
 ephys collection and ephys shank.
 
-The contract is declared once in `types.MANIFEST_COLUMNS` and drives both the
-parser and pre-flight validation, so what a run accepts cannot drift from what
-validation demands. **Optional columns are never required**: a manifest written
-before a column existed stays valid.
+The contract is declared in `types.MANIFEST_COLUMNS` and drives the parser and
+pre-flight validation. Optional columns may be omitted when the remaining
+fields identify the mapping. A logical probe recorded as several streams needs
+a physical shank to select one of them, as described below.
 
 **Required columns:**
 
@@ -213,7 +222,7 @@ before a column existed stays valid.
 | `sorted_recording` | Name of the spike-sorted recording folder under `data_root`. The recording ID is derived by stripping a `_sorted` suffix if present. |
 | `probe_file` | Basename (without extension) of the Neuroglancer annotation file. Resolved via glob `*/<probe_file>.<annotation_format>` under `data_root`. |
 | `histology_track_id` | Neuroglancer layer / histology track identifier. Legacy alias: `probe_id`. |
-| `ephys_collection` | Ephys ALF output folder produced by `aind-ephys-ibl-gui-conversion` (for example `ProbeA`). Legacy alias: `probe_name`. |
+| `ephys_collection` | Recorded ephys collection (for example `ProbeA` or `ProbeA-2`), used as the ALF output folder. A logical probe name can be resolved to a split collection when `histology_shank` identifies its physical shank. Legacy alias: `probe_name`. |
 
 **Optional columns:**
 
@@ -221,14 +230,25 @@ before a column existed stays valid.
 |--------|---------|-------------|
 | `annotation_format` | `json` | File extension for the annotation file (lowercase). |
 | `logical_probe` | `ephys_collection` | Physical/logical probe identity. Split quadbase streams can share one `logical_probe` while using different `ephys_collection` values. |
-| `histology_shank` | `probe_shank` | 0-based shank index in the physical/histology probe. |
-| `ephys_shank` | `probe_shank`, else `histology_shank` | 0-based shank index within `ephys_collection`. For split quadbase streams this is usually `0` even when `histology_shank` is 0..3. |
+| `histology_shank` | `probe_shank` | 0-based physical/histology shank index. Needed to resolve a logical probe name when several per-shank collections exist. |
+| `ephys_shank` | `probe_shank`, else `histology_shank` | 0-based shank index within the selected `ephys_collection`. For split quadbase streams this is `0` even when `histology_shank` is 0..3. The compatibility fallback below accepts older logical-probe rows that put the physical shank here. |
 | `probe_id` | *legacy* | Alias for `histology_track_id`. |
 | `probe_name` | *legacy* | Alias for `ephys_collection`. |
-| `probe_shank` | *legacy* | Alias for both `histology_shank` and `ephys_shank`. |
+| `probe_shank` | *legacy* | Optional compatibility alias for both shank fields. New manifests should use the explicit fields. |
 | `surface_finding` | *null* | Path (relative to `data_root`) to a surface-finding file. |
-| `registration_asset` | *null* | Path relative to `data_root` to a replacement registration directory, e.g. `SmartSPIM_750108_reg/ccf_Ex_639_Em_667`. One value per brain; all nonblank rows must agree. See [Separate registration asset](#separate-registration-asset) for its contents and coordinate requirements. |
-| `template_to_ccf_asset` | *null* | Path relative to `data_root` to the template-to-CCF registration of the template `registration_asset` was registered to, when that is not the SmartSPIM LCA template. One value per brain, like `registration_asset`. See [Separate template-to-CCF registration](#separate-template-to-ccf-registration). |
+
+Registration overrides belong in run settings: `--registration-asset` and
+`--template-to-ccf-asset`, or the corresponding `PipelineConfig` fields and
+capsule App Panel entries. The CSV columns `registration_asset` and
+`template_to_ccf_asset` remain accepted for backwards compatibility. Nonblank
+values must agree across rows and with run settings, including the transform
+subdirectory; conflicting values stop the run.
+
+Discovery records the resolved choices in `registration_settings.json` beside
+its filtered manifest. Later stages read that file, and the final package
+records the same settings beside `datapackage.json`. Keep the settings file with
+discovery's manifest when staging a histology or pack-only run. Defaults remain
+the stitched registration and the pipeline's template-to-CCF registration.
 
 **Constraints:**
 - All rows must have the same `mouseid`.
@@ -243,6 +263,34 @@ before a column existed stays valid.
   use different `ephys_collection` values; each collection can have
   `ephys_shank=0`.
 
+**Four-shank NP2.0 versus split quadbase collections:**
+
+For a four-shank probe recorded in one collection, use `ephys_collection=ProbeA`
+on all four rows and `histology_shank=ephys_shank=0,1,2,3`. For a quadbase
+recorded as four collections, name the actual collections and use shank `0`
+within each:
+
+| `logical_probe` | `ephys_collection` | `histology_shank` | `ephys_shank` |
+|-----------------|--------------------|-------------------|---------------|
+| `ProbeA` | `ProbeA-1` | 0 | 0 |
+| `ProbeA` | `ProbeA-2` | 1 | 0 |
+| `ProbeA` | `ProbeA-3` | 2 | 0 |
+| `ProbeA` | `ProbeA-4` | 3 | 0 |
+
+Alternatively, use `ephys_collection=ProbeA` with `histology_shank=0,1,2,3`
+and omit `ephys_shank`. Discovery checks the sorted probe geometry and rewrites
+each row to its split collection with `ephys_shank=0`.
+
+For compatibility, a row naming a logical probe with only `ephys_shank` supplied
+can use that integer as its physical shank. This fallback applies only when the
+logical name has no exact recorded collection and the recorded geometry verifies
+a unique split collection. Discovery writes the resolved `histology_shank`,
+collection name, and local `ephys_shank=0` into its manifest and records the
+interpretation in the log and `coverage.json` notes. Exact collection names and
+explicit physical shanks retain their existing meaning. Missing, contradictory,
+or unreadable geometry is rejected. `probe_shank` remains a legacy alias; it is
+not required in new manifests.
+
 **Example:**
 
 ```csv
@@ -250,7 +298,7 @@ mouseid,sorted_recording,probe_file,histology_track_id,logical_probe,ephys_colle
 mouse001,2024-06-01_rec_sorted,track_annotations_probeA,A0001,probeA,ProbeA,,
 mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank0,B0001,probeB,ProbeB,0,0
 mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank1,B0001,probeB,ProbeB,1,1
-mouse001,2024-06-01_rec_sorted,track_annotations_quad_shank3,Q0001,quad0,ProbeD,3,0
+mouse001,2024-06-01_rec_sorted,track_annotations_quad_shank3,Q0001,ProbeD,ProbeD-4,3,0
 ```
 
 #### Building a manifest from a mapping
@@ -263,8 +311,6 @@ naming convention.
 ```toml
 mouseid = "837772"
 annotation = "837772-probe-annotations-CK-2026-09-29.json"  # relative to this file
-# registration_asset = "..."                                  # optional, per brain
-# template_to_ccf_asset = "..."                               # optional, per brain
 
 [[session]]
 sorted_recording = "ecephys_837772_2026-06-27_14-08-21_sorted_2026-08-27_18-59-49"
@@ -314,16 +360,19 @@ The asset directory must contain:
 
 ### Separate registration asset
 
-Set the manifest's optional `registration_asset` column to the transform
-directory relative to `data_root`:
+Set the brain-wide **Registration override** App Panel field, or pass the
+transform directory relative to `data_root` on the CLI:
 
-```csv
-mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,registration_asset
-750108,recording_sorted,probeA,A0001,ProbeA,SmartSPIM_750108_reg/ccf_Ex_639_Em_667
+```bash
+aind-ibl-preprocess --data-root /data --results-root /results \
+    --manifest manifest.csv --neuroglancer annotations.json \
+    --registration-asset SmartSPIM_750108_reg/ccf_Ex_639_Em_667
 ```
 
-Use one path per brain; conflicting nonblank values fail. An absent or blank
-column uses the stitched asset's registration.
+The programmatic setting is `PipelineConfig(registration_asset=...)`.
+Existing CSVs can still supply a `registration_asset` column. If both sources
+are provided, they must identify the same directory. Leaving both unset uses
+the stitched asset's registration.
 
 The directory must contain `ls_to_template_SyN_0GenericAffine.mat`,
 `ls_to_template_SyN_1InverseWarp.nii.gz` and a geometry sidecar (below): ANTs
@@ -417,14 +466,19 @@ Code Ocean's `/data` mounts are read-only.
 ### Separate template-to-CCF registration
 
 A brain registered to a template other than the SmartSPIM LCA template (an
-iDISCO template, say) needs that template's CCF registration. Set the optional
-`template_to_ccf_asset` column to its directory relative to `data_root`, one
-path per brain like `registration_asset`:
+iDISCO template, say) needs that template's CCF registration. Set the
+**Template-to-CCF override** App Panel field or `--template-to-ccf-asset` to its
+directory relative to `data_root`:
 
-```csv
-mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,registration_asset,template_to_ccf_asset
-750107,recording_sorted,probeA,A0001,ProbeA,idisco_reg/750107,AIND-MouseiDISCO-v1.0-to-CCFv3-r1_2026-10-22_17-34-50
+```bash
+aind-ibl-preprocess --data-root /data --results-root /results \
+    --manifest manifest.csv --neuroglancer annotations.json \
+    --registration-asset idisco_reg/750107 \
+    --template-to-ccf-asset AIND-MouseiDISCO-v1.0-to-CCFv3-r1_2026-10-22_17-34-50
 ```
+
+`PipelineConfig.template_to_ccf_asset` and the legacy CSV column of the same
+name are also accepted, with the same conflict checks.
 
 The directory must contain `template_to_ccf_0GenericAffine.mat` and
 `template_to_ccf_1InverseWarp.nii.gz`, ANTs SyN outputs with CCF fixed and the
@@ -433,7 +487,7 @@ pipeline's `spim_template_to_ccf_syn_*_25` transforms in the probe and QC
 chains, and the datapackage refers to them under the `template_to_ccf` asset,
 named after the directory's first component under `data_root`.
 
-The column requires a `registration_asset` with a sidecar, whose `fixed_domain`
+The override requires a `registration_asset` with a sidecar, whose `fixed_domain`
 is checked against this template. If the directory ships its own sidecar
 (`template_to_ccf_transform_information.json` or `transform_information.json`),
 the registration's `fixed_domain` must match its `moving_domain`. Without one,

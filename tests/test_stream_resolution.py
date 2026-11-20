@@ -103,7 +103,7 @@ def test_rows_naming_a_stream_or_an_unknown_probe_are_left_alone(collection: str
 @pytest.mark.parametrize(
     ("streams", "shank", "message"),
     [
-        (QUAD_A, None, "needs probe_shank"),
+        (QUAD_A, None, "provide histology_shank"),
         (QUAD_A[:2] + _streams(("ProbeA-3", SERIAL_B, {2})), 0, "different probes"),
         (_streams(("ProbeA-1", SERIAL_A, {0, 1}), ("ProbeA-2", SERIAL_A, {1})), 0, "expected one shank"),
         (_streams(("ProbeA-1", SERIAL_A, set()), ("ProbeA-2", SERIAL_A, {1})), 1, "no readable shank"),
@@ -144,6 +144,25 @@ def test_resolving_a_resolved_manifest_changes_nothing(tmp_path: Path) -> None:
     assert [r.ephys_collection for r in twice.rows] == ["ProbeA-2", "ProbeA-3"]
 
 
+def test_standalone_structure_validation_uses_the_same_resolved_shanks(tmp_path: Path) -> None:
+    from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
+    from aind_ibl_ephys_alignment_preprocessing.validation import PipelineValidator
+
+    _mount_quad_sort(tmp_path, {"ProbeA": SERIAL_A, "ProbeB": SERIAL_B})
+    manifest = tmp_path / "manifest.csv"
+    _ephys_only_manifest().to_csv(manifest, index=False)
+    config = PipelineConfig(
+        data_root=tmp_path,
+        results_root=tmp_path / "results",
+        neuroglancer_file=Path("ng.json"),
+        manifest_csv=manifest,
+    )
+    validator = PipelineValidator(config, skip_resource_checks=True)
+    validator.validate_manifest_structure()
+    errors = [result for result in validator.results if not result.passed and result.severity == "error"]
+    assert not errors, [result.message for result in errors]
+
+
 def test_rows_without_a_mounted_sort_pass_through(tmp_path: Path) -> None:
     resolved = resolve_manifest_streams(_manifest([("ProbeA", 1)]), default_locator(tmp_path))
     assert resolved.resolutions == {} and resolved.errors == {}
@@ -153,7 +172,7 @@ def test_rows_without_a_mounted_sort_pass_through(tmp_path: Path) -> None:
 def test_standalone_runs_refuse_an_unresolvable_manifest(tmp_path: Path) -> None:
     _mount_quad_sort(tmp_path / "data", {"ProbeA": SERIAL_A})
     _manifest([("ProbeA", 1), ("ProbeA", "")]).to_csv(tmp_path / "manifest.csv", index=False)
-    with pytest.raises(StreamResolutionError, match=r"row 2 \(20260826_ProbeA_Shank\): .*needs probe_shank"):
+    with pytest.raises(StreamResolutionError, match=r"row 2 \(20260826_ProbeA_Shank\): .*provide histology_shank"):
         read_resolved_manifest(tmp_path / "manifest.csv", tmp_path / "data")
 
 
@@ -207,3 +226,101 @@ def test_discover_refuses_a_row_its_streams_cannot_resolve(tmp_path: Path, track
     coverage = RunCoverage.read(config.results_root / COVERAGE_FILENAME)
     assert [row.histology_track_id for row in coverage.dropped] == ["20260826_ProbeA_Shank3"]
     assert "no stream of ProbeA records shank 2" in str(coverage.dropped[0].reason)
+
+
+def _ephys_only_manifest() -> pd.DataFrame:
+    """Use Anna's logical collection plus ephys_shank-only CSV layout."""
+    frame = _manifest([(probe, shank) for probe in ("ProbeA", "ProbeB") for shank in range(4)])
+    return frame.rename(
+        columns={"probe_name": "ephys_collection", "probe_shank": "ephys_shank", "probe_id": "histology_track_id"}
+    )
+
+
+def test_discover_normalizes_ephys_only_shanks_and_records_interpretation(tmp_path: Path, tracks_present: None) -> None:
+    config = _discover_config(tmp_path)
+    _mount_quad_sort(config.data_root, {"ProbeA": SERIAL_A, "ProbeB": SERIAL_B})
+    _ephys_only_manifest().to_csv(config.manifest_csv, index=False)
+
+    written = stages.stage_discover(config)
+
+    filtered = pd.read_csv(config.results_root / "manifest.csv")
+    assert len(written) == 8
+    assert list(filtered["ephys_collection"]) == [f"{probe}-{n}" for probe in ("ProbeA", "ProbeB") for n in range(1, 5)]
+    assert list(filtered["histology_shank"]) == [0, 1, 2, 3] * 2
+    assert set(filtered["ephys_shank"]) == {0}
+    coverage = RunCoverage.read(config.results_root / COVERAGE_FILENAME)
+    assert coverage.rows_viable == 8
+    for row in coverage.rows:
+        assert any(
+            "interpreted input ephys_shank=" in note and "verifying recorded geometry" in note for note in row.notes
+        )
+    resolved = resolve_manifest_streams(filtered, default_locator(config.data_root))
+    assert not resolved.resolutions and not resolved.errors
+
+
+@pytest.mark.parametrize("collection", ["ProbeA", "ProbeA-2"])
+def test_ephys_only_shank_keeps_its_meaning_for_exact_collections(tmp_path: Path, collection: str) -> None:
+    root = _mount_quad_sort(tmp_path, {"ProbeA": SERIAL_A})
+    if collection == "ProbeA":
+        _analyzer(root / "postprocessed", "ProbeA", [_probe(SERIAL_A, [0, 1, 2, 3])])
+    frame = _ephys_only_manifest().iloc[[1]].copy()
+    frame["ephys_collection"] = collection
+    resolved = resolve_manifest_streams(frame, default_locator(tmp_path))
+    assert not resolved.resolutions and not resolved.errors
+    row = resolved.rows[0]
+    assert (row.ephys_collection, row.ephys_shank, row.histology_shank) == (collection, 1, None)
+
+
+def test_explicit_physical_shank_takes_precedence_over_ephys_shank(tmp_path: Path) -> None:
+    _mount_quad_sort(tmp_path, {"ProbeA": SERIAL_A})
+    frame = _ephys_only_manifest().iloc[[0]].copy()
+    frame["histology_shank"] = 2
+    resolved = resolve_manifest_streams(frame, default_locator(tmp_path))
+    assert not resolved.errors
+    assert resolved.rows[0].ephys_collection == "ProbeA-3"
+    assert not resolved.resolutions[0].used_ephys_shank_fallback
+
+
+@pytest.mark.parametrize(
+    "streams",
+    [
+        _streams(("ProbeA-1", SERIAL_A, set())),
+        QUAD_A[:2] + _streams(("ProbeA-3", SERIAL_B, {2})),
+        _streams(("ProbeA-1", SERIAL_A, {1})),
+        QUAD_A[1:],
+    ],
+    ids=["unreadable-geometry", "different-probes", "contradictory-suffix", "missing-shank"],
+)
+def test_ephys_only_fallback_requires_verified_geometry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streams: list[SortedStream]
+) -> None:
+    from aind_ibl_ephys_alignment_preprocessing import stream_resolution
+
+    _mount_quad_sort(tmp_path, {"ProbeA": SERIAL_A})
+    monkeypatch.setattr(stream_resolution, "sorted_streams", lambda _: streams)
+    resolved = resolve_manifest_streams(_ephys_only_manifest().iloc[[0]], default_locator(tmp_path))
+    assert not resolved.resolutions
+    assert "cannot interpret ephys_shank as histology_shank" in resolved.errors[0]
+    assert resolved.rows[0].ephys_collection == "ProbeA"
+
+
+@pytest.mark.parametrize("column", ["histology_shank", "probe_shank", "ephys_shank"])
+def test_ephys_only_fallback_does_not_hide_invalid_shank_values(tmp_path: Path, column: str) -> None:
+    _mount_quad_sort(tmp_path, {"ProbeA": SERIAL_A})
+    frame = _ephys_only_manifest().iloc[[1]].copy()
+    frame[column] = "invalid" if column != "ephys_shank" else 1.5
+    resolved = resolve_manifest_streams(frame, default_locator(tmp_path))
+    assert not resolved.resolutions and 0 in resolved.errors
+
+
+def test_repeated_analyzers_for_one_collection_still_identify_one_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aind_ibl_ephys_alignment_preprocessing import stream_resolution
+
+    _mount_quad_sort(tmp_path, {"ProbeA": SERIAL_A})
+    monkeypatch.setattr(stream_resolution, "sorted_streams", lambda _: QUAD_A * 2)
+    resolved = resolve_manifest_streams(_ephys_only_manifest().iloc[[2]], default_locator(tmp_path))
+    assert not resolved.errors
+    assert resolved.rows[0].ephys_collection == "ProbeA-3"
+    assert resolved.resolutions[0].used_ephys_shank_fallback

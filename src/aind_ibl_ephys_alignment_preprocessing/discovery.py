@@ -57,12 +57,12 @@ def image_asset_path(data_root: Path, source_uri: str) -> Path:
     return data_root / asset.name
 
 
-#: Manifest columns naming one directory per brain, read off whichever row carries them.
+#: Legacy CSV registration settings retained for backwards compatibility.
 PER_BRAIN_PATH_COLUMNS = ("registration_asset", "template_to_ccf_asset")
 
 
 def manifest_registration_override(config: PipelineConfig) -> Path | None:
-    """Return the manifest's ``registration_asset`` path fragment, if any.
+    """Return the resolved ``registration_asset`` override, including legacy CSV input.
 
     See :func:`manifest_per_brain_path`.
     """
@@ -70,7 +70,7 @@ def manifest_registration_override(config: PipelineConfig) -> Path | None:
 
 
 def manifest_template_override(config: PipelineConfig) -> Path | None:
-    """Return the manifest's ``template_to_ccf_asset`` path fragment, if any.
+    """Return the resolved template override, including legacy CSV input.
 
     See :func:`manifest_per_brain_path`.
     """
@@ -78,18 +78,17 @@ def manifest_template_override(config: PipelineConfig) -> Path | None:
 
 
 def manifest_per_brain_path(config: PipelineConfig, column: str) -> Path | None:
-    """Return a per-brain path column's value, if any.
+    """Return a registration choice from run settings, legacy CSV, or discovery.
 
-    The column is per-*brain*: like ``mouseid`` it is replicated across rows, so
-    the first non-empty value wins. Rows disagreeing is a manifest error, not
-    something to resolve silently, so it raises.
+    Every supplied source must agree. The name is retained for compatibility
+    with callers that previously read these choices only from CSV columns.
 
     Parameters
     ----------
     config : PipelineConfig
         Pipeline configuration with resolved paths.
     column : str
-        Manifest column naming a directory.
+        Registration setting naming a directory.
 
     Returns
     -------
@@ -100,21 +99,11 @@ def manifest_per_brain_path(config: PipelineConfig, column: str) -> Path | None:
     Raises
     ------
     ValueError
-        If rows name different directories.
+        If supplied sources name different directories.
     """
-    import pandas as pd
+    from aind_ibl_ephys_alignment_preprocessing.registration_settings import resolve_registration_settings
 
-    if not config.manifest_csv.exists():
-        return None
-    df = pd.read_csv(config.manifest_csv)
-    if column not in df.columns:
-        return None
-    values = {str(v).strip() for v in df[column] if pd.notna(v) and str(v).strip()}
-    if not values:
-        return None
-    if len(values) > 1:
-        raise ValueError(f"{column} must name one directory per manifest; {config.manifest_csv} has {sorted(values)}")
-    return Path(values.pop())
+    return resolve_registration_settings(config)[column]
 
 
 def resolve_template_to_ccf_dir(config: PipelineConfig) -> Path | None:
