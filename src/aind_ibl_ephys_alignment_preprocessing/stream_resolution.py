@@ -65,11 +65,18 @@ class StreamResolution:
     shank: int
     collection: str
     serial: str | None
+    used_ephys_shank_fallback: bool = False
 
     def note(self) -> str:
         """Describe the resolution for logs and the coverage record."""
         serial = f", serial {self.serial}" if self.serial else ""
-        return f"{self.probe} shank {self.shank} resolved to per-shank stream {self.collection}{serial}"
+        note = f"{self.probe} shank {self.shank} resolved to per-shank stream {self.collection}{serial}"
+        if self.used_ephys_shank_fallback:
+            note += (
+                f"; interpreted input ephys_shank={self.shank} as physical histology_shank"
+                " after verifying recorded geometry; collection-local ephys_shank=0"
+            )
+        return note
 
 
 def _recording_info_attributes(analyzer: Path) -> dict[str, Any] | None:
@@ -175,7 +182,10 @@ def resolve_split_stream(
         return None
     names = [s.collection for _, s in split]
     if shank is None:
-        raise StreamResolutionError(f"{wanted} is recorded as per-shank streams {names}; the row needs probe_shank")
+        raise StreamResolutionError(
+            f"{wanted} is recorded as per-shank streams {names}; provide histology_shank"
+            " (legacy alias probe_shank), or name the exact ephys_collection and its local ephys_shank"
+        )
     serials = {s.serial for _, s in split if s.serial is not None}
     if len(serials) > 1:
         raise StreamResolutionError(f"streams {names} come from different probes (serials {sorted(serials)})")
@@ -191,6 +201,8 @@ def resolve_split_stream(
     matching = [s for _, s in split if s.shanks == {shank}]
     if not matching:
         raise StreamResolutionError(f"no stream of {wanted} records shank {shank}; streams are {names}")
+    if len({s.collection for s in matching}) != 1:
+        raise StreamResolutionError(f"multiple collections of {wanted} record shank {shank}: {names}")
     return StreamResolution(probe=wanted, shank=shank, collection=matching[0].collection, serial=matching[0].serial)
 
 
@@ -204,6 +216,33 @@ def resolved_row(mr: ManifestRow, resolution: StreamResolution) -> ManifestRow:
         histology_shank=resolution.shank,
         ephys_shank=0,
     )
+
+
+def _resolve_row_stream(
+    streams: list[SortedStream], mr: ManifestRow, source: pd.Series[Any]
+) -> StreamResolution | None:
+    """Interpret an ephys-only shank only for a uniquely verified split collection."""
+    fallback = mr.histology_shank is None and mr.ephys_shank is not None
+    shank = mr.ephys_shank if fallback else mr.histology_shank
+    try:
+        resolution = resolve_split_stream(streams, str(mr.ephys_collection), shank)
+    except StreamResolutionError as error:
+        if fallback:
+            raise StreamResolutionError(
+                f"{error}; cannot interpret ephys_shank as histology_shank;"
+                " provide an explicit ephys_collection and shank mapping"
+            ) from error
+        raise
+    if resolution is None or not fallback:
+        return resolution
+    # The permissive legacy parser treats malformed values as absent. A bad
+    # explicit physical shank must not silently activate the compatibility path.
+    if any(pd.notna(value := source.get(name)) and str(value).strip() for name in ("histology_shank", "probe_shank")):
+        raise StreamResolutionError("invalid histology_shank or legacy probe_shank; provide an integer physical shank")
+    value = source.get("ephys_shank")
+    if value is None or isinstance(value, bool) or float(value) != shank:
+        raise StreamResolutionError("ephys_shank must be an integer for physical-shank compatibility resolution")
+    return replace(resolution, used_ephys_shank_fallback=True)
 
 
 @dataclass(frozen=True)
@@ -306,7 +345,7 @@ def resolve_manifest_streams(
         if folder not in streams_by_folder:
             streams_by_folder[folder] = sorted_streams(folder)
         try:
-            resolution = resolve_split_stream(streams_by_folder[folder], str(mr.ephys_collection), mr.histology_shank)
+            resolution = _resolve_row_stream(streams_by_folder[folder], mr, df.iloc[position])
         except StreamResolutionError as error:
             errors[position] = str(error)
             continue

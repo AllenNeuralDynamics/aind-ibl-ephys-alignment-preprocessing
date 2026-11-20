@@ -231,7 +231,7 @@ a physical shank to select one of them, as described below.
 | `annotation_format` | `json` | File extension for the annotation file (lowercase). |
 | `logical_probe` | `ephys_collection` | Physical/logical probe identity. Split quadbase streams can share one `logical_probe` while using different `ephys_collection` values. |
 | `histology_shank` | `probe_shank` | 0-based physical/histology shank index. Needed to resolve a logical probe name when several per-shank collections exist. |
-| `ephys_shank` | `probe_shank`, else `histology_shank` | 0-based shank index within the selected `ephys_collection`; it does not select a collection. For split quadbase streams this is `0` even when `histology_shank` is 0..3. Logical-probe resolution sets it to `0` for the selected split collection. |
+| `ephys_shank` | `probe_shank`, else `histology_shank` | 0-based shank index within the selected `ephys_collection`. For split quadbase streams this is `0` even when `histology_shank` is 0..3. The compatibility fallback below accepts older logical-probe rows that put the physical shank here. |
 | `probe_id` | *legacy* | Alias for `histology_track_id`. |
 | `probe_name` | *legacy* | Alias for `ephys_collection`. |
 | `probe_shank` | *legacy* | Optional compatibility alias for both shank fields. New manifests should use the explicit fields. |
@@ -268,10 +268,17 @@ within each:
 
 Alternatively, use `ephys_collection=ProbeA` with `histology_shank=0,1,2,3`
 and omit `ephys_shank`. Discovery checks the sorted probe geometry and rewrites
-each row to its split collection with `ephys_shank=0`. A logical collection name
-plus only `ephys_shank=0,1,2,3` does not identify the physical shank for this
-resolution. Older errors saying the row "needs probe_shank" mean that physical
-shank information is missing; the legacy column itself is not required.
+each row to its split collection with `ephys_shank=0`.
+
+For compatibility, a row naming a logical probe with only `ephys_shank` supplied
+can use that integer as its physical shank. This fallback applies only when the
+logical name has no exact recorded collection and the recorded geometry verifies
+a unique split collection. Discovery writes the resolved `histology_shank`,
+collection name, and local `ephys_shank=0` into its manifest and records the
+interpretation in the log and `coverage.json` notes. Exact collection names and
+explicit physical shanks retain their existing meaning. Missing, contradictory,
+or unreadable geometry is rejected. `probe_shank` remains a legacy alias; it is
+not required in new manifests.
 
 **Example:**
 
