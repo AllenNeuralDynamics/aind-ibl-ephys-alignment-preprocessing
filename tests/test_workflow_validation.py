@@ -59,8 +59,8 @@ def packed(tmp_path):
         "spikes.clusters": np.array([0, 0], dtype=int),
         "spikes.amps": [1, 2],
         "spikes.depths": [20, 20],
-        "spike_shank_indices": [2, 2],
-        "unit_shank_indices": [2],
+        "spike_shank_indices": [0, 0],
+        "unit_shank_indices": [0],
         "clusters.channels": np.array([2], dtype=int),
         "channels.localCoordinates": [[0, 30], [0, 10], [0, 20], [0, 0]],
         "channels.shankInd": [2, 2, 2, 2],
@@ -96,7 +96,8 @@ def test_complete_package_preserves_decisions_and_sparse_shanks(packed):
     report = audit_package(packed)
     assert report["status"] == "passed"
     assert report["global_inventory_digest_verified"]
-    assert report["collections"]["rec__ProbeA"]["unit_shanks"] == [2]
+    assert report["collections"]["rec__ProbeA"]["unit_shanks"] == [0]
+    assert report["collections"]["rec__ProbeA"]["physical_unit_shanks"] == [2]
 
 
 @pytest.mark.parametrize("damage", ["inventory", "receipt", "qc", "reference", "missing_unit", "optional_file"])
