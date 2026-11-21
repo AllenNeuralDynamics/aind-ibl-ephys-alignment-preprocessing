@@ -1,536 +1,209 @@
 # AIND IBL Ephys Alignment Preprocessing
 
 ![CI](https://github.com/AllenNeuralDynamics/aind-ibl-ephys-alignment-preprocessing/actions/workflows/ci-call.yml/badge.svg)
-[![PyPI - Version](https://img.shields.io/pypi/v/aind-ibl-ephys-alignment-preprocessing)](https://pypi.org/project/aind-ibl-ephys-alignment-preprocessing/)
-[![semantic-release: angular](https://img.shields.io/badge/semantic--release-angular-e10079?logo=semantic-release)](https://github.com/semantic-release/semantic-release)
+[![PyPI](https://img.shields.io/pypi/v/aind-ibl-ephys-alignment-preprocessing)](https://pypi.org/project/aind-ibl-ephys-alignment-preprocessing/)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
-[![ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-inverted-border.json)](https://github.com/copier-org/copier)
 
-Preprocessing pipeline that prepares SmartSPIM histology and Neuropixels
-electrophysiology data for the
+This package prepares histology images, annotated probe tracks, and sorted
+electrophysiology recordings for the
 [IBL ephys alignment GUI](https://github.com/AllenNeuralDynamics/ibl-ephys-alignment-gui).
-It registers histology volumes to the Allen Common Coordinate Framework (CCF),
-converts Neuroglancer probe-track annotations into atlas coordinates, and
-optionally extracts spike-sorted ephys data into
-[IBL ALF format](https://int-brain-lab.github.io/ONE/alf_intro.html).
+It combines the images, tracks, and recording data into one package for a
+mouse. It uses existing image registrations, which describe how the mouse's
+histology images align with a reference brain image.
 
-## Start here
+## Choose how to run
 
-For Code Ocean preprocessing, use the [trigger capsule](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-trigger-capsule).
-Its README covers credentials, first-time setup, launching, and reading the
-result. You do not need to install this Python package to use the trigger.
+On Code Ocean, use the shared [preprocessing trigger](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-trigger-capsule).
+Its instructions cover first-time credentials setup, launching, and finding
+the output. The trigger finds the input assets and launches the
+[worker capsule](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-pipeline-capsule)
+for each processing stage. You normally only need to prepare the annotations
+asset described below.
 
-To prepare inputs, follow [Manifest CSV](#manifest-csv) below. This README owns
-the manifest rules for both capsule and local runs. For a brain registered
-outside the usual pipeline, see [Registration overrides](#registration-overrides).
-The installation and command-line sections are for running the library yourself.
+To use this as a standalone Python package, follow [Run preprocessing locally](docs/running_locally.md)
+for installation, command-line use, and the Python API. The input requirements
+and manifest format are shared by both routes.
 
-## Installation
+## Prepare the inputs
 
-From PyPI:
+You need the mouse's processed SmartSPIM imaging asset with its registration
+results, the sorted ephys recording assets, and the Neuroglancer JSON files
+containing your probe-track annotations. Keep the image layers in the saved
+JSON: the trigger uses them to find the imaging asset. The annotations must
+refer to the imaging data used for that mouse. Preprocessing also uses the
+raw ephys data; the trigger finds it from the sorted recording's input
+information.
 
-```bash
-uv venv
-uv pip install aind-ibl-ephys-alignment-preprocessing
+Your annotations asset contains the annotation JSONs and a manifest CSV. The
+CSV connects the tracks you drew to the recordings they belong to. You can
+prepare it in a spreadsheet using the examples below.
+
+## Manifest CSV
+
+The manifest connects each track drawn in Neuroglancer to its ephys
+recording. Make it in a spreadsheet and export it as CSV, with one row per
+track. A four-shank probe with four annotated tracks needs four rows.
+
+The examples below use `example_sorted` for the sorted asset and `tracks.json`
+for the annotation file. Replace these with your own asset and filename, and
+replace the track IDs with their exact names in Neuroglancer.
+
+### Start with these five columns
+
+| Column | Enter this value |
+|---|---|
+| `mouseid` | The mouse ID, the same on every row. |
+| `sorted_recording` | The exact name of the sorted Code Ocean asset. The trigger also accepts its asset ID. |
+| `probe_file` | The annotation JSON filename without `.json`. For `tracks.json`, enter `tracks`. |
+| `histology_track_id` | The exact track/layer name inside that JSON, such as `A_shank1`. |
+| `ephys_collection` | The recorded probe name, such as `ProbeA`. For a split quadbase, use its common probe name as explained below. |
+
+For a single-shank recording, those five columns are enough:
+
+```csv
+mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection
+858398,example_sorted,tracks,A_track,ProbeA
 ```
 
-From source:
+### Four-shank NP2.0 recorded together
 
-```bash
-git clone https://github.com/AllenNeuralDynamics/aind-ibl-ephys-alignment-preprocessing.git
-cd aind-ibl-ephys-alignment-preprocessing
-uv sync
+If all four shanks are recorded together as `ProbeA`, repeat `ProbeA` on all
+four rows. Add `histology_shank` to identify the physical shank for each track,
+and `ephys_shank` to select that shank within the shared recording. Both
+columns contain the same number for this recording layout.
+
+CSV shank numbers start at **0**: the four shanks are numbered `0`, `1`, `2`,
+and `3`. In this example, the track named `A_shank1` belongs to physical shank
+`0`. Enter the number that matches your track; preprocessing does not read
+shank numbers from track names.
+
+```csv
+mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,histology_shank,ephys_shank
+858398,example_sorted,tracks,A_shank1,ProbeA,0,0
+858398,example_sorted,tracks,A_shank2,ProbeA,1,1
+858398,example_sorted,tracks,A_shank3,ProbeA,2,2
+858398,example_sorted,tracks,A_shank4,ProbeA,3,3
 ```
 
-## Quick start
+Here `ProbeA` contains four shanks, so `ephys_shank` distinguishes the data
+for the four tracks. You can omit `logical_probe`.
 
-The package provides a CLI entry point, `aind-ibl-preprocess`:
+### Quadbase shanks recorded separately
 
-```bash
-aind-ibl-preprocess \
-    --data-root /path/to/data \
-    --results-root /path/to/results \
-    --neuroglancer neuroglancer.json \
-    --manifest manifest.csv
+A stream is a group of recording channels stored together. A split quadbase
+records its four shanks as separate streams, for example
+`ProbeB-1`, `ProbeB-2`, `ProbeB-3`, and `ProbeB-4`. Enter the common probe name
+`ProbeB` and the physical `histology_shank` for each track:
+
+```csv
+mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,histology_shank
+858398,example_sorted,tracks,B_shank1,ProbeB,0
+858398,example_sorted,tracks,B_shank2,ProbeB,1
+858398,example_sorted,tracks,B_shank3,ProbeB,2
+858398,example_sorted,tracks,B_shank4,ProbeB,3
 ```
 
-### CLI options
+Preprocessing checks which physical shank each stream recorded and fills in
+the matching stream name: `ProbeB` with physical shank `2`, for example, becomes
+`ProbeB-3`. That stream contains one shank, whose index within the stream is
+`0`. Preprocessing fills in this distinction; leave `ephys_shank` out of this
+form of the CSV. If the saved recording information cannot identify a unique
+stream, the run reports which mapping it could not resolve.
 
-| Flag | Description |
-|------|-------------|
-| `--data-root PATH` | **(required)** Root directory containing all input data |
-| `--results-root PATH` | **(required)** Root directory for output |
-| `--neuroglancer PATH` | **(required)** Neuroglancer JSON file (absolute, or relative to `data_root`) |
-| `--manifest PATH` | **(required)** Manifest CSV file (absolute, or relative to `data_root`) |
-| `--scratch-root PATH` | Scratch directory for temporary files (default: system temp) |
-| `--skip-ephys` | Skip electrophysiology extraction |
-| `--validate-only` | Run pre-flight validation checks and exit |
-| `--datapackage-only` | Regenerate `datapackage.json` from existing outputs without rerunning histology or ephys preprocessing |
-| `--source-results PATH` | Existing results asset/root or mouse output directory to copy into `results_root` before `--datapackage-only` regeneration |
-| `--async` | Run the pipeline asynchronously with concurrency |
+You can combine single-shank, four-shank, and split quadbase rows in one
+manifest. Use the seven-column header from the four-shank example and leave
+unused shank cells blank: both cells for a single-shank row, or just
+`ephys_shank` for a quadbase row written in the form above.
 
-### Validation
+### Save the annotations asset
 
-Before running the full pipeline, you can check that all required inputs are
-present and correctly structured:
+Save the CSV with `manifest` in its filename, for example
+`858398_manifest.csv`. Put it and every annotation JSON named by `probe_file`
+in one internal Code Ocean asset, with exactly one manifest CSV. Give that
+asset's ID to the trigger. Its [run instructions](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-trigger-capsule#run-a-mouse)
+cover the launch.
 
-```bash
-aind-ibl-preprocess \
-    --data-root /path/to/data \
-    --results-root /path/to/results \
-    --neuroglancer neuroglancer.json \
-    --manifest manifest.csv \
-    --validate-only
+Use the correct `sorted_recording` on each row when a mouse has several
+recording sessions. Dates in annotation filenames or track names are labels;
+the `sorted_recording` column selects the recording to process.
+
+### Other columns and existing manifests
+
+Existing manifests can continue to name exact streams and specify
+`ephys_shank`. The [column reference](docs/manifest_reference.md) explains that
+form, optional columns, and older names such as `probe_id`, `probe_name`, and
+`probe_shank`. You do not need to add those columns to the examples above.
+
+### Building a manifest from a mapping
+
+If you prefer to generate the CSV, the optional
+[manifest builder](docs/building_a_manifest.md) takes a configuration file
+mapping tracks to recordings and streams.
+
+## Registration overrides
+
+Most runs use the registrations already supplied with the imaging data. If
+the brain was registered separately, choose that registration through the
+trigger's **Registration override** field. If it targets a reference image
+other than the standard SmartSPIM template, also set **Template-to-CCF
+override** to that template's registration to the Allen brain atlas. The
+trigger attaches those assets for the workers.
+
+The [registration guide](docs/registration_overrides.md) describes the files
+needed for these cases. Registration is a choice for the whole brain, so new
+manifests can leave it to the run settings. Existing CSV registration columns
+remain supported.
+
+## Run and check the output
+
+Give the annotations asset's ID to the trigger and follow its
+[run instructions](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-trigger-capsule#run-a-mouse).
+The trigger processes the histology and recordings and creates one output data
+asset. Use that output asset with the alignment GUI. For a direct worker run,
+follow the [worker instructions](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-pipeline-capsule#standalone-use-the-monolith).
+
+Check the run's warnings as well as its completion status. A run may finish
+successfully when some recorded shanks lack sorting outputs. For example,
+histology and raw-channel measurements can be available for all four shanks
+while spikes are available for only two. An output asset cannot supply spikes
+that were absent from its sorted input.
+
+The output keeps a record of those gaps and the recordings selected for
+conversion. The [inventory and conversion-plan guide](docs/ephys_inventory.md)
+explains where to find that record if you need to investigate a warning.
+
+### Output structure
+
+The mouse's output directory contains `datapackage.json`, which tells the
+alignment GUI where to find the histology images, track points, and recording
+data. Keep the complete directory together when copying it to another machine.
+
+```text
+<mouseid>/
+├── datapackage.json
+├── image_space_histology/
+├── track_data/
+└── <recording_id>/
+    └── <ephys_collection>/
+        ├── xyz_picks*.json
+        ├── channels.*.npy
+        ├── spikes.*.npy
+        └── band_corr/
 ```
 
-This checks file existence, manifest structure, reference data availability,
-disk space (warns below 50 GB, errors below 10 GB), and available RAM
-(minimum 8 GB).
+This is a shortened view. The recording folders also contain measurements
+used for the GUI's quality-control plots. Copying only the files named inside
+`datapackage.json` can lose those measurements. See the
+[output contract](docs/external_asset_references.md) for file and portability
+details.
 
 ### Regenerating only `datapackage.json`
 
-If preprocessing has already produced the histology/ephys outputs, you can
-rewrite just the datapackage metadata:
-
-```bash
-aind-ibl-preprocess \
-    --data-root /path/to/data \
-    --results-root /path/to/results \
-    --neuroglancer neuroglancer.json \
-    --manifest manifest.csv \
-    --datapackage-only
-```
-
-This path rediscovers asset metadata, infers successful manifest rows from
-existing `xyz_picks*.json` outputs, validates referenced files, and writes a
-fresh `datapackage.json`. It does not rerun ANTs transforms, zarr reads, probe
-track conversion, or ephys extraction.
-
-On Code Ocean, previous `/results` assets are immutable when attached back to a
-new capsule. Attach the old preprocessed results asset under `/data`, then copy
-it into the new run's `/results` before rewriting the datapackage:
-
-```bash
-aind-ibl-preprocess \
-    --data-root /data \
-    --results-root /results \
-    --neuroglancer neuroglancer.json \
-    --manifest manifest.csv \
-    --datapackage-only \
-    --source-results /data/<old_preprocessed_results_asset>
-```
-
-`--source-results` may point either at the prior results asset root, containing
-`<mouseid>/datapackage.json`, or directly at the `<mouseid>` output directory.
-
-## Python API
-
-The package exposes a small public API:
-
-```python
-from aind_ibl_ephys_alignment_preprocessing import (
-    PipelineConfig,
-    run_pipeline,
-    run_pipeline_async,
-)
-
-config = PipelineConfig(
-    data_root="/path/to/data",
-    results_root="/path/to/results",
-    neuroglancer_file="neuroglancer.json",
-    manifest_csv="manifest.csv",
-    skip_ephys=False,            # set True to skip ephys extraction
-    desired_voxel_size_um=25.0,  # multiscale zarr level selection
-    num_parallel_jobs=4,         # parallel workers for ephys
-)
-
-# Synchronous
-results = run_pipeline(config)
-
-# Asynchronous (structured concurrency with TaskGroups)
-import asyncio
-results = asyncio.run(run_pipeline_async(config))
-```
-
-Each element of `results` is a `ProcessResult` containing the probe ID,
-recording ID, list of files written, and an optional skip reason.
-
-## Input data requirements
-
-### Data root layout
-
-All input paths can be absolute or relative to `data_root`. The expected
-directory structure is:
-
-```
-data_root/
-|
-|-- neuroglancer.json
-|-- manifest.csv
-|
-|-- smartspim_lca_template/
-|   +-- smartspim_lca_template_25.nii.gz
-|
-|-- allen_mouse_ccf/
-|   +-- average_template/
-|       +-- average_template_25.nii.gz
-|
-|-- allen_mouse_ccf_annotations_lateralized_compact/
-|   |-- ccf_2017_annotation_25_lateralized_compact.nrrd
-|   +-- ccf_2017_annotation_25_lateralized_unique_vals.npz
-|
-|-- iblatlas_allenatlas/
-|   +-- ...
-|
-|-- spim_template_to_ccf/
-|   |-- syn_0GenericAffine.mat
-|   +-- syn_1InverseWarp.nii.gz
-|
-|-- <smartspim_asset>/
-|   |-- image_tile_fusing/
-|   |   +-- OMEZarr/
-|   |       |-- <registration_channel>.zarr/
-|   |       +-- <additional_channels>.zarr/
-|   +-- image_atlas_alignment/
-|       +-- <registration_channel_stem>/
-|           |-- ls_to_template_SyN_0GenericAffine.mat
-|           +-- ls_to_template_SyN_1InverseWarp.nii.gz
-|
-|-- <sorted_recording>/
-|   +-- ...  (spike sorting output)
-|
-+-- **/<probe_file>.json
-```
-
-Each of these is described in detail below.
-
-### Manifest CSV
-
-Create this file in a spreadsheet and export it as CSV. Each row connects one
-annotated histology track to its recorded ephys collection. Keep the CSV and
-the annotation JSONs together in the annotations asset. The trigger needs an
-internal asset with exactly one manifest CSV; it reads the files by asset ID.
-
-Start with the five required columns below. Add shank columns for a multi-shank
-probe, and use the examples below to distinguish a four-shank collection from
-four separate quadbase collections. `logical_probe` is optional; it groups
-collections belonging to one physical probe. Registration choices belong in
-run settings rather than new CSV columns.
-
-A CSV file describing how histology tracks map onto ephys collections. Each
-row represents one histology track (or one histology shank) mapped to one
-ephys collection and ephys shank.
-
-The contract is declared in `types.MANIFEST_COLUMNS` and drives the parser and
-pre-flight validation. Optional columns may be omitted when the remaining
-fields identify the mapping. A logical probe recorded as several streams needs
-a physical shank to select one of them, as described below.
-
-**Required columns:**
-
-| Column | Description |
-|--------|-------------|
-| `mouseid` | Mouse identifier. All rows must reference the same mouse. |
-| `sorted_recording` | Exact name of the sorted asset or mounted folder. The Code Ocean trigger also accepts its asset UUID. Use the sorting you intend to align; the name does not need a particular timestamp format. |
-| `probe_file` | Basename (without extension) of the Neuroglancer annotation file. It must match the actual filename; dates in this name or the track ID do not select recording dates. Resolved via glob `*/<probe_file>.<annotation_format>` under `data_root`. |
-| `histology_track_id` | Neuroglancer layer / histology track identifier. Legacy alias: `probe_id`. |
-| `ephys_collection` | Recorded ephys collection (for example `ProbeA` or `ProbeA-2`), used as the ALF output folder. A logical probe name can be resolved to a split collection when `histology_shank` identifies its physical shank. Legacy alias: `probe_name`. |
-
-**Optional columns:**
-
-| Column | Default | Description |
-|--------|---------|-------------|
-| `annotation_format` | `json` | File extension for the annotation file (lowercase). |
-| `logical_probe` | `ephys_collection` | Physical/logical probe identity. Split quadbase streams can share one `logical_probe` while using different `ephys_collection` values. |
-| `histology_shank` | `probe_shank` | 0-based physical/histology shank index. Needed to resolve a logical probe name when several per-shank collections exist. |
-| `ephys_shank` | `probe_shank`, else `histology_shank` | 0-based shank index within the selected `ephys_collection`. For split quadbase streams this is `0` even when `histology_shank` is 0..3. The compatibility fallback below accepts older logical-probe rows that put the physical shank here. |
-| `probe_id` | *legacy* | Alias for `histology_track_id`. |
-| `probe_name` | *legacy* | Alias for `ephys_collection`. |
-| `probe_shank` | *legacy* | Optional compatibility alias for both shank fields. New manifests should use the explicit fields. |
-| `surface_finding` | *null* | Path (relative to `data_root`) to a surface-finding file. |
-
-Registration overrides belong in run settings: `--registration-asset` and
-`--template-to-ccf-asset`, or the corresponding `PipelineConfig` fields and
-capsule App Panel entries. The CSV columns `registration_asset` and
-`template_to_ccf_asset` remain accepted for backwards compatibility. Nonblank
-values must agree across rows and with run settings, including the transform
-subdirectory; conflicting values stop the run.
-
-Discovery records the resolved choices in `registration_settings.json` beside
-its filtered manifest. Later stages read that file, and the final package
-records the same settings beside `datapackage.json`. Keep the settings file with
-discovery's manifest when staging a histology or pack-only run. Defaults remain
-the stitched registration and the pipeline's template-to-CCF registration.
-
-**Constraints:**
-- All rows must have the same `mouseid`.
-- The tuple `(mouseid, histology_track_id, histology_shank)` must be unique.
-- The tuple `(recording_id, ephys_collection, histology_shank)` must be unique
-  for GUI filename generation.
-- The tuple `(recording_id, ephys_collection, ephys_shank)` must be unique for
-  ephys shank mapping.
-- For single-stream multi-shank probes, multiple rows share one
-  `ephys_collection` and differ in `ephys_shank`.
-- For split quadbase probes, multiple rows can share one `logical_probe` but
-  use different `ephys_collection` values; each collection can have
-  `ephys_shank=0`.
-
-**Four-shank NP2.0 versus split quadbase collections:**
-
-For a four-shank probe recorded in one collection, use `ephys_collection=ProbeA`
-on all four rows and `histology_shank=ephys_shank=0,1,2,3`. For a quadbase
-recorded as four collections, name the actual collections and use shank `0`
-within each:
-
-| `logical_probe` | `ephys_collection` | `histology_shank` | `ephys_shank` |
-|-----------------|--------------------|-------------------|---------------|
-| `ProbeA` | `ProbeA-1` | 0 | 0 |
-| `ProbeA` | `ProbeA-2` | 1 | 0 |
-| `ProbeA` | `ProbeA-3` | 2 | 0 |
-| `ProbeA` | `ProbeA-4` | 3 | 0 |
-
-Alternatively, use `ephys_collection=ProbeA` with `histology_shank=0,1,2,3`
-and omit `ephys_shank`. Discovery checks the sorted probe geometry and rewrites
-each row to its split collection with `ephys_shank=0`.
-
-For compatibility, a row naming a logical probe with only `ephys_shank` supplied
-can use that integer as its physical shank. This fallback applies only when the
-logical name has no exact recorded collection and the recorded geometry verifies
-a unique split collection. Discovery writes the resolved `histology_shank`,
-collection name, and local `ephys_shank=0` into its manifest and records the
-interpretation in the log and `coverage.json` notes. Exact collection names and
-explicit physical shanks retain their existing meaning. Missing, contradictory,
-or unreadable geometry is rejected. `probe_shank` remains a legacy alias; it is
-not required in new manifests.
-
-**Example:**
-
-```csv
-mouseid,sorted_recording,probe_file,histology_track_id,logical_probe,ephys_collection,histology_shank,ephys_shank
-mouse001,2024-06-01_rec_sorted,track_annotations_probeA,A0001,probeA,ProbeA,,
-mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank0,B0001,probeB,ProbeB,0,0
-mouse001,2024-06-01_rec_sorted,track_annotations_probeB_shank1,B0001,probeB,ProbeB,1,1
-mouse001,2024-06-01_rec_sorted,track_annotations_quad_shank3,Q0001,ProbeD,ProbeD-4,3,0
-```
-
-#### Building a manifest from a mapping
-
-Most of a manifest repeats or follows from two choices: which sorted recording each session uses,
-and which stream each annotated track was recorded on. `aind-ibl-build-manifest` takes only those,
-in a TOML file, and derives the rest. Track names are never parsed, because annotators follow no
-naming convention.
-
-```toml
-mouseid = "837772"
-annotation = "837772-probe-annotations-CK-2026-09-29.json"  # relative to this file
-
-[[session]]
-sorted_recording = "ecephys_837772_2026-06-27_14-08-21_sorted_2026-08-27_18-59-49"
-# surface_finding = "..."                                     # optional
-
-[session.tracks]
-"732_MD_1" = "46101-1"   # one shank of a split quad-base probe
-"733_BLA" = "46810"      # a single-stream probe
-"740_PL" = { stream = "45883", shank = 1 }  # one shank of a single-stream multi-shank probe; the first shank is 1
-```
-
-```bash
-aind-ibl-build-manifest 837772.toml -o manifest_837772.csv [--data-root /data]
-```
-
-A stream is the collection parsed from the sort's `postprocessed/` analyzer names. They are listed
-from a copy mounted under `--data-root`, or else unsigned from that sort's prefix in
-`aind-open-data`. How the columns are derived:
-
-- `probe_file` is the annotation file's name without its extension.
-- **Split quad-base probe:** a stream `<probe>-<N>`, when the sort also holds another
-  `<probe>-<M>`, gets `logical_probe = <probe>`, `histology_shank = N - 1` and `ephys_shank = 0`.
-- **Any other stream** is its own `logical_probe`. Its shanks stay blank, or both take the given
-  shank's index.
-
-The build writes nothing if any of these fail, and it reports every failure:
-- every stream in each sort has a track, and every assigned stream is in its sort;
-- every track is a layer of the annotation file with at least two points;
-- no track is assigned twice;
-- a split stream has exactly one track, and the tracks sharing any other stream have distinct
-  shanks.
-
-Annotated layers left out of the mapping are printed as notes, so a missed track gets noticed.
-
-### Neuroglancer JSON
-
-A Neuroglancer state JSON file that contains image source URIs pointing to the
-SmartSPIM OME-Zarr volumes. The pipeline extracts the first image source URI
-to locate the SmartSPIM asset directory and discover the registration channel
-and any additional channels.
-
-The asset directory must contain:
-- `image_tile_fusing/OMEZarr/<channel>.zarr/` -- fused OME-Zarr volumes
-- `image_atlas_alignment/<registration_channel_stem>/` -- ANTs registration
-  outputs: the light-sheet to template affine and inverse warp (or supply a
-  separate registration asset as described below)
-
-### Registration overrides
-
-Set `registration_asset` and, when needed, `template_to_ccf_asset` as run settings
-or App Panel fields. Existing CSV columns remain accepted for compatibility;
-nonblank paths must agree with the run settings. The
-[registration guide](docs/registration_overrides.md) explains the required
-transforms, geometry sidecar, and alternative-template setup.
-
-### Reference volumes
-
-These files are required for atlas registration. Default paths are relative to
-`data_root` and can be overridden in `PipelineConfig`.
-
-| File | Default path | Format | Description |
-|------|--------------|--------|-------------|
-| SmartSPIM LCA template | `smartspim_lca_template/smartspim_lca_template_25.nii.gz` | NIfTI (.nii.gz) | 25 um SmartSPIM template volume |
-| CCF average template | `allen_mouse_ccf/average_template/average_template_25.nii.gz` | NIfTI (.nii.gz) | Allen CCF average template at 25 um |
-| CCF lateralized labels | `allen_mouse_ccf_annotations_lateralized_compact/ccf_2017_annotation_25_lateralized_compact.nrrd` | NRRD | Lateralized CCF annotation labels at 25 um |
-| CCF label lookup | `allen_mouse_ccf_annotations_lateralized_compact/ccf_2017_annotation_25_lateralized_unique_vals.npz` | NumPy (.npz) | Unique label values for the annotation volume |
-| IBL atlas histology | `iblatlas_allenatlas/` | Directory | IBL atlas histology data used by `iblatlas.AllenAtlas` |
-| Template-to-CCF transforms | `spim_template_to_ccf/` | Directory | ANTs SyN registration outputs (`syn_0GenericAffine.mat`, `syn_1InverseWarp.nii.gz`) |
-
-### Probe annotation files
-
-Per-probe Neuroglancer point annotation files. For each row in the manifest,
-the pipeline searches `data_root` for a file matching the glob pattern
-`*/<probe_file>.<annotation_format>` (e.g., `*/track_annotations_probeA.json`).
-
-These files contain 3D point annotations marking the probe track in the
-SmartSPIM image space. They are converted through the transform chain:
-
-```
-Neuroglancer pixels --> SPIM (LPS) --> Template --> CCF (LPS/um) --> Bregma (IBL)
-```
-
-### Electrophysiology data
-
-Unless `--skip-ephys` is passed, the pipeline expects spike-sorted data at
-`data_root/<sorted_recording>/` for each unique recording in the manifest. The
-ephys extraction (delegated to
-[aind-ephys-ibl-gui-conversion](https://github.com/AllenNeuralDynamics/aind-ephys-ibl-gui-conversion))
-converts this into IBL ALF format (e.g., `spikes.times.npy`,
-`spikes.clusters.npy`, `channels.localCoordinates.npy`, etc.).
-
-Ephys extraction runs once per unique recording ID (deduplicated across
-manifest rows).
-
-### Discovery and conversion plans
-
-Discovery writes an [electrophysiology inventory](docs/ephys_inventory.md)
-before filtering manifest rows. It records observed streams, recording segments,
-channel geometry, sorting outputs, and findings about how the sources relate.
-
-Discovery then saves conversion plans. Each plan selects the main recording
-by duration, records uncertainties and missing shanks, and controls extraction.
-The optional `main_recording_id` and `sorting_family_id` overrides are for
-cases where the automatic choice is insufficient. The inventory guide explains
-these decisions and how they pass between worker stages.
-
-## Output structure
-
-All outputs are written under `results_root/<mouseid>/`:
-
-```
-results_root/
-|-- manifest.csv                              # Copy of input manifest
-+-- <mouseid>/
-    |-- ccf_space_histology/                  # QC only (emit_qc); GUI never reads it
-    |   +-- histology_<channel>.nrrd          # Additional channels in CCF space
-    |
-    |-- image_space_histology/
-    |   |-- histology_registration.nrrd       # Registration channel in image space
-    |   |-- histology_registration_pipeline.nrrd
-    |   |-- ccf_in_mouse.nrrd                 # CCF template warped to image space
-    |   +-- labels_in_mouse.nrrd              # CCF labels warped to image space
-    |
-    |-- track_data/
-    |   |-- spim/<probe_id>.*                 # Track coordinates in SPIM space
-    |   |-- template/<probe_id>.*             # Track coordinates in template space
-    |   |-- ccf/<probe_id>.*                  # Track coordinates in CCF space
-    |   |-- bregma_xyz/<probe_id>.*           # Track coordinates in IBL bregma space
-    |   +-- datapackage.json                  # Machine-readable output manifest
-    |
-    +-- <recording_id>/
-        +-- <ephys_collection>/
-            |-- xyz_picks.json                # Probe track picks (CCF coordinates)
-            |-- xyz_picks_image_space.json    # Probe track picks (image space)
-            |-- xyz_picks_shank<N>.json       # Per-shank picks (multi-shank only)
-            |-- channels.localCoordinates.npy  # Ephys channel table
-            |-- channels.rawInd.npy
-            |-- channels.contactId.npy          # Optional; new ephys conversion outputs
-            |-- channels.shankInd.npy
-            +-- band_corr/                    # Full matrices + row_channels.json
-```
-
-The `datapackage.json` file describes the mouse, recordings, ephys collections,
-transform chain, histology, channel tables, and track mappings. It references
-each ephys directory; individual spike/QC files and `band_corr/` contents are
-loaded by convention rather than enumerated in the JSON. See
-[the datapackage contract](docs/external_asset_references.md) for asset
-descriptions versus runtime location resolution, Code Ocean/desktop examples,
-shank joins, and validation limits. The model can be loaded back with:
-
-```python
-from aind_ibl_ephys_alignment_preprocessing.datapackage import load_datapackage
-
-dp = load_datapackage("/path/to/datapackage.json")
-```
-
-## Pipeline overview
-
-The pipeline performs the following steps:
-
-1. **Asset discovery** -- Parse the Neuroglancer JSON to locate the SmartSPIM
-   OME-Zarr volumes and ANTs registration outputs.
-2. **Validation** -- Check that all required inputs exist and are correctly
-   structured.
-3. **Histology processing** -- Reorient the registration channel to CCF space,
-   export additional channels, and compute inverse transforms (CCF template and
-   labels warped back to image space).
-4. **Probe processing** -- For each manifest row, load the Neuroglancer point
-   annotations and convert them through the transform chain (SPIM -> template
-   -> CCF -> bregma), writing coordinate files at each stage and producing
-   `xyz_picks.json` files for the alignment GUI.
-5. **Ephys extraction** (optional) -- Convert spike-sorted data into IBL ALF
-   format.
-6. **Manifest generation** -- Write `datapackage.json` describing explicit
-   references and ephys collection directories; preserve their conventional
-   contents, including QC files not individually listed in the JSON.
-
-## Adapting to your own data
-
-If you are not using the AIND SmartSPIM pipeline but want to use this package
-with your own histology and ephys data, the key requirements are:
-
-1. **OME-Zarr volumes** -- Your fused histology images must be in OME-Zarr
-   format, discoverable via a Neuroglancer JSON state file.
-2. **ANTs registration outputs** -- You need ANTs SyN registration transforms
-   mapping your histology images to a common template and from that template to
-   the Allen CCF. The pipeline expects standard ANTs output files
-   (`*_0GenericAffine.mat`, `*_1InverseWarp.nii.gz`).
-3. **Reference volumes** -- The Allen CCF template, lateralized annotation
-   labels, and the SmartSPIM LCA template at 25 um resolution. These can be
-   overridden in `PipelineConfig` if your paths differ from the defaults.
-4. **Probe annotations** -- Neuroglancer point annotation JSON files marking
-   probe tracks in histology image space.
-5. **Spike-sorted data** (optional) -- If you want ephys extraction, provide
-   spike-sorted output compatible with
-   [aind-ephys-ibl-gui-conversion](https://github.com/AllenNeuralDynamics/aind-ephys-ibl-gui-conversion).
-
-The coordinate convention used throughout is the IBL convention: x = ML
-(right positive), y = AP (anterior positive), z = DV (dorsal positive), with
-origin at bregma, in meters.
+To repair the package description without repeating the conversion, follow
+the [regeneration instructions](docs/running_locally.md#regenerating-only-datapackagejson).
+This uses existing outputs; it does not recover missing sorting data.
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for developer setup, checks, and
-repository conventions. Coding agents should also read [AGENTS.md](AGENTS.md).
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+For development commands, architecture, and validation, see
+[CONTRIBUTING.md](CONTRIBUTING.md). This project uses the [MIT license](LICENSE).
