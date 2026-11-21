@@ -16,12 +16,24 @@ converts Neuroglancer probe-track annotations into atlas coordinates, and
 optionally extracts spike-sorted ephys data into
 [IBL ALF format](https://int-brain-lab.github.io/ONE/alf_intro.html).
 
+## Start here
+
+For Code Ocean preprocessing, use the [trigger capsule](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-trigger-capsule).
+Its README covers credentials, first-time setup, launching, and reading the
+result. You do not need to install this Python package to use the trigger.
+
+To prepare inputs, follow [Manifest CSV](#manifest-csv) below. This README owns
+the manifest rules for both capsule and local runs. For a brain registered
+outside the usual pipeline, see [Registration overrides](#registration-overrides).
+The installation and command-line sections are for running the library yourself.
+
 ## Installation
 
 From PyPI:
 
 ```bash
-pip install aind-ibl-ephys-alignment-preprocessing
+uv venv
+uv pip install aind-ibl-ephys-alignment-preprocessing
 ```
 
 From source:
@@ -29,7 +41,7 @@ From source:
 ```bash
 git clone https://github.com/AllenNeuralDynamics/aind-ibl-ephys-alignment-preprocessing.git
 cd aind-ibl-ephys-alignment-preprocessing
-pip install .
+uv sync
 ```
 
 ## Quick start
@@ -196,14 +208,16 @@ Each of these is described in detail below.
 
 ### Manifest CSV
 
-Discovery also writes an [electrophysiology inventory](docs/ephys_inventory.md)
-before filtering rows. It records observed streams, segments, channel geometry,
-sorting outputs, and source-join findings without selecting conversion inputs.
+Create this file in a spreadsheet and export it as CSV. Each row connects one
+annotated histology track to its recorded ephys collection. Keep the CSV and
+the annotation JSONs together in the annotations asset. The trigger needs an
+internal asset with exactly one manifest CSV; it reads the files by asset ID.
 
-Discovery also saves conversion plans with duration-based main selection and
-optional `main_recording_id` / `sorting_family_id` overrides. Plans retain
-uncertainties and missing shanks and accompany each worker's inventory. They
-control both worker extractors after preflight; see the linked contract.
+Start with the five required columns below. Add shank columns for a multi-shank
+probe, and use the examples below to distinguish a four-shank collection from
+four separate quadbase collections. `logical_probe` is optional; it groups
+collections belonging to one physical probe. Registration choices belong in
+run settings rather than new CSV columns.
 
 A CSV file describing how histology tracks map onto ephys collections. Each
 row represents one histology track (or one histology shank) mapped to one
@@ -219,8 +233,8 @@ a physical shank to select one of them, as described below.
 | Column | Description |
 |--------|-------------|
 | `mouseid` | Mouse identifier. All rows must reference the same mouse. |
-| `sorted_recording` | Name of the spike-sorted recording folder under `data_root`. The recording ID is derived by stripping a `_sorted` suffix if present. |
-| `probe_file` | Basename (without extension) of the Neuroglancer annotation file. Resolved via glob `*/<probe_file>.<annotation_format>` under `data_root`. |
+| `sorted_recording` | Exact name of the sorted asset or mounted folder. The Code Ocean trigger also accepts its asset UUID. Use the sorting you intend to align; the name does not need a particular timestamp format. |
+| `probe_file` | Basename (without extension) of the Neuroglancer annotation file. It must match the actual filename; dates in this name or the track ID do not select recording dates. Resolved via glob `*/<probe_file>.<annotation_format>` under `data_root`. |
 | `histology_track_id` | Neuroglancer layer / histology track identifier. Legacy alias: `probe_id`. |
 | `ephys_collection` | Recorded ephys collection (for example `ProbeA` or `ProbeA-2`), used as the ALF output folder. A logical probe name can be resolved to a split collection when `histology_shank` identifies its physical shank. Legacy alias: `probe_name`. |
 
@@ -358,141 +372,13 @@ The asset directory must contain:
   outputs: the light-sheet to template affine and inverse warp (or supply a
   separate registration asset as described below)
 
-### Separate registration asset
+### Registration overrides
 
-Set the brain-wide **Registration override** App Panel field, or pass the
-transform directory relative to `data_root` on the CLI:
-
-```bash
-aind-ibl-preprocess --data-root /data --results-root /results \
-    --manifest manifest.csv --neuroglancer annotations.json \
-    --registration-asset SmartSPIM_750108_reg/ccf_Ex_639_Em_667
-```
-
-The programmatic setting is `PipelineConfig(registration_asset=...)`.
-Existing CSVs can still supply a `registration_asset` column. If both sources
-are provided, they must identify the same directory. Leaving both unset uses
-the stitched asset's registration.
-
-The directory must contain `ls_to_template_SyN_0GenericAffine.mat`,
-`ls_to_template_SyN_1InverseWarp.nii.gz` and a geometry sidecar (below): ANTs
-SyN outputs registering this brain's selected channel to the SmartSPIM LCA
-template, or to another template whose CCF registration
-`template_to_ccf_asset` (below) supplies.
-
-The final directory name selects the channel after stripping a leading
-`ccf_`. For this example, the stitched asset must contain
-`image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr/`. Images and metadata come
-from the stitched asset; the override needs only transforms and their sidecar.
-
-Every separate registration needs a geometry sidecar beside the transforms;
-a directory without one fails. Preprocessing checks
-`ls_to_template_transform_information.json`, then `transform_information.json`.
-Its `moving_domain` must describe the actual registration input in LPS
-millimeters and match the selected volume's native or pipeline-anchored frame.
-Its `fixed_domain` must match the template the template-to-CCF chain starts
-from: the SmartSPIM LCA template unless `template_to_ccf_asset` is set. Missing
-or incompatible domains fail, since a wrong frame or template still puts the
-probes somewhere plausible.
-
-**QC:** Additional-channel CCF volumes (`emit_qc=True`) also need
-`ls_to_template_SyN_1Warp.nii.gz` in the override directory; without it the
-QC warp fails rather than falling back to the stitched asset's registration.
-
-#### Generate the sidecar from ANTs outputs
-
-Use the actual fixed template and moving histology images passed to ANTs,
-including any preprocessing of their geometry. Transform files alone cannot
-recover these domains. Headers must be 3D, axis-aligned, and in millimeters.
-
-Run `uv sync` in the preprocessing library checkout, then save this as
-`generate_registration_sidecar.py`:
-
-```python
-import sys
-from pathlib import Path
-
-import SimpleITK as sitk
-from aind_ants_transform_sidecar import dump_package, load_package
-from aind_registration_utils.domains import ImageHeader, make_syn_sidecar
-
-
-def read_header(path):
-    reader = sitk.ImageFileReader()
-    reader.SetFileName(str(path))
-    reader.ReadImageInformation()  # Read geometry without loading voxel data.
-    if reader.GetDimension() != 3:
-        raise ValueError("Registration inputs must be 3D")
-    return ImageHeader(
-        origin=reader.GetOrigin(),
-        spacing=reader.GetSpacing(),
-        direction=reader.GetDirection(),
-        size=reader.GetSize(),
-    )
-
-
-registration_dir, fixed_image, moving_image = map(Path, sys.argv[1:])
-sidecar = make_syn_sidecar(
-    fixed_image_header=read_header(fixed_image),
-    moving_image_header=read_header(moving_image),
-    affine="ls_to_template_SyN_0GenericAffine.mat",
-    warp="ls_to_template_SyN_1Warp.nii.gz",
-    inverse_warp="ls_to_template_SyN_1InverseWarp.nii.gz",
-)
-text = dump_package(sidecar)
-load_package(text)  # Validate the serialized package.
-destination = registration_dir / "ls_to_template_transform_information.json"
-destination.write_text(text + "\n")
-print(destination)
-```
-
-Pass the transform directory, fixed image, and moving image in that order:
-
-```bash
-uv run python generate_registration_sidecar.py \
-    /path/to/SmartSPIM_750108_reg/ccf_Ex_639_Em_667 \
-    /path/to/fixed_template_used_by_ants.nii.gz \
-    /path/to/moving_histology_used_by_ants.nii.gz
-```
-
-The script reads only image headers. Transform filenames are relative to the
-sidecar; rename raw ANTs outputs to the expected names. The schema requires a
-forward-warp filename, but normal preprocessing needs only the affine and
-inverse warp. The helper does not verify transform files.
-
-Generate the JSON beside the transforms before uploading the asset;
-Code Ocean's `/data` mounts are read-only.
-
-### Separate template-to-CCF registration
-
-A brain registered to a template other than the SmartSPIM LCA template (an
-iDISCO template, say) needs that template's CCF registration. Set the
-**Template-to-CCF override** App Panel field or `--template-to-ccf-asset` to its
-directory relative to `data_root`:
-
-```bash
-aind-ibl-preprocess --data-root /data --results-root /results \
-    --manifest manifest.csv --neuroglancer annotations.json \
-    --registration-asset idisco_reg/750107 \
-    --template-to-ccf-asset AIND-MouseiDISCO-v1.0-to-CCFv3-r1_2026-10-22_17-34-50
-```
-
-`PipelineConfig.template_to_ccf_asset` and the legacy CSV column of the same
-name are also accepted, with the same conflict checks.
-
-The directory must contain `template_to_ccf_0GenericAffine.mat` and
-`template_to_ccf_1InverseWarp.nii.gz`, ANTs SyN outputs with CCF fixed and the
-template moving; `emit_qc=True` also needs `template_to_ccf_1Warp.nii.gz`. They replace the
-pipeline's `spim_template_to_ccf_syn_*_25` transforms in the probe and QC
-chains, and the datapackage refers to them under the `template_to_ccf` asset,
-named after the directory's first component under `data_root`.
-
-The override requires a `registration_asset` with a sidecar, whose `fixed_domain`
-is checked against this template. If the directory ships its own sidecar
-(`template_to_ccf_transform_information.json` or `transform_information.json`),
-the registration's `fixed_domain` must match its `moving_domain`. Without one,
-the registration's `fixed_domain` must *not* match the SmartSPIM LCA template;
-to replace the LCA template's own CCF registration, ship the sidecar.
+Set `registration_asset` and, when needed, `template_to_ccf_asset` as run settings
+or App Panel fields. Existing CSV columns remain accepted for compatibility;
+nonblank paths must agree with the run settings. The
+[registration guide](docs/registration_overrides.md) explains the required
+transforms, geometry sidecar, and alternative-template setup.
 
 ### Reference volumes
 
@@ -532,6 +418,18 @@ converts this into IBL ALF format (e.g., `spikes.times.npy`,
 
 Ephys extraction runs once per unique recording ID (deduplicated across
 manifest rows).
+
+### Discovery and conversion plans
+
+Discovery writes an [electrophysiology inventory](docs/ephys_inventory.md)
+before filtering manifest rows. It records observed streams, recording segments,
+channel geometry, sorting outputs, and findings about how the sources relate.
+
+Discovery then saves conversion plans. Each plan selects the main recording
+by duration, records uncertainties and missing shanks, and controls extraction.
+The optional `main_recording_id` and `sorting_family_id` overrides are for
+cases where the automatic choice is insufficient. The inventory guide explains
+these decisions and how they pass between worker stages.
 
 ## Output structure
 
