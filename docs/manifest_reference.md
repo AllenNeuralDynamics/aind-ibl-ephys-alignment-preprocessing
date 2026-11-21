@@ -54,7 +54,7 @@ within that collection; it does not mean the physical shank recorded there.
 |---|---|
 | `logical_probe` | Group separate collections belonging to one physical probe. Defaults to `ephys_collection`. |
 | `histology_shank` | Identify the physical shank for a track. Needed when a probe name must be resolved to one of several split streams. |
-| `ephys_shank` | Select a shank within a collection. Include it for multiple tracks sharing a four-shank collection. |
+| `ephys_shank` | Select a shank within a collection explicitly. Defaults to the physical shank for a shared collection; split-probe resolution sets it to `0` for each one-shank stream. |
 | `annotation_format` | Annotation file extension, default `json`. With the default, `probe_file=tracks` selects `tracks.json`. |
 | `surface_finding` | Identify a separate surface-finding recording to include. On Code Ocean, use its asset name; for local runs, use its location relative to `data_root`. |
 | `main_recording_id` | Override the automatically selected main recording for a conversion unit. See the [inventory and conversion-plan contract](ephys_inventory.md). |
@@ -70,9 +70,9 @@ within that collection; it does not mean the physical shank recorded there.
 
 Older names remain accepted. `probe_shank` is optional; new manifests should
 use the explicit columns shown in the README examples. The parser fills an
-omitted `ephys_shank` from `probe_shank`, then `histology_shank`. For tracks
-sharing a four-shank collection, include `ephys_shank` explicitly as shown in
-the guide so the CSV also satisfies the structural uniqueness checks.
+omitted `ephys_shank` from `probe_shank`, then `histology_shank`. Structural
+validation checks that effective mapping, so shared four-shank collections
+can omit `ephys_shank` too. Explicit local shank values retain precedence.
 
 Some existing quadbase CSVs name the common probe, such as `ProbeB`, and put
 the physical shank in `ephys_shank` alone. Discovery accepts that layout only

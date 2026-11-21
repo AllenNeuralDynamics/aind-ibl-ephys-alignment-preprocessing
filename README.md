@@ -26,17 +26,24 @@ and manifest format are shared by both routes.
 
 ## Prepare the inputs
 
-You need the mouse's processed SmartSPIM imaging asset with its registration
-results, the sorted ephys recording assets, and the Neuroglancer JSON files
-containing your probe-track annotations. Keep the image layers in the saved
-JSON: the trigger uses them to find the imaging asset. The annotations must
-refer to the imaging data used for that mouse. Preprocessing also uses the
-raw ephys data; the trigger finds it from the sorted recording's input
-information.
+You need the mouse's processed SmartSPIM images and registration results,
+its raw and sorted ephys recordings, a saved Neuroglancer state, and a
+manifest CSV. The manifest connects the annotated tracks to the recordings
+they belong to. You can prepare it in a spreadsheet using the examples below.
 
-Your annotations asset contains the annotation JSONs and a manifest CSV. The
-CSV connects the tracks you drew to the recordings they belong to. You can
-prepare it in a spreadsheet using the examples below.
+### Neuroglancer layers
+
+The Neuroglancer JSON must identify the histology images and contain the
+point annotations marking the probe tracks. Image layers supply the source
+locations of the processed SmartSPIM OME-Zarr images. Named annotation layers
+supply the points for each track. Keep the image sources and annotation
+coordinates from the same imaging data.
+
+Each `histology_track_id` in the CSV must match an annotation layer's name
+exactly. Each `probe_file` must identify the JSON containing that layer.
+Several rows can refer to one JSON, and a manifest can refer to several JSONs.
+The CSV contains the names and mappings; the points themselves stay in the
+Neuroglancer files.
 
 ## Manifest CSV
 
@@ -53,7 +60,7 @@ replace the track IDs with their exact names in Neuroglancer.
 | Column | Enter this value |
 |---|---|
 | `mouseid` | The mouse ID, the same on every row. |
-| `sorted_recording` | The exact name of the sorted Code Ocean asset. The trigger also accepts its asset ID. |
+| `sorted_recording` | The sorted recording folder name; on Code Ocean, use the sorted asset's exact name. |
 | `probe_file` | The annotation JSON filename without `.json`. For `tracks.json`, enter `tracks`. |
 | `histology_track_id` | The exact track/layer name inside that JSON, such as `A_shank1`. |
 | `ephys_collection` | The recorded probe name, such as `ProbeA`. For a split quadbase, use its common probe name as explained below. |
@@ -68,9 +75,7 @@ mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection
 ### Four-shank NP2.0 recorded together
 
 If all four shanks are recorded together as `ProbeA`, repeat `ProbeA` on all
-four rows. Add `histology_shank` to identify the physical shank for each track,
-and `ephys_shank` to select that shank within the shared recording. Both
-columns contain the same number for this recording layout.
+four rows. Add `histology_shank` to identify the physical shank for each track.
 
 CSV shank numbers start at **0**: the four shanks are numbered `0`, `1`, `2`,
 and `3`. In this example, the track named `A_shank1` belongs to physical shank
@@ -78,15 +83,15 @@ and `3`. In this example, the track named `A_shank1` belongs to physical shank
 shank numbers from track names.
 
 ```csv
-mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,histology_shank,ephys_shank
-858398,example_sorted,tracks,A_shank1,ProbeA,0,0
-858398,example_sorted,tracks,A_shank2,ProbeA,1,1
-858398,example_sorted,tracks,A_shank3,ProbeA,2,2
-858398,example_sorted,tracks,A_shank4,ProbeA,3,3
+mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,histology_shank
+858398,example_sorted,tracks,A_shank1,ProbeA,0
+858398,example_sorted,tracks,A_shank2,ProbeA,1
+858398,example_sorted,tracks,A_shank3,ProbeA,2
+858398,example_sorted,tracks,A_shank4,ProbeA,3
 ```
 
-Here `ProbeA` contains four shanks, so `ephys_shank` distinguishes the data
-for the four tracks. You can omit `logical_probe`.
+Preprocessing uses the physical shank number to select the corresponding
+data within `ProbeA`. You can omit `ephys_shank` and `logical_probe`.
 
 ### Quadbase shanks recorded separately
 
@@ -111,28 +116,47 @@ form of the CSV. If the saved recording information cannot identify a unique
 stream, the run reports which mapping it could not resolve.
 
 You can combine single-shank, four-shank, and split quadbase rows in one
-manifest. Use the seven-column header from the four-shank example and leave
-unused shank cells blank: both cells for a single-shank row, or just
-`ephys_shank` for a quadbase row written in the form above.
+manifest. Use the six-column header from either four-shank example and leave
+`histology_shank` blank for a single-shank row.
 
-### Save the annotations asset
+### Save the input files
 
 Save the CSV with `manifest` in its filename, for example
-`858398_manifest.csv`. Put it and every annotation JSON named by `probe_file`
-in one internal Code Ocean asset, with exactly one manifest CSV. Give that
-asset's ID to the trigger. Its [run instructions](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-trigger-capsule#run-a-mouse)
-cover the launch.
+`858398_manifest.csv`. Keep every annotation JSON named by `probe_file`
+available with the other inputs. The [input folder guide](docs/input_data.md)
+shows the layout for a direct run. Capsule-specific instructions are linked
+under [Choose how to run](#choose-how-to-run).
 
 Use the correct `sorted_recording` on each row when a mouse has several
 recording sessions. Dates in annotation filenames or track names are labels;
 the `sorted_recording` column selects the recording to process.
 
-### Other columns and existing manifests
+### Optional columns
 
-Existing manifests can continue to name exact streams and specify
-`ephys_shank`. The [column reference](docs/manifest_reference.md) explains that
-form, optional columns, and older names such as `probe_id`, `probe_name`, and
-`probe_shank`. You do not need to add those columns to the examples above.
+`ephys_shank` selects a shank within an explicitly named recording stream.
+It is useful when you need to specify that mapping yourself. `logical_probe`
+groups separate streams belonging to one physical probe. `annotation_format`
+defaults to `json`, including when its cells are blank. These are optional,
+supported fields; the examples above do not need them. See the
+[column reference](docs/manifest_reference.md) for their defaults and for
+separate surface-finding recordings.
+
+### Legacy columns
+
+These columns are still supported for existing manifests, but deprecated
+for authoring new ones:
+
+| Legacy column | Use for new manifests |
+|---|---|
+| `probe_id` | `histology_track_id` |
+| `probe_name` | `ephys_collection` |
+| `probe_shank` | `histology_shank`; use `ephys_shank` too when an explicit stream mapping needs a different local shank number. |
+| `registration_asset` | A registration setting for the whole run, outside the track CSV. |
+| `template_to_ccf_asset` | A template-to-atlas registration setting for the whole run, outside the track CSV. |
+
+The two registration names remain current run settings; only their placement
+in the CSV is legacy. The [column reference](docs/manifest_reference.md)
+explains legacy defaults and how explicit and inferred shank mappings interact.
 
 ### Building a manifest from a mapping
 
@@ -143,11 +167,10 @@ mapping tracks to recordings and streams.
 ## Registration overrides
 
 Most runs use the registrations already supplied with the imaging data. If
-the brain was registered separately, choose that registration through the
-trigger's **Registration override** field. If it targets a reference image
-other than the standard SmartSPIM template, also set **Template-to-CCF
-override** to that template's registration to the Allen brain atlas. The
-trigger attaches those assets for the workers.
+the brain was registered separately, supply its transform directory through
+the run's `registration_asset` setting. If it targets a reference image other
+than the standard SmartSPIM template, also set `template_to_ccf_asset` to
+that template's registration to the Allen brain atlas.
 
 The [registration guide](docs/registration_overrides.md) describes the files
 needed for these cases. Registration is a choice for the whole brain, so new
@@ -156,11 +179,9 @@ remain supported.
 
 ## Run and check the output
 
-Give the annotations asset's ID to the trigger and follow its
-[run instructions](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-trigger-capsule#run-a-mouse).
-The trigger processes the histology and recordings and creates one output data
-asset. Use that output asset with the alignment GUI. For a direct worker run,
-follow the [worker instructions](https://github.com/AllenNeuralDynamics/aind-ibl-preprocess-pipeline-capsule#standalone-use-the-monolith).
+Run preprocessing using your chosen execution method. The output is a mouse
+directory containing the images, converted recording data, and track points
+needed by the alignment GUI.
 
 Check the run's warnings as well as its completion status. A run may finish
 successfully when some recorded shanks lack sorting outputs. For example,
