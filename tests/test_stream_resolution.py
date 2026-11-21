@@ -165,7 +165,10 @@ def test_standalone_structure_validation_uses_the_same_resolved_shanks(tmp_path:
 
 @pytest.mark.parametrize("layout", ["shared", "split", "mixed"])
 @pytest.mark.parametrize("optional_columns", [False, True])
-def test_minimal_manifest_survives_discovery_and_pack(tmp_path: Path, layout: str, optional_columns: bool) -> None:
+@pytest.mark.parametrize("json_suffix", [False, True])
+def test_minimal_manifest_survives_discovery_and_pack(
+    tmp_path: Path, layout: str, optional_columns: bool, json_suffix: bool
+) -> None:
     """A physical-shank-only CSV must work alone as well as beside split streams."""
     from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
     from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig, ProcessResult
@@ -179,6 +182,8 @@ def test_minimal_manifest_survives_discovery_and_pack(tmp_path: Path, layout: st
         columns={"probe_name": "ephys_collection", "probe_shank": "histology_shank", "probe_id": "histology_track_id"}
     )
     frame = frame.drop(columns=["surface_finding", "annotation_format"])
+    if json_suffix:
+        frame["probe_file"] = "ng.json"
     if optional_columns:
         for name in ("logical_probe", "ephys_shank", "annotation_format"):
             frame[name] = ""

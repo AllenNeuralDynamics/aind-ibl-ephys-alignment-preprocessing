@@ -420,7 +420,7 @@ class ManifestColumn:
 MANIFEST_COLUMNS: tuple[ManifestColumn, ...] = (
     ManifestColumn("mouseid", required=True, description="Mouse identifier; one per manifest."),
     ManifestColumn("sorted_recording", required=True, description="Spike-sorting folder name."),
-    ManifestColumn("probe_file", required=True, description="Annotation file basename, no extension."),
+    ManifestColumn("probe_file", required=True, description="Annotation filename, with or without its extension."),
     ManifestColumn(
         "histology_track_id",
         required=True,
@@ -550,6 +550,9 @@ class ManifestRow:
 
     def __post_init__(self) -> None:
         """Populate new explicit fields from legacy manifest aliases."""
+        # File lookups append the format suffix; accept an already complete
+        # filename without making callers remove it themselves.
+        object.__setattr__(self, "probe_file", self.probe_file.removesuffix(f".{self.annotation_format}"))
         histology_track_id = self.histology_track_id or self.probe_id
         ephys_collection = self.ephys_collection or self.probe_name
         logical_probe = self.logical_probe or ephys_collection

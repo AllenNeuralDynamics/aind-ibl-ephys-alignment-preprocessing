@@ -73,6 +73,7 @@ These files are required for atlas registration. Default paths are relative to
 Per-probe Neuroglancer point annotation files. For each row in the manifest,
 the pipeline searches `data_root` for a file matching the glob pattern
 `*/<probe_file>.<annotation_format>` (e.g., `*/track_annotations_probeA.json`).
+The manifest can include the `.json` suffix; it is normalized before lookup.
 
 These files contain 3D point annotations marking the probe track in the
 SmartSPIM image space. They are converted through the transform chain:

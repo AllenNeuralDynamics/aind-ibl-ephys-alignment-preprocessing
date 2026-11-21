@@ -61,7 +61,7 @@ replace the track IDs with their exact names in Neuroglancer.
 |---|---|
 | `mouseid` | The mouse ID, the same on every row. |
 | `sorted_recording` | The sorted recording folder name; on Code Ocean, use the sorted asset's exact name. |
-| `probe_file` | The annotation JSON filename without `.json`. For `tracks.json`, enter `tracks`. |
+| `probe_file` | The annotation JSON filename, such as `tracks.json`. The older form `tracks` also works. |
 | `histology_track_id` | The exact track/layer name inside that JSON, such as `A_shank1`. |
 | `ephys_collection` | The recorded probe name, such as `ProbeA`. For a split quadbase, use its common probe name as explained below. |
 
@@ -69,7 +69,7 @@ For a single-shank recording, those five columns are enough:
 
 ```csv
 mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection
-858398,example_sorted,tracks,A_track,ProbeA
+858398,example_sorted,tracks.json,A_track,ProbeA
 ```
 
 ### Four-shank NP2.0 recorded together
@@ -84,10 +84,10 @@ shank numbers from track names.
 
 ```csv
 mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,histology_shank
-858398,example_sorted,tracks,A_shank1,ProbeA,0
-858398,example_sorted,tracks,A_shank2,ProbeA,1
-858398,example_sorted,tracks,A_shank3,ProbeA,2
-858398,example_sorted,tracks,A_shank4,ProbeA,3
+858398,example_sorted,tracks.json,A_shank1,ProbeA,0
+858398,example_sorted,tracks.json,A_shank2,ProbeA,1
+858398,example_sorted,tracks.json,A_shank3,ProbeA,2
+858398,example_sorted,tracks.json,A_shank4,ProbeA,3
 ```
 
 Preprocessing uses the physical shank number to select the corresponding
@@ -102,10 +102,10 @@ records its four shanks as separate streams, for example
 
 ```csv
 mouseid,sorted_recording,probe_file,histology_track_id,ephys_collection,histology_shank
-858398,example_sorted,tracks,B_shank1,ProbeB,0
-858398,example_sorted,tracks,B_shank2,ProbeB,1
-858398,example_sorted,tracks,B_shank3,ProbeB,2
-858398,example_sorted,tracks,B_shank4,ProbeB,3
+858398,example_sorted,tracks.json,B_shank1,ProbeB,0
+858398,example_sorted,tracks.json,B_shank2,ProbeB,1
+858398,example_sorted,tracks.json,B_shank3,ProbeB,2
+858398,example_sorted,tracks.json,B_shank4,ProbeB,3
 ```
 
 Preprocessing checks which physical shank each stream recorded and fills in
