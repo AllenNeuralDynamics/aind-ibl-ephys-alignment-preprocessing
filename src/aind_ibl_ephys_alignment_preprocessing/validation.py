@@ -264,7 +264,16 @@ class PipelineValidator:
         df["_histology_shank_norm"] = _norm_shank_series(
             _coalesce_manifest_column(df, ("histology_shank", "probe_shank"))
         )
-        df["_ephys_shank_norm"] = _norm_shank_series(_coalesce_manifest_column(df, ("ephys_shank", "probe_shank")))
+        # Check the effective mapping used downstream, including physical-shank
+        # defaults. Missing optional columns must not turn distinct shanks into
+        # duplicate null keys. Explicit local shanks still take precedence.
+        df["_ephys_shank_norm"] = _norm_shank_series(
+            pd.Series(
+                [ManifestRow.from_series(row).ephys_shank for _, row in df.iterrows()],
+                index=df.index,
+                dtype="object",
+            )
+        )
 
         if {"mouseid", "_histology_track_id"}.issubset(df.columns):
             self._add_unique_violation_results(
