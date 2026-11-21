@@ -616,7 +616,7 @@ class ManifestRow:
             probe_file=str(s.get("probe_file")),
             sorted_recording=str(s.get("sorted_recording")),
             mouseid=str(s.get("mouseid")),
-            annotation_format=str(s.get("annotation_format", "json")).lower(),
+            annotation_format=opt_str_from("annotation_format", default="json").lower(),
             probe_shank=opt_int(s.get("probe_shank")),
             histology_track_id=histology_track_id,
             logical_probe=logical_probe,
