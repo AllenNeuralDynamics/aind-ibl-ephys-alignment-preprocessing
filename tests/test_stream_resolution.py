@@ -163,6 +163,110 @@ def test_standalone_structure_validation_uses_the_same_resolved_shanks(tmp_path:
     assert not errors, [result.message for result in errors]
 
 
+@pytest.mark.parametrize("layout", ["shared", "split", "mixed"])
+@pytest.mark.parametrize("optional_columns", [False, True])
+def test_minimal_manifest_survives_discovery_and_pack(tmp_path: Path, layout: str, optional_columns: bool) -> None:
+    """A physical-shank-only CSV must work alone as well as beside split streams."""
+    from aind_ibl_ephys_alignment_preprocessing.datapackage import _build_probes
+    from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig, ProcessResult
+    from aind_ibl_ephys_alignment_preprocessing.validation import PipelineValidator
+
+    config = _discover_config(tmp_path)
+    root = _mount_quad_sort(config.data_root, {"ProbeB": SERIAL_B})
+    _analyzer(root / "postprocessed", "ProbeA", [_probe(SERIAL_A, list(range(4)))])
+    probes = {"shared": ["ProbeA"], "split": ["ProbeB"], "mixed": ["ProbeA", "ProbeB"]}[layout]
+    frame = _manifest([(probe, shank) for probe in probes for shank in range(4)]).rename(
+        columns={"probe_name": "ephys_collection", "probe_shank": "histology_shank", "probe_id": "histology_track_id"}
+    )
+    frame = frame.drop(columns=["surface_finding", "annotation_format"])
+    if optional_columns:
+        for name in ("logical_probe", "ephys_shank", "annotation_format"):
+            frame[name] = ""
+    annotations = config.data_root / "annotations" / "ng.json"
+    annotations.parent.mkdir()
+    annotations.write_text(
+        json.dumps(
+            {
+                "dimensions": {"z": [1e-6, "m"], "y": [1e-6, "m"], "x": [1e-6, "m"]},
+                "layers": [
+                    {
+                        "type": "annotation",
+                        "name": name,
+                        "annotations": [
+                            {"type": "point", "id": "a", "point": [1, 2, 3, 0]},
+                            {"type": "point", "id": "b", "point": [4, 5, 6, 0]},
+                        ],
+                    }
+                    for name in frame["histology_track_id"]
+                ],
+            }
+        )
+    )
+    frame.to_csv(config.manifest_csv, index=False)
+    validator = PipelineValidator(
+        PipelineConfig(
+            data_root=config.data_root,
+            results_root=config.results_root,
+            neuroglancer_file="annotations/ng.json",
+            manifest_csv=config.manifest_csv,
+        ),
+        skip_resource_checks=True,
+    )
+    validator.validate_manifest_structure()
+    errors = [r.message for r in validator.results if not r.passed and r.severity == "error"]
+    assert errors == []
+
+    written = stages.stage_discover(config)
+    filtered = read_resolved_manifest(config.results_root / "manifest.csv", config.data_root)
+    rows = [stages.ManifestRow.from_series(row) for _, row in filtered.iterrows()]
+    assert all(row.annotation_format == "json" for row in rows)
+    assert len(written) == (1 if "ProbeA" in probes else 0) + (4 if "ProbeB" in probes else 0)
+    expected = [
+        (probe if probe == "ProbeA" else f"ProbeB-{shank + 1}", shank, shank if probe == "ProbeA" else 0)
+        for probe in probes
+        for shank in range(4)
+    ]
+    assert [(r.ephys_collection, r.histology_shank, r.ephys_shank) for r in rows] == expected
+
+    # Exercise the packer's actual row-to-pick mapping with the saved discovery CSV.
+    mouse_root = config.results_root / "863973"
+    for row in rows:
+        folder = mouse_root / row.recording_id / str(row.ephys_collection)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "channels.localCoordinates.npy").touch()
+    results = [ProcessResult(probe_id=r.probe_id, recording_id=r.recording_id, wrote_files=True) for r in rows]
+    entries = _build_probes(
+        rows,
+        results,
+        SimpleNamespace(tracks_root=mouse_root / "tracks"),
+        mouse_root,
+        SimpleNamespace(skip_ephys=False, emit_qc=True),
+    )[RECORDING]
+    picks = [
+        (name, pick.histology_shank, pick.ephys_shank) for name, entry in entries.items() for pick in entry.xyz_picks
+    ]
+    assert sorted(picks) == sorted(expected)
+
+
+def test_explicit_local_shank_collisions_are_still_rejected(tmp_path: Path) -> None:
+    """Defaulting omitted values must not overwrite supplied local shank mappings."""
+    from aind_ibl_ephys_alignment_preprocessing.types import PipelineConfig
+    from aind_ibl_ephys_alignment_preprocessing.validation import PipelineValidator
+
+    frame = _manifest([("ProbeA", 0), ("ProbeA", 1)]).rename(columns={"probe_shank": "histology_shank"})
+    frame["ephys_shank"] = 0
+    manifest = tmp_path / "manifest.csv"
+    frame.to_csv(manifest, index=False)
+    validator = PipelineValidator(
+        PipelineConfig(
+            data_root=tmp_path, results_root=tmp_path / "out", neuroglancer_file="ng.json", manifest_csv=manifest
+        ),
+        skip_resource_checks=True,
+    )
+    validator.validate_manifest_structure()
+    assert any(not r.passed and "ephys shanks" in r.message for r in validator.results)
+
+
 def test_rows_without_a_mounted_sort_pass_through(tmp_path: Path) -> None:
     resolved = resolve_manifest_streams(_manifest([("ProbeA", 1)]), default_locator(tmp_path))
     assert resolved.resolutions == {} and resolved.errors == {}
