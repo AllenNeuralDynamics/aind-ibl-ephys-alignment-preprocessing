@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -57,7 +57,7 @@ wheels = [
 
 [[package]]
 name = "aind-ephys-ibl-gui-conversion"
-version = "0.8.1"
+version = "0.8.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-mri-utils" },
@@ -72,9 +72,9 @@ dependencies = [
     { name = "wavpack-numcodecs" },
     { name = "zarr" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/18/c2/7710e12a6ceb944ca945f09e61efc8124ffe897fb6d78eb376f6bb2cc400/aind_ephys_ibl_gui_conversion-0.8.1.tar.gz", hash = "sha256:e1d5e3866f03c1fe0f38d499834aa46b716b0b2ae15da434c264cd37bfe0695a", size = 634545, upload-time = "2026-11-21T14:37:14.93Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/01/93/a83133ab9dda112cad90923591cb92e481a81f7fc494501069bcb6c52ac0/aind_ephys_ibl_gui_conversion-0.8.2.tar.gz", hash = "sha256:c6b681e12e0e3878750c7384ff17ec5b5286bf04d9fdecebdf6a355fef7bce02", size = 639054, upload-time = "2026-11-24T23:35:22.129Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/b8/59c6a67234a118b96b87b52031eef93bf95530c53bfecc5b35e9846e59bb/aind_ephys_ibl_gui_conversion-0.8.1-py3-none-any.whl", hash = "sha256:57e29ca178519b167ee520289ddd62104403c885a4f468c52298aea2dde4caa7", size = 80590, upload-time = "2026-11-21T14:37:14.013Z" },
+    { url = "https://files.pythonhosted.org/packages/33/8a/d0c29d74f5cddd97e9245064b6d88c40b5ec0dd541db1dc1690fdcbdc85c/aind_ephys_ibl_gui_conversion-0.8.2-py3-none-any.whl", hash = "sha256:f6dcbd7f691f4cd54332a7e9ac9ec25a61c75ed7762d4aa5345f0a9b1c8f8402", size = 82903, upload-time = "2026-11-24T23:35:20.908Z" },
 ]
 
 [[package]]
@@ -145,7 +145,7 @@ requires-dist = [
     { name = "aind-anatomical-utils", specifier = ">=0.4" },
     { name = "aind-ants-transform-sidecar" },
     { name = "aind-code-ocean-pipeline-utils", specifier = ">=0.4" },
-    { name = "aind-ephys-ibl-gui-conversion", specifier = ">=0.8.1" },
+    { name = "aind-ephys-ibl-gui-conversion", specifier = ">=0.8.2" },
     { name = "aind-registration-utils", specifier = ">=0.4" },
     { name = "aind-s3-cache", specifier = ">=0.1" },
     { name = "aind-zarr-utils", specifier = ">=0.21,<0.22" },
