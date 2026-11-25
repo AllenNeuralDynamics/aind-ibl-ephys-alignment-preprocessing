@@ -81,6 +81,28 @@ class S3MetadataStore:
             self._json[key] = json.loads(content)
         return self._json[key]
 
+    def read_bytes(self, path: str, *, offset: int, size: int) -> bytes:
+        """Read a bounded timestamp scalar through an explicit S3 byte range."""
+        if offset < 0 or not 0 < size <= MAX_METADATA_BYTES:
+            raise ValueError("Invalid bounded metadata read")
+        response = self.client.get_object(
+            Bucket=self.bucket, Key=self._key(path), Range=f"bytes={offset}-{offset + size - 1}"
+        )
+        with response["Body"] as body:
+            content: bytes = body.read(size + 1)
+        if len(content) != size:
+            raise ValueError("Timestamp response did not match requested byte range")
+        return content
+
+    def read_chunk(self, path: str) -> bytes:
+        """Read a size-limited compressed timestamp chunk."""
+        response = self.client.get_object(Bucket=self.bucket, Key=self._key(path))
+        with response["Body"] as body:
+            content: bytes = body.read(MAX_METADATA_BYTES + 1)
+        if len(content) > MAX_METADATA_BYTES:
+            raise ValueError("Timestamp chunk exceeds size limit")
+        return content
+
 
 def _local_sources(config: PipelineConfig, rows: list[ManifestRow]) -> list[dict[str, Any]]:
     """Describe only manifest-related mounts when no launcher supplies identities."""

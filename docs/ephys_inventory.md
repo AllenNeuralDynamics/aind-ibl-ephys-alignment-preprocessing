@@ -83,9 +83,16 @@ unreadable canonical artifact raises instead of silently discarding diagnostics.
 
 The S3 adapter uses signed access by default and unsigned access only when the
 descriptor explicitly requests it. It lists immediate child prefixes and reads
-JSON metadata, never signal chunks or analyzer extensions. Sources without an
+JSON metadata and bounded byte ranges for timestamp scalars, never voltage
+chunks or analyzer extensions. Timestamp ranges must return exactly the requested
+bytes; a server that ignores the range is rejected. Sources without an
 accessible mount or S3 location are reported unavailable; this release does not
 add Code Ocean credentials to the worker to read internal raw assets remotely.
+
+Compressed timestamp chunks use a separate bounded read capped at 8 MiB.
+The converter enforces the same limit before decoding into a fixed-size
+buffer. These reads inspect timestamps only; discovery still does not read
+voltage data.
 
 ## Deployment
 

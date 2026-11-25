@@ -162,6 +162,37 @@ def test_s3_transport_uses_bounded_reads_and_one_level_listing(monkeypatch):
     client.get_object.assert_called_once_with(Bucket="bucket", Key="nested/raw/.zattrs")
 
 
+def test_s3_timestamp_read_uses_exact_byte_range(monkeypatch):
+    client = Mock()
+    monkeypatch.setattr("aind_ibl_ephys_alignment_preprocessing.ephys_inventory.boto3.client", lambda *a, **k: client)
+    client.get_object.return_value = {"Body": io.BytesIO(b"12345678")}
+    store = S3MetadataStore("s3://bucket/nested/raw")
+    assert store.read_bytes("recording.zarr/times_seg0/0", offset=16, size=8) == b"12345678"
+    client.get_object.assert_called_once_with(
+        Bucket="bucket", Key="nested/raw/recording.zarr/times_seg0/0", Range="bytes=16-23"
+    )
+    client.get_object.return_value = {"Body": io.BytesIO(b"range ignored")}
+    import pytest
+
+    with pytest.raises(ValueError, match="requested byte range"):
+        store.read_bytes("recording.zarr/times_seg0/0", offset=16, size=8)
+
+
+def test_s3_compressed_timestamp_read_is_bounded(monkeypatch):
+    from aind_ibl_ephys_alignment_preprocessing.ephys_inventory import MAX_METADATA_BYTES
+
+    client = Mock()
+    monkeypatch.setattr("aind_ibl_ephys_alignment_preprocessing.ephys_inventory.boto3.client", lambda *a, **k: client)
+    body = Mock()
+    body.__enter__ = Mock(return_value=body)
+    body.__exit__ = Mock(return_value=False)
+    body.read.return_value = b"compressed timestamp bytes"
+    client.get_object.return_value = {"Body": body}
+    store = S3MetadataStore("s3://bucket/raw")
+    assert store.read_chunk("recording.zarr/times_seg0/0") == b"compressed timestamp bytes"
+    body.read.assert_called_once_with(MAX_METADATA_BYTES + 1)
+
+
 def test_slicing_never_takes_other_sessions(tmp_path):
     config = _config(tmp_path)
     inventory = discover_inventory(config, [], _sources(config))
